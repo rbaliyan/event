@@ -1,0 +1,34 @@
+package event
+
+import "testing"
+
+func TestEvent(t *testing.T) {
+	e := New("test", "test")
+	done := false
+	if err := Register(e); err == nil {
+		t.Errorf("Failed to register event: %v", err)
+	}
+	ch := make(chan struct{})
+	e.Subscribe(func(Event, Data) {
+		ch <- struct{}{}
+		done = true
+	})
+	e.Publish(nil)
+	<-ch
+	if !done {
+		t.Error("Failed")
+	}
+	if e.Name() != "test/test" {
+		t.Error("Fullname mismatch")
+	}
+	e1 := Get("test", "test")
+	if e1 == nil {
+		t.Fatal("Failed to get event")
+	}
+	done = false
+	e1.Publish(nil)
+	<-ch
+	if !done {
+		t.Error("Failed")
+	}
+}
