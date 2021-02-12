@@ -2,6 +2,8 @@ package event
 
 import (
 	"errors"
+	"log"
+	"os"
 	"sync"
 )
 
@@ -12,7 +14,13 @@ var (
 	ErrUnknownEvent = errors.New("Unknown event")
 	// ErrEventDisabled ...
 	ErrEventDisabled = errors.New("Event is disabled")
+
+	logger *log.Logger
 )
+
+func init() {
+	logger = log.New(os.Stdout, "Event>", log.LstdFlags|log.Llongfile)
+}
 
 // Data ...
 type Data interface{}

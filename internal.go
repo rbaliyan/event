@@ -1,6 +1,8 @@
 package event
 
 import (
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 )
@@ -42,13 +44,28 @@ func (e *eventImpl) Publish(data Data) {
 	}
 }
 
+func (e *eventImpl) wrapRecover(handler Handler) Handler {
+	return func(e Event, data Data) {
+		defer func() {
+			_, _, l, _ := runtime.Caller(1)
+			if err := recover(); err != nil {
+				flag := e.Name()
+				logger.Printf("Event[%s] Recover panic line => %v\n", flag, l)
+				logger.Printf("Event[%s] Recover err => %v\n", flag, err)
+				debug.PrintStack()
+			}
+		}()
+		handler(e, data)
+	}
+}
+
 // Subscribe ...
 func (e *eventImpl) Subscribe(handler Handler) int {
 	e.Lock()
 	defer e.Unlock()
 	for i, h := range e.handlers {
 		if h == nil {
-			e.handlers[i] = handler
+			e.handlers[i] = e.wrapRecover(handler)
 			return i
 		}
 	}
