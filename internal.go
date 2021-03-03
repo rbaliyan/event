@@ -1,6 +1,7 @@
 package event
 
 import (
+	"context"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -36,16 +37,16 @@ func (e *eventImpl) Name() string {
 }
 
 // Publish ...
-func (e *eventImpl) Publish(data Data) {
+func (e *eventImpl) Publish(ctx context.Context, data Data) {
 	e.Lock()
 	defer e.Unlock()
 	for _, h := range e.handlers {
-		go h(e, data)
+		go h(ctx, e, data)
 	}
 }
 
 func (e *eventImpl) wrapRecover(handler Handler) Handler {
-	return func(e Event, data Data) {
+	return func(ctx context.Context, e Event, data Data) {
 		defer func() {
 			_, _, l, _ := runtime.Caller(1)
 			if err := recover(); err != nil {
@@ -55,17 +56,18 @@ func (e *eventImpl) wrapRecover(handler Handler) Handler {
 				debug.PrintStack()
 			}
 		}()
-		handler(e, data)
+		handler(ctx, e, data)
 	}
 }
 
 // Subscribe ...
-func (e *eventImpl) Subscribe(handler Handler) int {
+func (e *eventImpl) Subscribe(ctx context.Context, handler Handler) int {
 	e.Lock()
 	defer e.Unlock()
+	handler = e.wrapRecover(handler)
 	for i, h := range e.handlers {
 		if h == nil {
-			e.handlers[i] = e.wrapRecover(handler)
+			e.handlers[i] = handler
 			return i
 		}
 	}

@@ -1,6 +1,7 @@
 package event
 
 import (
+	"context"
 	"errors"
 	"log"
 	"os"
@@ -26,12 +27,12 @@ func init() {
 type Data interface{}
 
 // Handler ...
-type Handler func(Event, Data)
+type Handler func(context.Context, Event, Data)
 
 // Event ...
 type Event interface {
-	Publish(Data)
-	Subscribe(Handler) int
+	Publish(context.Context, Data)
+	Subscribe(context.Context, Handler) int
 	Stop(int) error
 	Name() string
 }
