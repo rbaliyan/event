@@ -32,8 +32,7 @@ type Handler func(context.Context, Event, Data)
 // Event ...
 type Event interface {
 	Publish(context.Context, Data)
-	Subscribe(context.Context, Handler) int
-	Stop(int) error
+	Subscribe(context.Context, Handler)
 	Name() string
 }
 
@@ -73,19 +72,19 @@ func (m *Manager) get(name string) Event {
 }
 
 // Event ...
-func (m *Manager) Event(names ...string) Event {
-	return m.get(FullName(names...))
+func (m *Manager) Event(name string) Event {
+	return m.get(name)
 }
 
 // New create new event
-func New(names ...string) Event {
-	e := Get(names...)
+func New(name string) Event {
+	e := Get(name)
 	if e != nil {
 		return e
 	}
-	e = Default(names...)
+	e = Default(name)
 	Register(e)
-	return Get(names...)
+	return Get(name)
 }
 
 // Register ...
@@ -94,11 +93,11 @@ func Register(event Event) error {
 }
 
 // Get ...
-func Get(names ...string) Event {
-	return defaultManager.Event(names...)
+func Get(name string) Event {
+	return defaultManager.Event(name)
 }
 
 // Default ...
-func Default(names ...string) Event {
-	return &eventImpl{name: FullName(names...)}
+func Default(name string) Event {
+	return &eventImpl{name: name}
 }

@@ -6,7 +6,7 @@ import (
 )
 
 func TestEvent(t *testing.T) {
-	e := New("test", "test")
+	e := New("test")
 	done := false
 	if err := Register(e); err == nil {
 		t.Errorf("Failed to register event: %v", err)
@@ -24,7 +24,7 @@ func TestEvent(t *testing.T) {
 	if e.Name() != "test/test" {
 		t.Error("Fullname mismatch")
 	}
-	e1 := Get("test", "test")
+	e1 := Get("test")
 	if e1 == nil {
 		t.Fatal("Failed to get event")
 	}

@@ -9,10 +9,11 @@ import (
 )
 
 var (
-	// DefaultNamespace ...
-	DefaultNamespace = ""
 	// DefaultNamespaceSep ...
 	DefaultNamespaceSep = "/"
+
+	// MessageBusSize ...
+	MessageBusSize = 100
 
 	defaultManager *Manager
 )
@@ -23,7 +24,7 @@ func init() {
 
 type eventImpl struct {
 	name     string
-	handlers []Handler
+	channels []chan Data
 	sync.Mutex
 }
 
@@ -40,8 +41,8 @@ func (e *eventImpl) Name() string {
 func (e *eventImpl) Publish(ctx context.Context, data Data) {
 	e.Lock()
 	defer e.Unlock()
-	for _, h := range e.handlers {
-		go h(ctx, e, data)
+	for _, ch := range e.channels {
+		ch <- data
 	}
 }
 
@@ -61,36 +62,29 @@ func (e *eventImpl) wrapRecover(handler Handler) Handler {
 }
 
 // Subscribe ...
-func (e *eventImpl) Subscribe(ctx context.Context, handler Handler) int {
+func (e *eventImpl) Subscribe(ctx context.Context, handler Handler) {
 	e.Lock()
 	defer e.Unlock()
 	handler = e.wrapRecover(handler)
-	for i, h := range e.handlers {
-		if h == nil {
-			e.handlers[i] = handler
-			return i
+	ch := make(chan Data, MessageBusSize)
+	e.channels = append(e.channels, ch)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case data, ok := <-ch:
+				if !ok {
+					return
+				}
+				handler(ctx, e, data)
+			}
 		}
-	}
-	e.handlers = append(e.handlers, handler)
-	return len(e.handlers)
+	}()
 }
 
-// Stop ...
-func (e *eventImpl) Stop(index int) error {
-	e.Lock()
-	defer e.Unlock()
-	if index >= len(e.handlers) {
-		return ErrEventDisabled
-	}
-	if e.handlers[index] == nil {
-		return ErrEventDisabled
-	}
-	e.handlers[index] = nil
-	return nil
-}
-
-// FullName ...
-func FullName(names ...string) string {
+// Name ...
+func Name(names ...string) string {
 	name := ""
 	if len(names) > 1 {
 		name = strings.Join(names, DefaultNamespaceSep)
