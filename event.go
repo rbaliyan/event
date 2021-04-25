@@ -10,9 +10,9 @@ import (
 
 var (
 	// ErrDuplicateEvent ...
-	ErrDuplicateEvent = errors.New("Duplicate event")
+	ErrDuplicateEvent = errors.New("duplicate event")
 	// ErrUnknownEvent ...
-	ErrUnknownEvent = errors.New("Unknown event")
+	ErrUnknownEvent = errors.New("unknown event")
 	// ErrEventDisabled ...
 	ErrEventDisabled = errors.New("Event is disabled")
 
