@@ -89,15 +89,15 @@ func (m *Registry) Event(name string) Event {
 
 // New create new event
 func New(name string) Event {
-	return defaultManager.New(name)
+	return defaultRegistry.New(name)
 }
 
 // Register ...
 func Register(event Event) error {
-	return defaultManager.Register(event)
+	return defaultRegistry.Register(event)
 }
 
 // Get ...
 func Get(name string) Event {
-	return defaultManager.Event(name)
+	return defaultRegistry.Event(name)
 }
