@@ -99,5 +99,5 @@ func Get(name string) Event {
 
 // Default ...
 func Default(name string) Event {
-	return &eventImpl{name: name}
+	return &Local{name: name}
 }
