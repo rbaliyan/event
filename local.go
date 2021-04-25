@@ -15,11 +15,11 @@ var (
 	// MessageBusSize ...
 	MessageBusSize = 100
 
-	defaultManager *Manager
+	defaultRegistry *Registry
 )
 
 func init() {
-	defaultManager = NewManager()
+	defaultRegistry = NewRegistry()
 }
 
 // localImpl ...
@@ -36,6 +36,11 @@ func (e *localImpl) String() string {
 // Name ...
 func (e *localImpl) Name() string {
 	return e.name
+}
+
+// Default ...
+func Local(name string) Event {
+	return &localImpl{name: name}
 }
 
 // Publish ...

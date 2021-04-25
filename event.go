@@ -36,21 +36,21 @@ type Event interface {
 	Name() string
 }
 
-// Manager ...
-type Manager struct {
+// Registry ...
+type Registry struct {
 	events map[string]Event
 	sync.Mutex
 }
 
-// NewManager ...
-func NewManager() *Manager {
-	return &Manager{
+// NewRegistry ...
+func NewRegistry() *Registry {
+	return &Registry{
 		events: make(map[string]Event),
 	}
 }
 
 // Register ...
-func (m *Manager) Register(event Event) error {
+func (m *Registry) Register(event Event) error {
 	m.Lock()
 	defer m.Unlock()
 	name := event.Name()
@@ -61,8 +61,19 @@ func (m *Manager) Register(event Event) error {
 	return nil
 }
 
-// get ...
-func (m *Manager) get(name string) Event {
+func (m *Registry) New(name string) Event {
+	m.Lock()
+	defer m.Unlock()
+	if obj, ok := m.events[name]; ok {
+		return obj
+	}
+	event := Local(name)
+	m.events[name] = event
+	return event
+}
+
+// Get ...
+func (m *Registry) Get(name string) Event {
 	m.Lock()
 	defer m.Unlock()
 	if obj, ok := m.events[name]; ok {
@@ -72,19 +83,13 @@ func (m *Manager) get(name string) Event {
 }
 
 // Event ...
-func (m *Manager) Event(name string) Event {
-	return m.get(name)
+func (m *Registry) Event(name string) Event {
+	return m.Get(name)
 }
 
 // New create new event
 func New(name string) Event {
-	e := Get(name)
-	if e != nil {
-		return e
-	}
-	e = Default(name)
-	Register(e)
-	return Get(name)
+	return defaultManager.New(name)
 }
 
 // Register ...
@@ -95,9 +100,4 @@ func Register(event Event) error {
 // Get ...
 func Get(name string) Event {
 	return defaultManager.Event(name)
-}
-
-// Default ...
-func Default(name string) Event {
-	return &Local{name: name}
 }
