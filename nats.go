@@ -7,21 +7,21 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-type Nats struct {
+type natsImpl struct {
 	nc  *nats.Conn
 	sub *nats.Subscription
 	Local
 }
 
-func NatsEvent(name string, nc *nats.Conn) *Nats {
-	return &Nats{
+func Nats(name string, nc *nats.Conn) *natsImpl {
+	return &natsImpl{
 		nc:    nc,
 		Local: Local{name: name},
 	}
 }
 
 // Publish ...
-func (e *Nats) Publish(ctx context.Context, data Data) {
+func (e *natsImpl) Publish(ctx context.Context, data Data) {
 	e.Local.Publish(ctx, data)
 	d, err := Marshal(data)
 	if err == nil {
@@ -34,7 +34,7 @@ func (e *Nats) Publish(ctx context.Context, data Data) {
 }
 
 // Subscribe ...
-func (e *Nats) Subscribe(ctx context.Context, handler Handler) {
+func (e *natsImpl) Subscribe(ctx context.Context, handler Handler) {
 	e.Local.Subscribe(ctx, handler)
 	e.Lock()
 	defer e.Unlock()

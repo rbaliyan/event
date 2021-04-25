@@ -22,24 +22,24 @@ func init() {
 	defaultManager = NewManager()
 }
 
-// Local ...
-type Local struct {
+// localImpl ...
+type localImpl struct {
 	name     string
 	channels []chan Data
 	sync.RWMutex
 }
 
-func (e *Local) String() string {
+func (e *localImpl) String() string {
 	return e.name
 }
 
 // Name ...
-func (e *Local) Name() string {
+func (e *localImpl) Name() string {
 	return e.name
 }
 
 // Publish ...
-func (e *Local) Publish(ctx context.Context, data Data) {
+func (e *localImpl) Publish(ctx context.Context, data Data) {
 	e.RLock()
 	defer e.RUnlock()
 	for _, ch := range e.channels {
@@ -47,7 +47,7 @@ func (e *Local) Publish(ctx context.Context, data Data) {
 	}
 }
 
-func (e *Local) wrapRecover(handler Handler) Handler {
+func (e *localImpl) wrapRecover(handler Handler) Handler {
 	return func(ctx context.Context, e Event, data Data) {
 		defer func() {
 			_, _, l, _ := runtime.Caller(1)
@@ -63,7 +63,7 @@ func (e *Local) wrapRecover(handler Handler) Handler {
 }
 
 // Subscribe ...
-func (e *Local) Subscribe(ctx context.Context, handler Handler) {
+func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 	e.Lock()
 	defer e.Unlock()
 	handler = e.wrapRecover(handler)

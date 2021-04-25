@@ -7,21 +7,21 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
-type Redis struct {
+type redisImpl struct {
 	rc     redis.UniversalClient
 	pubsub *redis.PubSub
 	Local
 }
 
-func RedisEvent(name string, rc redis.UniversalClient) *Redis {
-	return &Redis{
+func Redis(name string, rc redis.UniversalClient) *redisImpl {
+	return &redisImpl{
 		rc:    rc,
 		Local: Local{name: name},
 	}
 }
 
 // Publish ...
-func (e *Redis) Publish(ctx context.Context, data Data) {
+func (e *redisImpl) Publish(ctx context.Context, data Data) {
 	e.Local.Publish(ctx, data)
 	d, err := Marshal(&rpcmsg{Data: data})
 	if err == nil {
@@ -34,7 +34,7 @@ func (e *Redis) Publish(ctx context.Context, data Data) {
 }
 
 // Subscribe ...
-func (e *Redis) Subscribe(ctx context.Context, handler Handler) {
+func (e *redisImpl) Subscribe(ctx context.Context, handler Handler) {
 	e.Local.Subscribe(ctx, handler)
 	e.Lock()
 	defer e.Unlock()
