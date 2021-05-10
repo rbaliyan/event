@@ -9,6 +9,10 @@ import (
 TODO: fix encoding
 */
 
+func init() {
+	gob.Register(&rpcmsg{})
+}
+
 type rpcmsg struct {
 	ID   string
 	Data Data
