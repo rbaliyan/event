@@ -25,7 +25,7 @@ func (e *redisImpl) Publish(ctx context.Context, data Data) {
 	e.localImpl.Publish(ctx, data)
 	d, err := Marshal(data)
 	if err == nil {
-		if err := e.rc.Publish(ctx, e.name, d); err != nil {
+		if err := e.rc.Publish(ctx, e.name, d).Err(); err != nil {
 			log.Printf("Publish msg error: %v", err)
 		}
 	} else {
