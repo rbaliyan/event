@@ -61,13 +61,17 @@ func (m *Registry) Register(event Event) error {
 	return nil
 }
 
-func (m *Registry) New(name string) Event {
+func (m *Registry) New(name string, fn ...func(string) Event) Event {
+	create := Local
+	if fn != nil {
+		create = fn[0]
+	}
 	m.Lock()
 	defer m.Unlock()
 	if obj, ok := m.events[name]; ok {
 		return obj
 	}
-	event := Local(name)
+	event := create(name)
 	m.events[name] = event
 	return event
 }
@@ -88,8 +92,8 @@ func (m *Registry) Event(name string) Event {
 }
 
 // New create new event
-func New(name string) Event {
-	return defaultRegistry.New(name)
+func New(name string, fn ...func(string) Event) Event {
+	return defaultRegistry.New(name, fn...)
 }
 
 // Register ...
