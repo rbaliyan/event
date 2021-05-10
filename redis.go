@@ -23,7 +23,7 @@ func Redis(name string, rc redis.UniversalClient) Event {
 // Publish ...
 func (e *redisImpl) Publish(ctx context.Context, data Data) {
 	e.localImpl.Publish(ctx, data)
-	d, err := Marshal(&rpcmsg{Data: data})
+	d, err := Marshal(data)
 	if err == nil {
 		if err := e.rc.Publish(ctx, e.name, d); err != nil {
 			log.Printf("Publish msg error: %v", err)
@@ -57,7 +57,6 @@ func (e *redisImpl) Subscribe(ctx context.Context, handler Handler) {
 					log.Printf("decode msg error: %v", err)
 				}
 				e.localImpl.Publish(ctx, data)
-
 			}
 		}
 	}()
