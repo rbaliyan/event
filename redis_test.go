@@ -27,14 +27,13 @@ type teststruct struct {
 	Msg string
 }
 
-func TestRemoteEvent(t *testing.T) {
+func TestRedisRemoteEvent(t *testing.T) {
 	r1 := redis.NewUniversalClient(
 		&redis.UniversalOptions{
 			Addrs: []string{mr.Addr()},
 		},
 	)
 	ev1 := Redis("test/event", r1)
-	//reg := NewRegistry("test1")
 	ev2 := Redis("test/event", r1)
 	ch := make(chan struct{})
 	ev2.Subscribe(context.TODO(), func(ctx context.Context, e Event, data Data) {
@@ -42,5 +41,4 @@ func TestRemoteEvent(t *testing.T) {
 	})
 	ev1.Publish(context.TODO(), &teststruct{"test"})
 	<-ch
-
 }

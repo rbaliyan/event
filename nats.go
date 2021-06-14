@@ -2,7 +2,6 @@ package event
 
 import (
 	"context"
-	"log"
 
 	"github.com/nats-io/nats.go"
 )
@@ -26,26 +25,34 @@ func (e *natsImpl) Publish(ctx context.Context, data Data) {
 	d, err := Marshal(data)
 	if err == nil {
 		if err := e.nc.Publish(e.name, d); err != nil {
-			log.Printf("Publish msg error: %v", err)
+			logger.Printf("Publish msg error: %v", err)
 		}
 	} else {
-		log.Printf("encode msg error: %v", err)
+		logger.Printf("encode msg error: %v", err)
 	}
 }
 
 // Subscribe ...
 func (e *natsImpl) Subscribe(ctx context.Context, handler Handler) {
+	var err error
 	e.localImpl.Subscribe(ctx, handler)
 	e.Lock()
 	defer e.Unlock()
 	if e.sub != nil {
 		return
 	}
-	e.sub, _ = e.nc.Subscribe(e.name, func(msg *nats.Msg) {
+	if e.nc == nil {
+		logger.Printf("Error!!!, nats connection null")
+		return
+	}
+	e.sub, err = e.nc.Subscribe(e.name, func(msg *nats.Msg) {
 		data, err := Unmarshal(msg.Data)
 		if err != nil {
-			log.Printf("decode msg error: %v", err)
+			logger.Printf("decode msg error: %v", err)
 		}
 		e.localImpl.Publish(ctx, data)
 	})
+	if err != nil {
+		logger.Printf("Error on nc subscribe: %v", err)
+	}
 }

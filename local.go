@@ -6,11 +6,15 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
 	// DefaultNamespaceSep ...
 	DefaultNamespaceSep = "/"
+
+	// DefaultPublishTimeout default publish timeout in milliseconds if no timeout specified
+	DefaultPublishTimeout = 1000
 
 	// MessageBusSize ...
 	MessageBusSize = 100
@@ -45,10 +49,21 @@ func Local(name string) Event {
 
 // Publish ...
 func (e *localImpl) Publish(ctx context.Context, data Data) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Millisecond*time.Duration(DefaultPublishTimeout))
+		defer cancel()
+	}
 	e.RLock()
 	defer e.RUnlock()
 	for _, ch := range e.channels {
-		ch <- data
+		if ch == nil {
+			continue
+		}
+		select {
+		case ch <- data:
+		case <-ctx.Done():
+		}
 	}
 }
 
@@ -73,17 +88,39 @@ func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 	defer e.Unlock()
 	handler = e.wrapRecover(handler)
 	ch := make(chan Data, MessageBusSize)
-	e.channels = append(e.channels, ch)
+	index := len(e.channels)
+	for i := 0; i < len(e.channels); i++ {
+		if e.channels[i] == nil {
+			index = i
+			e.channels[i] = ch
+		}
+	}
+	if index >= len(e.channels) {
+		e.channels = append(e.channels, ch)
+	}
+	closed := false
 	go func() {
+		defer func() {
+			e.Lock()
+			if e.channels[index] == ch {
+				e.channels[index] = nil
+			}
+			e.Unlock()
+			if !closed {
+				close(ch)
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case data, ok := <-ch:
 				if !ok {
+					closed = true
 					return
 				}
-				handler(ctx, e, data)
+				// Call handler
+				go handler(ctx, e, data)
 			}
 		}
 	}()
