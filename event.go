@@ -3,9 +3,13 @@ package event
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sync"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -23,33 +27,33 @@ func init() {
 	logger = log.New(os.Stdout, "Event>", log.LstdFlags|log.Llongfile)
 }
 
-// Data ...
+// Data event data
 type Data interface{}
 
-// Handler ...
+// Handler event handler
 type Handler func(context.Context, Event, Data)
 
-// Event ...
+// Event interface
 type Event interface {
 	Publish(context.Context, Data)
 	Subscribe(context.Context, Handler)
 	Name() string
 }
 
-// Registry ...
+// Registry event registry
 type Registry struct {
 	events map[string]Event
 	sync.Mutex
 }
 
-// NewRegistry ...
+// NewRegistry create a new registry
 func NewRegistry() *Registry {
 	return &Registry{
 		events: make(map[string]Event),
 	}
 }
 
-// Register ...
+// Register event by name in registry
 func (m *Registry) Register(event Event) error {
 	m.Lock()
 	defer m.Unlock()
@@ -61,6 +65,7 @@ func (m *Registry) Register(event Event) error {
 	return nil
 }
 
+// Get a new event registered with registry
 func (m *Registry) New(name string, fn ...func(string) Event) Event {
 	create := Local
 	if fn != nil {
@@ -76,7 +81,7 @@ func (m *Registry) New(name string, fn ...func(string) Event) Event {
 	return event
 }
 
-// Get ...
+// Get event by name
 func (m *Registry) Get(name string) Event {
 	m.Lock()
 	defer m.Unlock()
@@ -86,7 +91,7 @@ func (m *Registry) Get(name string) Event {
 	return nil
 }
 
-// Event ...
+// Event get event by name
 func (m *Registry) Event(name string) Event {
 	return m.Get(name)
 }
@@ -96,12 +101,44 @@ func New(name string, fn ...func(string) Event) Event {
 	return defaultRegistry.New(name, fn...)
 }
 
-// Register ...
+// Register event to default registry
 func Register(event Event) error {
 	return defaultRegistry.Register(event)
 }
 
-// Get ...
+// Get event by name from default registry
 func Get(name string) Event {
 	return defaultRegistry.Event(name)
+}
+
+// AsyncHandler convert event handler to async
+func AsyncHandler(handler Handler, copyContextFns ...func(to, from context.Context) context.Context) Handler {
+	return func(ctx context.Context, ev Event, data Data) {
+		// Call handler with go routine
+		go func() {
+			// Create a new copy of context
+			attrs := AttributesFromContext(ctx)
+			spanCtx := trace.SpanContextFromContext(ctx)
+
+			// Create a new context
+			newCtx := NewContext(ctx)
+			for _, fn := range copyContextFns {
+				// Copy other data
+				newCtx = fn(newCtx, ctx)
+			}
+			// enable tracing
+			if tracer := otel.Tracer("event"); tracer != nil {
+				var span trace.Span
+				newCtx, span = tracer.Start(newCtx, fmt.Sprintf("%s.subscribe.async", ev.Name()),
+					trace.WithAttributes(attrs...),
+					trace.WithSpanKind(trace.SpanKindInternal),
+					trace.WithLinks(trace.Link{
+						SpanContext: spanCtx,
+						Attributes:  attrs,
+					}))
+				defer span.End()
+			}
+			handler(newCtx, ev, data)
+		}()
+	}
 }
