@@ -12,6 +12,7 @@ type natsImpl struct {
 	localImpl
 }
 
+// Nats events
 func Nats(name string, nc *nats.Conn) Event {
 	return &natsImpl{
 		nc:        nc,
@@ -21,8 +22,19 @@ func Nats(name string, nc *nats.Conn) Event {
 
 // Publish ...
 func (e *natsImpl) Publish(ctx context.Context, data Data) {
+	msg := &RemoteMsg{Data: data, Source: defaultSource}
+	// Set event id if not already set
+	if msg.ID = EventIDFromContext(ctx); msg.ID == "" {
+		msg.ID = NewID()
+		ctx = WithEventID(ctx, msg.ID)
+	}
+	// Set sender id
+	if msg.Source = SourceFromContext(ctx); msg.Source == "" {
+		msg.Source = defaultSource
+		ctx = WithSource(ctx, msg.Source)
+	}
 	e.localImpl.Publish(ctx, data)
-	d, err := Marshal(data)
+	d, err := Marshal(msg)
 	if err == nil {
 		if err := e.nc.Publish(e.name, d); err != nil {
 			logger.Printf("Publish msg error: %v", err)
@@ -50,7 +62,8 @@ func (e *natsImpl) Subscribe(ctx context.Context, handler Handler) {
 		if err != nil {
 			logger.Printf("decode msg error: %v", err)
 		}
-		e.localImpl.Publish(ctx, data)
+		// Publish with new context
+		e.localImpl.Publish(WithSource(WithEventID(ctx, data.ID), data.Source), data)
 	})
 	if err != nil {
 		logger.Printf("Error on nc subscribe: %v", err)

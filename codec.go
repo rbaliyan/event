@@ -14,25 +14,27 @@ func init() {
 }
 
 type RemoteMsg struct {
-	Data Data
+	ID     string
+	Source string
+	Data   Data
 }
 
 // Unmarshal parses the encoded data and stores the result
 // in the value pointed to by v
-func Unmarshal(data []byte) (interface{}, error) {
+func Unmarshal(data []byte) (*RemoteMsg, error) {
 	var got RemoteMsg
 	dec := gob.NewDecoder(bytes.NewBuffer(data))
 	if err := dec.Decode(&got); err != nil {
 		return nil, err
 	}
-	return got.Data, nil
+	return &got, nil
 }
 
 // Marshal encodes v and returns encoded data
-func Marshal(v interface{}) ([]byte, error) {
+func Marshal(v *RemoteMsg) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	enc := gob.NewEncoder(buf)
-	err := enc.Encode(&RemoteMsg{Data: v})
+	err := enc.Encode(v)
 	if err != nil {
 		return nil, err
 	}

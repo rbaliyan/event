@@ -29,18 +29,18 @@ var (
 	// default registry
 	defaultRegistry *Registry
 
-	defaultSenderID string
+	defaultSource string
 )
 
 func init() {
 	defaultRegistry = NewRegistry()
-	defaultSenderID = NewID()
+	defaultSource = NewID()
 }
 
 // localDataWrapper ...
 type localDataWrapper struct {
 	id     string
-	sender string
+	source string
 	data   Data
 	span   trace.Span
 	attrs  []attribute.KeyValue
@@ -86,8 +86,8 @@ func (e *localImpl) Publish(ctx context.Context, eventData Data) {
 		data.id = NewID()
 	}
 	// Set sender id
-	if data.sender = SenderFromContext(ctx); data.sender == "" {
-		data.sender = defaultSenderID
+	if data.source = SourceFromContext(ctx); data.source == "" {
+		data.source = defaultSource
 	}
 	// Add tracing
 	if tracer := otel.Tracer("event"); tracer != nil {
@@ -179,9 +179,9 @@ func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 				var span trace.Span
 				// Update context values
 				ctx = WithSubscriptionID(
-					WithSender(
+					WithSource(
 						WithEventID(
-							WithEventName(ctx, e.name), data.id), data.sender), subID)
+							WithEventName(ctx, e.name), data.id), data.source), subID)
 				if tracer := otel.Tracer("event"); tracer != nil && data.span != nil {
 					attrs := make([]attribute.KeyValue, 0, len(data.attrs)+1)
 					copy(attrs, data.attrs)

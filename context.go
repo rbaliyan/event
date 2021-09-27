@@ -11,8 +11,8 @@ import (
 var (
 	eventNamecontextKey      contextKey = "event.name"
 	eventIDcontextKey        contextKey = "event.id"
-	subscriptionIDcontextKey contextKey = "subscription.id"
-	sendercontextKey         contextKey = "sender"
+	subscriptionIDcontextKey contextKey = "event.subscription.id"
+	sourcecontextKey         contextKey = "event.source"
 )
 
 // contextKey
@@ -30,9 +30,9 @@ func EventNameFromContext(ctx context.Context) string {
 	return s
 }
 
-// SenderFromContext get event id stored in context
-func SenderFromContext(ctx context.Context) string {
-	s, _ := ctx.Value(sendercontextKey).(string)
+// SourceFromContext get event id stored in context
+func SourceFromContext(ctx context.Context) string {
+	s, _ := ctx.Value(sourcecontextKey).(string)
 	return s
 }
 
@@ -52,9 +52,9 @@ func WithEventID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, eventIDcontextKey, id)
 }
 
-// WithSender generate a context with event id
-func WithSender(ctx context.Context, sender string) context.Context {
-	return context.WithValue(ctx, sendercontextKey, sender)
+// WithSource generate a context with event id
+func WithSource(ctx context.Context, s string) context.Context {
+	return context.WithValue(ctx, sourcecontextKey, s)
 }
 
 // WithSender generate a context with event id
@@ -70,11 +70,11 @@ func ContextWithBaggageFromContext(to, from context.Context) context.Context {
 // ContextWithEventFromContext copy context baggage
 func ContextWithEventFromContext(to, from context.Context) context.Context {
 	return WithSubscriptionID(
-		WithSender(
+		WithSource(
 			WithEventID(
 				WithEventName(to, EventNameFromContext(from)),
 				EventIDFromContext(from)),
-			SenderFromContext(from)),
+			SourceFromContext(from)),
 		SubscriptionIDFromContext(from))
 }
 

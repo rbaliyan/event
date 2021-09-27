@@ -12,6 +12,7 @@ type redisImpl struct {
 	localImpl
 }
 
+// Redis events
 func Redis(name string, rc redis.UniversalClient) Event {
 	return &redisImpl{
 		rc:        rc,
@@ -21,8 +22,19 @@ func Redis(name string, rc redis.UniversalClient) Event {
 
 // Publish ...
 func (e *redisImpl) Publish(ctx context.Context, data Data) {
+	msg := &RemoteMsg{Data: data, Source: defaultSource}
+	// Set event id if not already set
+	if msg.ID = EventIDFromContext(ctx); msg.ID == "" {
+		msg.ID = NewID()
+		ctx = WithEventID(ctx, msg.ID)
+	}
+	// Set sender id
+	if msg.Source = SourceFromContext(ctx); msg.Source == "" {
+		msg.Source = defaultSource
+		ctx = WithSource(ctx, msg.Source)
+	}
 	e.localImpl.Publish(ctx, data)
-	d, err := Marshal(data)
+	d, err := Marshal(msg)
 	if err == nil {
 		if err := e.rc.Publish(ctx, e.name, d).Err(); err != nil {
 			logger.Printf("Publish msg error: %v", err)
@@ -44,7 +56,7 @@ func (e *redisImpl) Subscribe(ctx context.Context, handler Handler) {
 		logger.Printf("Error!!!, redis connection null")
 		return
 	}
-	e.pubsub = e.rc.Subscribe(context.Background(), e.name)
+	e.pubsub = e.rc.Subscribe(ctx, e.name)
 	go func() {
 		defer func() {
 			e.Lock()
@@ -60,7 +72,8 @@ func (e *redisImpl) Subscribe(ctx context.Context, handler Handler) {
 			if err != nil {
 				logger.Printf("decode msg error: %v", err)
 			}
-			e.localImpl.Publish(ctx, data)
+			// Publish with new context
+			e.localImpl.Publish(WithSource(WithEventID(ctx, data.ID), data.Source), data)
 		}
 	}()
 }
