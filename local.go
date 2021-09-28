@@ -74,19 +74,35 @@ func (e *localImpl) Subscribers() int64 {
 	return e.size
 }
 
+func strip(s string) string {
+	var result strings.Builder
+	result.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if ('a' <= b && b <= 'z') ||
+			('A' <= b && b <= 'Z') ||
+			('0' <= b && b <= '9') {
+			result.WriteByte(b)
+		} else {
+			result.WriteByte(byte('_'))
+		}
+	}
+	return result.String()
+}
+
 // Default ...
 func Local(name string) Event {
 	return &localImpl{
 		name: name,
 		published: promauto.NewCounter(prometheus.CounterOpts{
 			Namespace: "event",
-			Subsystem: name,
+			Subsystem: strip(name),
 			Name:      "published",
 			Help:      "Total messages published",
 		}),
 		handled: promauto.NewCounter(prometheus.CounterOpts{
 			Namespace: "event",
-			Subsystem: name,
+			Subsystem: strip(name),
 			Name:      "handled",
 			Help:      "Total messages handled by subscribers",
 		}),
