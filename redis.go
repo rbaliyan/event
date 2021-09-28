@@ -7,15 +7,17 @@ import (
 )
 
 type redisImpl struct {
-	rc     redis.UniversalClient
-	pubsub *redis.PubSub
+	rc      redis.UniversalClient
+	pubsub  *redis.PubSub
+	onError func(Event, error)
 	localImpl
 }
 
 // Redis events
-func Redis(name string, rc redis.UniversalClient) Event {
+func Redis(name string, rc redis.UniversalClient, onError func(Event, error)) Event {
 	return &redisImpl{
 		rc:        rc,
+		onError:   onError,
 		localImpl: localImpl{name: name},
 	}
 }
@@ -38,9 +40,15 @@ func (e *redisImpl) Publish(ctx context.Context, data Data) {
 	if err == nil {
 		if err := e.rc.Publish(ctx, e.name, d).Err(); err != nil {
 			logger.Printf("Publish msg error: %v", err)
+			if e.onError != nil {
+				e.onError(e, err)
+			}
 		}
 	} else {
 		logger.Printf("encode msg error: %v", err)
+		if e.onError != nil {
+			e.onError(e, err)
+		}
 	}
 }
 
@@ -71,6 +79,11 @@ func (e *redisImpl) Subscribe(ctx context.Context, handler Handler) {
 			data, err := Unmarshal([]byte(msg.Payload))
 			if err != nil {
 				logger.Printf("decode msg error: %v", err)
+				if e.onError != nil {
+					e.onError(e, err)
+				}
+			} else if e.onError != nil {
+				e.onError(e, err)
 			}
 			// Publish with new context
 			e.localImpl.Publish(WithSource(WithEventID(ctx, data.ID), data.Source), data)

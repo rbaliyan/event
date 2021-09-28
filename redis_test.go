@@ -33,8 +33,8 @@ func TestRedisRemoteEvent(t *testing.T) {
 			Addrs: []string{mr.Addr()},
 		},
 	)
-	ev1 := Redis("test/event", r1)
-	ev2 := Redis("test/event", r1)
+	ev1 := Redis("test/event", r1, nil)
+	ev2 := Redis("test/event", r1, nil)
 	ch := make(chan struct{})
 	ev2.Subscribe(context.TODO(), func(ctx context.Context, e Event, data Data) {
 		ch <- struct{}{}

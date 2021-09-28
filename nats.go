@@ -7,15 +7,17 @@ import (
 )
 
 type natsImpl struct {
-	nc  *nats.Conn
-	sub *nats.Subscription
+	nc      *nats.Conn
+	sub     *nats.Subscription
+	onError func(Event, error)
 	localImpl
 }
 
 // Nats events
-func Nats(name string, nc *nats.Conn) Event {
+func Nats(name string, nc *nats.Conn, onError func(Event, error)) Event {
 	return &natsImpl{
 		nc:        nc,
+		onError:   onError,
 		localImpl: localImpl{name: name},
 	}
 }
@@ -38,9 +40,15 @@ func (e *natsImpl) Publish(ctx context.Context, data Data) {
 	if err == nil {
 		if err := e.nc.Publish(e.name, d); err != nil {
 			logger.Printf("Publish msg error: %v", err)
+			if e.onError != nil {
+				e.onError(e, err)
+			}
 		}
 	} else {
 		logger.Printf("encode msg error: %v", err)
+		if e.onError != nil {
+			e.onError(e, err)
+		}
 	}
 }
 
@@ -61,6 +69,11 @@ func (e *natsImpl) Subscribe(ctx context.Context, handler Handler) {
 		data, err := Unmarshal(msg.Data)
 		if err != nil {
 			logger.Printf("decode msg error: %v", err)
+			if e.onError != nil {
+				e.onError(e, err)
+			}
+		} else if e.onError != nil {
+			e.onError(e, err)
 		}
 		// Publish with new context
 		e.localImpl.Publish(WithSource(WithEventID(ctx, data.ID), data.Source), data)

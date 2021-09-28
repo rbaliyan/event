@@ -40,8 +40,8 @@ func TestNatsRemoteEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error: %v", err)
 	}
-	ev1 := Nats("test/event", nc)
-	ev2 := Nats("test/event", nc)
+	ev1 := Nats("test/event", nc, nil)
+	ev2 := Nats("test/event", nc, nil)
 	ch := make(chan struct{})
 	ev2.Subscribe(context.TODO(), func(ctx context.Context, e Event, data Data) {
 		ch <- struct{}{}
