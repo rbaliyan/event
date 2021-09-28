@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 type redisImpl struct {
@@ -16,9 +18,23 @@ type redisImpl struct {
 // Redis events
 func Redis(name string, rc redis.UniversalClient, onError func(Event, error)) Event {
 	return &redisImpl{
-		rc:        rc,
-		onError:   onError,
-		localImpl: localImpl{name: name},
+		rc:      rc,
+		onError: onError,
+		localImpl: localImpl{
+			name: name,
+			published: promauto.NewCounter(prometheus.CounterOpts{
+				Namespace: "event",
+				Subsystem: strip(name),
+				Name:      "published",
+				Help:      "Total messages published",
+			}),
+			handled: promauto.NewCounter(prometheus.CounterOpts{
+				Namespace: "event",
+				Subsystem: strip(name),
+				Name:      "handled",
+				Help:      "Total messages handled by subscribers",
+			}),
+		},
 	}
 }
 

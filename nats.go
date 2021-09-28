@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/nats-io/nats.go"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 type natsImpl struct {
@@ -16,9 +18,22 @@ type natsImpl struct {
 // Nats events
 func Nats(name string, nc *nats.Conn, onError func(Event, error)) Event {
 	return &natsImpl{
-		nc:        nc,
-		onError:   onError,
-		localImpl: localImpl{name: name},
+		nc:      nc,
+		onError: onError,
+		localImpl: localImpl{
+			name: name,
+			published: promauto.NewCounter(prometheus.CounterOpts{
+				Namespace: "event",
+				Subsystem: strip(name),
+				Name:      "published",
+				Help:      "Total messages published",
+			}),
+			handled: promauto.NewCounter(prometheus.CounterOpts{
+				Namespace: "event",
+				Subsystem: strip(name),
+				Name:      "handled",
+				Help:      "Total messages handled by subscribers",
+			})},
 	}
 }
 
