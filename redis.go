@@ -47,8 +47,8 @@ func (e *redisImpl) Publish(ctx context.Context, data Data) {
 // Subscribe ...
 func (e *redisImpl) Subscribe(ctx context.Context, handler Handler) {
 	e.localImpl.Subscribe(ctx, handler)
-	e.Lock()
-	defer e.Unlock()
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
 	if e.pubsub != nil {
 		return
 	}
@@ -59,12 +59,12 @@ func (e *redisImpl) Subscribe(ctx context.Context, handler Handler) {
 	e.pubsub = e.rc.Subscribe(ctx, e.name)
 	go func() {
 		defer func() {
-			e.Lock()
+			e.mutex.Lock()
 			if e.pubsub != nil {
 				e.pubsub.Close()
 				e.pubsub = nil
 			}
-			e.Unlock()
+			e.mutex.Unlock()
 		}()
 		ch := e.pubsub.Channel()
 		for msg := range ch {

@@ -14,6 +14,9 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 var (
@@ -48,9 +51,12 @@ type localDataWrapper struct {
 
 // localImpl ...
 type localImpl struct {
-	name     string
-	channels []chan *localDataWrapper
-	sync.RWMutex
+	published prometheus.Counter
+	handled   prometheus.Counter
+	name      string
+	size      int64
+	channels  []chan *localDataWrapper
+	mutex     sync.RWMutex
 }
 
 func (e *localImpl) String() string {
@@ -62,9 +68,29 @@ func (e *localImpl) Name() string {
 	return e.name
 }
 
+func (e *localImpl) Subscribers() int64 {
+	e.mutex.RLock()
+	defer e.mutex.RUnlock()
+	return e.size
+}
+
 // Default ...
 func Local(name string) Event {
-	return &localImpl{name: name}
+	return &localImpl{
+		name: name,
+		published: promauto.NewCounter(prometheus.CounterOpts{
+			Namespace: "event",
+			Subsystem: name,
+			Name:      "published",
+			Help:      "Total messages published",
+		}),
+		handled: promauto.NewCounter(prometheus.CounterOpts{
+			Namespace: "event",
+			Subsystem: name,
+			Name:      "handled",
+			Help:      "Total messages handled by subscribers",
+		}),
+	}
 }
 
 // NewID generate new event id
@@ -81,6 +107,9 @@ func (e *localImpl) Publish(ctx context.Context, eventData Data) {
 	data := &localDataWrapper{
 		data: eventData,
 	}
+	// increment counter
+	e.published.Inc()
+
 	// Set event id if not already set
 	if data.id = EventIDFromContext(ctx); data.id == "" {
 		data.id = NewID()
@@ -106,8 +135,8 @@ func (e *localImpl) Publish(ctx context.Context, eventData Data) {
 	}
 
 	// Send data to all channels
-	e.RLock()
-	defer e.RUnlock()
+	e.mutex.RLock()
+	defer e.mutex.RUnlock()
 	for _, ch := range e.channels {
 		if ch == nil {
 			continue
@@ -140,17 +169,20 @@ func (e *localImpl) wrapRecover(handler Handler) Handler {
 func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 	subID := NewID()
 	subIDAttribute := attribute.String("subscription.id", subID)
-	e.Lock()
-	defer e.Unlock()
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.size += 1
 	handler = e.wrapRecover(handler)
 	ch := make(chan *localDataWrapper, MessageBusSize)
 	index := len(e.channels)
+	// try find unsued slot
 	for i := 0; i < len(e.channels); i++ {
 		if e.channels[i] == nil {
 			index = i
 			e.channels[i] = ch
 		}
 	}
+	// append channel
 	if index >= len(e.channels) {
 		e.channels = append(e.channels, ch)
 	}
@@ -158,11 +190,12 @@ func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 	go func() {
 		defer func() {
 			// close channel and remove from list
-			e.Lock()
+			e.mutex.Lock()
 			if e.channels[index] == ch {
 				e.channels[index] = nil
 			}
-			e.Unlock()
+			e.size -= 1
+			e.mutex.Unlock()
 			if !closed {
 				close(ch)
 			}
@@ -182,6 +215,7 @@ func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 					WithSource(
 						WithEventID(
 							WithEventName(ctx, e.name), data.id), data.source), subID)
+				// Tracing
 				if tracer := otel.Tracer("event"); tracer != nil && data.span != nil {
 					attrs := make([]attribute.KeyValue, 0, len(data.attrs)+1)
 					copy(attrs, data.attrs)
@@ -199,6 +233,8 @@ func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 				if span != nil {
 					span.End()
 				}
+				// update counter
+				e.handled.Inc()
 			}
 		}
 	}()

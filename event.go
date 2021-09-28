@@ -38,6 +38,7 @@ type Event interface {
 	Publish(context.Context, Data)
 	Subscribe(context.Context, Handler)
 	Name() string
+	Subscribers() int64
 }
 
 // Registry event registry

@@ -48,8 +48,8 @@ func (e *natsImpl) Publish(ctx context.Context, data Data) {
 func (e *natsImpl) Subscribe(ctx context.Context, handler Handler) {
 	var err error
 	e.localImpl.Subscribe(ctx, handler)
-	e.Lock()
-	defer e.Unlock()
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
 	if e.sub != nil {
 		return
 	}
