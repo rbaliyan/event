@@ -102,7 +102,7 @@ func (e *redisImpl) Subscribe(ctx context.Context, handler Handler) {
 				e.onError(e, err)
 			}
 			// Publish with new context
-			e.localImpl.Publish(WithSource(WithEventID(ctx, data.ID), data.Source), data)
+			e.localImpl.Publish(WithSource(WithEventID(ctx, data.ID), data.Source), data.Data)
 		}
 	}()
 }
