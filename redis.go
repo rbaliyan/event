@@ -42,14 +42,14 @@ func Redis(name string, rc redis.UniversalClient, onError func(Event, error)) Ev
 func (e *redisImpl) Publish(ctx context.Context, data Data) {
 	msg := &RemoteMsg{Data: data, Source: defaultSource}
 	// Set event id if not already set
-	if msg.ID = EventIDFromContext(ctx); msg.ID == "" {
+	if msg.ID = ContextEventID(ctx); msg.ID == "" {
 		msg.ID = NewID()
-		ctx = WithEventID(ctx, msg.ID)
+		ctx = ContextWithEventID(ctx, msg.ID)
 	}
 	// Set sender id
-	if msg.Source = SourceFromContext(ctx); msg.Source == "" {
+	if msg.Source = ContextSource(ctx); msg.Source == "" {
 		msg.Source = defaultSource
-		ctx = WithSource(ctx, msg.Source)
+		ctx = ContextWithSource(ctx, msg.Source)
 	}
 	e.localImpl.Publish(ctx, data)
 	d, err := Marshal(msg)
@@ -102,7 +102,13 @@ func (e *redisImpl) Subscribe(ctx context.Context, handler Handler) {
 				e.onError(e, err)
 			}
 			// Publish with new context
-			e.localImpl.Publish(WithSource(WithEventID(ctx, data.ID), data.Source), data.Data)
+			e.localImpl.Publish(
+				ContextWithMetadata(
+					ContextWithSource(
+						ContextWithEventID(ctx, data.ID),
+						data.Source),
+					data.Metadata),
+				data.Data)
 		}
 	}()
 }

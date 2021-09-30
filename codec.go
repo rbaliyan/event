@@ -14,9 +14,10 @@ func init() {
 }
 
 type RemoteMsg struct {
-	ID     string
-	Source string
-	Data   Data
+	ID       string
+	Source   string
+	Data     Data
+	Metadata []byte
 }
 
 // Unmarshal parses the encoded data and stores the result

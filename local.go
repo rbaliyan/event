@@ -127,11 +127,11 @@ func (e *localImpl) Publish(ctx context.Context, eventData Data) {
 	e.published.Inc()
 
 	// Set event id if not already set
-	if data.id = EventIDFromContext(ctx); data.id == "" {
+	if data.id = ContextEventID(ctx); data.id == "" {
 		data.id = NewID()
 	}
 	// Set sender id
-	if data.source = SourceFromContext(ctx); data.source == "" {
+	if data.source = ContextSource(ctx); data.source == "" {
 		data.source = defaultSource
 	}
 	// Add tracing
@@ -227,10 +227,10 @@ func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 				}
 				var span trace.Span
 				// Update context values
-				ctx = WithSubscriptionIDContext(
-					WithSource(
-						WithEventID(
-							WithEventName(ctx, e.name), data.id), data.source), subID)
+				ctx = ContextWithSubscriptionID(
+					ContextWithSource(
+						ContextWithEventID(
+							ContextWithName(ctx, e.name), data.id), data.source), subID)
 				// Tracing
 				if tracer := otel.Tracer("event"); tracer != nil && data.span != nil {
 					attrs := make([]attribute.KeyValue, 0, len(data.attrs)+1)
