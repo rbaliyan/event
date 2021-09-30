@@ -136,7 +136,7 @@ func (e *localImpl) Publish(ctx context.Context, eventData Data) {
 	}
 	// Add tracing
 	if tracer := otel.Tracer("event"); tracer != nil {
-		data.attrs = AttributesFromContext(ctx)
+		data.attrs = ContextAttributes(ctx)
 		data.attrs = append(data.attrs, attribute.String("event.id", data.id))
 		ctx, data.span = tracer.Start(ctx, fmt.Sprintf("%s.publish", e.name),
 			trace.WithAttributes(data.attrs...),
@@ -227,7 +227,7 @@ func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 				}
 				var span trace.Span
 				// Update context values
-				ctx = WithSubscriptionID(
+				ctx = WithSubscriptionIDContext(
 					WithSource(
 						WithEventID(
 							WithEventName(ctx, e.name), data.id), data.source), subID)

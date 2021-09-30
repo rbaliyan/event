@@ -30,6 +30,9 @@ func init() {
 // Data event data
 type Data interface{}
 
+// Metadata metadata
+type Metadata []byte
+
 // Handler event handler
 type Handler func(context.Context, Event, Data)
 
@@ -52,6 +55,16 @@ func NewRegistry() *Registry {
 	return &Registry{
 		events: make(map[string]Event),
 	}
+}
+
+// Clone  metadata
+func (m Metadata) Clone() Metadata {
+	if len(m) == 0 {
+		return nil
+	}
+	m1 := make([]byte, 0, len(m))
+	copy(m1, m)
+	return m1
 }
 
 // Register event by name in registry
@@ -118,7 +131,7 @@ func AsyncHandler(handler Handler, copyContextFns ...func(to, from context.Conte
 		// Call handler with go routine
 		go func() {
 			// Create a new copy of context
-			attrs := AttributesFromContext(ctx)
+			attrs := ContextAttributes(ctx)
 			spanCtx := trace.SpanContextFromContext(ctx)
 
 			// Create a new context

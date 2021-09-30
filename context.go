@@ -13,69 +13,91 @@ var (
 	eventIDcontextKey        contextKey = "event.id"
 	subscriptionIDcontextKey contextKey = "event.subscription.id"
 	sourcecontextKey         contextKey = "event.source"
+	metadatacontextKey       contextKey = "event.metadata"
 )
 
 // contextKey
 type contextKey string
 
-// EventIDFromContext get event id stored in context
-func EventIDFromContext(ctx context.Context) string {
+// ContextEventID get event id stored in context
+func ContextEventID(ctx context.Context) string {
 	s, _ := ctx.Value(eventIDcontextKey).(string)
 	return s
 }
 
-// EventNameFromContext get event id stored in context
-func EventNameFromContext(ctx context.Context) string {
+// ContextName get event id stored in context
+func ContextName(ctx context.Context) string {
 	s, _ := ctx.Value(eventNamecontextKey).(string)
 	return s
 }
 
-// SourceFromContext get event id stored in context
-func SourceFromContext(ctx context.Context) string {
+// ContextSource get event id stored in context
+func ContextSource(ctx context.Context) string {
 	s, _ := ctx.Value(sourcecontextKey).(string)
 	return s
 }
 
+// ContextMetadata get event id stored in context
+func ContextMetadata(ctx context.Context) Metadata {
+	s, _ := ctx.Value(metadatacontextKey).(Metadata)
+	return s
+}
+
 // SenderFromContext get event id stored in context
-func SubscriptionIDFromContext(ctx context.Context) string {
+func ContextSubscriptionID(ctx context.Context) string {
 	s, _ := ctx.Value(subscriptionIDcontextKey).(string)
 	return s
 }
 
-// WithEventName generate a context with event id
-func WithEventName(ctx context.Context, id string) context.Context {
+// ContextWithName generate a context with event id
+func ContextWithName(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, eventNamecontextKey, id)
 }
 
-// WithEventID generate a context with event id
-func WithEventID(ctx context.Context, id string) context.Context {
+// ContextWithEventID generate a context with event id
+func ContextWithEventID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, eventIDcontextKey, id)
 }
 
-// WithSource generate a context with event id
-func WithSource(ctx context.Context, s string) context.Context {
+// ContextWithSource generate a context with event id
+func ContextWithSource(ctx context.Context, s string) context.Context {
 	return context.WithValue(ctx, sourcecontextKey, s)
 }
 
-// WithSender generate a context with event id
-func WithSubscriptionID(ctx context.Context, subID string) context.Context {
+// ContextWithMetadata generate a context with event id
+func ContextWithMetadata(ctx context.Context, m Metadata) context.Context {
+	if m == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, metadatacontextKey, m)
+}
+
+// ContextWithSubscriptionID generate a context with event id
+func ContextWithSubscriptionID(ctx context.Context, subID string) context.Context {
 	return context.WithValue(ctx, subscriptionIDcontextKey, subID)
 }
 
 // ContextWithBaggageFromContext copy context baggage
 func ContextWithBaggageFromContext(to, from context.Context) context.Context {
-	return baggage.ContextWithBaggage(to, baggage.FromContext(from))
+	// Convert to string
+	bag, err := baggage.Parse(baggage.FromContext(from).String())
+	if err != nil {
+		return to
+	}
+	return baggage.ContextWithBaggage(to, bag)
 }
 
 // ContextWithEventFromContext copy context baggage
 func ContextWithEventFromContext(to, from context.Context) context.Context {
-	return WithSubscriptionID(
-		WithSource(
-			WithEventID(
-				WithEventName(to, EventNameFromContext(from)),
-				EventIDFromContext(from)),
-			SourceFromContext(from)),
-		SubscriptionIDFromContext(from))
+	return ContextWithMetadata(
+		ContextWithSubscriptionID(
+			ContextWithSource(
+				ContextWithEventID(
+					ContextWithName(to, ContextName(from)),
+					ContextEventID(from)),
+				ContextSource(from)),
+			ContextSubscriptionID(from)),
+		ContextMetadata(from))
 }
 
 // NewContext copy context data to a new context
@@ -99,7 +121,7 @@ func AttributesFromBaggage(bag baggage.Baggage) []attribute.KeyValue {
 	return attrs
 }
 
-// AttributesFromContext get attributes stored in context baggage
-func AttributesFromContext(ctx context.Context) []attribute.KeyValue {
+// ContextAttributes get attributes stored in context baggage
+func ContextAttributes(ctx context.Context) []attribute.KeyValue {
 	return AttributesFromBaggage(baggage.FromContext(ctx))
 }
