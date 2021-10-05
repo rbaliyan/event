@@ -45,8 +45,23 @@ type localDataWrapper struct {
 	id     string
 	source string
 	data   Data
-	span   trace.Span
+	span   trace.SpanContext
 	attrs  []attribute.KeyValue
+}
+
+func (l localDataWrapper) attributes(attrs ...attribute.KeyValue) []attribute.KeyValue {
+	attrsCopy := make([]attribute.KeyValue, 0, len(l.attrs)+len(attrs))
+	copy(attrsCopy, l.attrs)
+	attrsCopy = append(attrsCopy, attrs...)
+	return attrsCopy
+}
+
+func (l localDataWrapper) links(attrs ...attribute.KeyValue) []trace.Link {
+	return []trace.Link{{
+		SpanContext: l.span,
+		Attributes:  attrs,
+	}}
+
 }
 
 // localImpl ...
@@ -55,7 +70,7 @@ type localImpl struct {
 	handled   prometheus.Counter
 	name      string
 	size      int64
-	channels  []chan *localDataWrapper
+	channels  []chan localDataWrapper
 	mutex     sync.RWMutex
 }
 
@@ -120,7 +135,7 @@ func NewID() string {
 
 // Publish context is used to pass other event data i.e. sender id , event id etc.
 func (e *localImpl) Publish(ctx context.Context, eventData Data) {
-	data := &localDataWrapper{
+	data := localDataWrapper{
 		data: eventData,
 	}
 	// increment counter
@@ -136,12 +151,15 @@ func (e *localImpl) Publish(ctx context.Context, eventData Data) {
 	}
 	// Add tracing
 	if tracer := otel.Tracer("event"); tracer != nil {
+		var span trace.Span
 		data.attrs = ContextAttributes(ctx)
 		data.attrs = append(data.attrs, attribute.String("event.id", data.id))
-		ctx, data.span = tracer.Start(ctx, fmt.Sprintf("%s.publish", e.name),
+		data.attrs = append(data.attrs, attribute.String("event.source", data.source))
+		ctx, span = tracer.Start(ctx, fmt.Sprintf("%s.publish", e.name),
 			trace.WithAttributes(data.attrs...),
 			trace.WithSpanKind(trace.SpanKindProducer))
-		defer data.span.End()
+		data.span = span.SpanContext()
+		defer span.End()
 	}
 	// Add context deadline if not already set
 	if _, ok := ctx.Deadline(); !ok {
@@ -189,7 +207,7 @@ func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 	defer e.mutex.Unlock()
 	e.size += 1
 	handler = e.wrapRecover(handler)
-	ch := make(chan *localDataWrapper, MessageBusSize)
+	ch := make(chan localDataWrapper, MessageBusSize)
 	index := len(e.channels)
 	// try find unsued slot
 	for i := 0; i < len(e.channels); i++ {
@@ -203,6 +221,8 @@ func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 		e.channels = append(e.channels, ch)
 	}
 	closed := false
+	// Add sub Id and name in context
+	ctx = ContextWithSubscriptionID(ContextWithName(ctx, e.name), subID)
 	go func() {
 		defer func() {
 			// close channel and remove from list
@@ -227,25 +247,17 @@ func (e *localImpl) Subscribe(ctx context.Context, handler Handler) {
 				}
 				var span trace.Span
 				// Update context values
-				ctx = ContextWithSubscriptionID(
-					ContextWithSource(
-						ContextWithEventID(
-							ContextWithName(ctx, e.name), data.id), data.source), subID)
+				newCtx := ContextWithSource(ContextWithEventID(ctx, data.id), data.source)
 				// Tracing
-				if tracer := otel.Tracer("event"); tracer != nil && data.span != nil {
-					attrs := make([]attribute.KeyValue, 0, len(data.attrs)+1)
-					copy(attrs, data.attrs)
-					attrs = append(attrs, subIDAttribute)
-					ctx, span = tracer.Start(ctx, fmt.Sprintf("%s.subscribe", e.name),
+				if tracer := otel.Tracer("event"); tracer != nil {
+					attrs := data.attributes(subIDAttribute)
+					newCtx, span = tracer.Start(newCtx, fmt.Sprintf("%s.subscribe", e.name),
 						trace.WithAttributes(attrs...),
 						trace.WithSpanKind(trace.SpanKindConsumer),
-						trace.WithLinks(trace.Link{
-							SpanContext: data.span.SpanContext(),
-							Attributes:  attrs,
-						}))
+						trace.WithLinks(data.links()...))
 				}
 				// Call handler
-				handler(ctx, e, data.data)
+				handler(newCtx, e, data.data)
 				if span != nil {
 					span.End()
 				}
