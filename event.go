@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"sync"
 
 	"go.opentelemetry.io/otel"
@@ -130,6 +132,15 @@ func AsyncHandler(handler Handler, copyContextFns ...func(to, from context.Conte
 	return func(ctx context.Context, ev Event, data Data) {
 		// Call handler with go routine
 		go func() {
+			defer func() {
+				_, _, l, _ := runtime.Caller(1)
+				if err := recover(); err != nil {
+					flag := ev.Name()
+					logger.Printf("Event[%s] Recover panic line => %v\n", flag, l)
+					logger.Printf("Event[%s] Recover err => %v\n", flag, err)
+					debug.PrintStack()
+				}
+			}()
 			// Create a new copy of context
 			attrs := ContextAttributes(ctx)
 			spanCtx := trace.SpanContextFromContext(ctx)

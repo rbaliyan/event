@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
@@ -14,6 +15,7 @@ var (
 	subscriptionIDcontextKey contextKey = "event.subscription.id"
 	sourcecontextKey         contextKey = "event.source"
 	metadatacontextKey       contextKey = "event.metadata"
+	loggercontextKey         contextKey = "event.logger"
 )
 
 // contextKey
@@ -25,31 +27,37 @@ func ContextEventID(ctx context.Context) string {
 	return s
 }
 
-// ContextName get event id stored in context
+// ContextName get event name stored in context
 func ContextName(ctx context.Context) string {
 	s, _ := ctx.Value(eventNamecontextKey).(string)
 	return s
 }
 
-// ContextSource get event id stored in context
+// ContextSource get event source stored in context
 func ContextSource(ctx context.Context) string {
 	s, _ := ctx.Value(sourcecontextKey).(string)
 	return s
 }
 
-// ContextMetadata get event id stored in context
+// ContextMetadata get event metadata stored in context
 func ContextMetadata(ctx context.Context) Metadata {
 	s, _ := ctx.Value(metadatacontextKey).(Metadata)
 	return s
 }
 
-// SenderFromContext get event id stored in context
+// ContextLogger get event Logger stored in context
+func ContextLogger(ctx context.Context) *log.Logger {
+	s, _ := ctx.Value(loggercontextKey).(*log.Logger)
+	return s
+}
+
+// SenderFromContext get event subscriber id stored in context
 func ContextSubscriptionID(ctx context.Context) string {
 	s, _ := ctx.Value(subscriptionIDcontextKey).(string)
 	return s
 }
 
-// ContextWithName generate a context with event id
+// ContextWithName generate a context with event name
 func ContextWithName(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, eventNamecontextKey, id)
 }
@@ -59,12 +67,12 @@ func ContextWithEventID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, eventIDcontextKey, id)
 }
 
-// ContextWithSource generate a context with event id
+// ContextWithSource generate a context with event source
 func ContextWithSource(ctx context.Context, s string) context.Context {
 	return context.WithValue(ctx, sourcecontextKey, s)
 }
 
-// ContextWithMetadata generate a context with event id
+// ContextWithMetadata generate a context with event metadata
 func ContextWithMetadata(ctx context.Context, m Metadata) context.Context {
 	if m == nil {
 		return ctx
@@ -72,7 +80,15 @@ func ContextWithMetadata(ctx context.Context, m Metadata) context.Context {
 	return context.WithValue(ctx, metadatacontextKey, m)
 }
 
-// ContextWithSubscriptionID generate a context with event id
+// ContextWithLogger generate a context with event logger
+func ContextWithLogger(ctx context.Context, l *log.Logger) context.Context {
+	if l == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, loggercontextKey, l)
+}
+
+// ContextWithSubscriptionID generate a context with event subscriber id
 func ContextWithSubscriptionID(ctx context.Context, subID string) context.Context {
 	return context.WithValue(ctx, subscriptionIDcontextKey, subID)
 }
@@ -90,13 +106,15 @@ func ContextWithBaggageFromContext(to, from context.Context) context.Context {
 // ContextWithEventFromContext copy context baggage
 func ContextWithEventFromContext(to, from context.Context) context.Context {
 	return ContextWithMetadata(
-		ContextWithSubscriptionID(
-			ContextWithSource(
-				ContextWithEventID(
-					ContextWithName(to, ContextName(from)),
-					ContextEventID(from)),
-				ContextSource(from)),
-			ContextSubscriptionID(from)),
+		ContextWithLogger(
+			ContextWithSubscriptionID(
+				ContextWithSource(
+					ContextWithEventID(
+						ContextWithName(to, ContextName(from)),
+						ContextEventID(from)),
+					ContextSource(from)),
+				ContextSubscriptionID(from)),
+			ContextLogger(from)),
 		ContextMetadata(from))
 }
 
