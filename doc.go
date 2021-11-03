@@ -1,5 +1,5 @@
 // Package event provides mechanism for publishing and subscribing event using abstract transport.
-// Default available transport is a channel map with fan-out strategy.
+// Default available transport is a channel map with fan-outChannels strategy.
 //
 // To handle remote events other transports such as Redis or Nats can also be used.
 //
@@ -14,30 +14,30 @@
 //
 //
 // Available Options:
-// WithPublishTimeout set timeout in milliseconds for event publishing. Default is 1 second.
-// if set to 0, timeout will be disabled and publisher will wait indefinitely.
-// WithAsyncTimeout set async timeout in milliseconds for event in async mode.  Default is 5 second.
-// if set to 0, timeout will be disabled and handlers will wait indefinitely.
-// WithSubscriberTimeout set subscriber timeout in milliseconds for event subscribers. Default is 30 second.
-// if set to 0, timeout will be disabled and handlers will  wait indefinitely.
+// WithPublishTimeout set publishTimeout inChannel milliseconds for event publishing. Default is 1 second.
+// if set to 0, publishTimeout will be disabled and publisher will wait indefinitely.
+// WithAsyncTimeout set async publishTimeout inChannel milliseconds for event inChannel async mode.  Default is 5 second.
+// if set to 0, publishTimeout will be disabled and handlers will wait indefinitely.
+// WithSubscriberTimeout set subscriber publishTimeout inChannel milliseconds for event subscribers. Default is 30 second.
+// if set to 0, publishTimeout will be disabled and handlers will  wait indefinitely.
 // WithTracing enable/disable tracing for event. Default is true.
 // WithAsync enable/disable async handlers for event. Default is true.
-// if async handlers are disabled, event handlers are run in
-// one single go routine and timeout value from WithPublishTimeout is applied
+// if async handlers are disabled, event handlers are run inChannel
+// one single go routine and publishTimeout value from WithPublishTimeout is applied
 // on publishing time which might cause server to drop events.
 // when async mode is enabled the order of events is not guaranteed.
 // WithMetrics  enable/disable prometheus metrics for event. Default is true.
 // WithErrorHandler set error handler for event.
-// WithTransport set transport for event. Default is Channel.
+// WithTransport set transport for event. Default is channelMuxTransport.
 // WithLogger set logger for event.
 // WithWorkerPoolSize set worker pool size. Default is 100.
-// This value decides number of subscribers that can execute in parallel.
+// This value decides number of subscribers that can execute inChannel parallel.
 // WithRegistry set registry for event, if not defaultRegistry is used.
 //
 //
-// Registry defines the scope of events i.e. in one registry there can be only event
+// Registry defines the scope of events i.e. inChannel one registry there can be only event
 // with given name. Optionally registry also holds the information for prometheus.Registerer
-// When Registry.Close function is called all events registered in the registry will
+// When Registry.Close function is called all events registered inChannel the registry will
 // stop publishing data.
 //
 // Transport defines the transport layer used by events. default is a channels based transport.

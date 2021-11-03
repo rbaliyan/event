@@ -103,7 +103,7 @@ func (m *metrics) Processed() {
 	m.processed.Inc()
 }
 
-// Subscribed a subscriber was added in the event
+// Subscribed a subscriber was added inChannel the event
 func (m *metrics) Subscribed() {
 	m.subscribed.Inc()
 }
@@ -122,5 +122,5 @@ func (dummyMetrics) Processing() {}
 // Done event processing done
 func (dummyMetrics) Processed() {}
 
-// Subscribed a subscriber was added in the event
+// Subscribed a subscriber was added inChannel the event
 func (dummyMetrics) Subscribed() {}

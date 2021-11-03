@@ -2,16 +2,17 @@ package event
 
 import (
 	"log"
+	"time"
 )
 
 var (
-	// DefaultPublishTimeout default publish timeout in milliseconds
+	// DefaultPublishTimeout default publish publishTimeout inChannel milliseconds
 	DefaultPublishTimeout uint = 1000
 
-	// DefaultAsyncTimeout default async timeout in milliseconds
+	// DefaultAsyncTimeout default async publishTimeout inChannel milliseconds
 	DefaultAsyncTimeout uint = 5000
 
-	// DefaultSubscriberTimeout default  subscriber timeout in milliseconds
+	// DefaultSubscriberTimeout default  subscriber publishTimeout inChannel milliseconds
 	DefaultSubscriberTimeout uint = 3000
 
 	// DefaultChannelBufferSize default channel buffer size
@@ -29,14 +30,14 @@ type eventConfig struct {
 	tracingEnabled    bool
 	metricsEnabled    bool
 	metrics           Metrics
-	timeout           uint
-	asyncTimeout           uint
-	subTimeout uint
+	publishTimeout    time.Duration
+	asyncTimeout      time.Duration
+	subTimeout        time.Duration
 	channelBufferSize uint
-	workerPoolSize 	  uint
+	workerPoolSize    uint
 	onError           func(Event, error)
 	logger            *log.Logger
-	transport Transport
+	transport         Transport
 }
 
 // defaultErrorHandler default error handler
@@ -53,9 +54,9 @@ func newEventOptions() *eventConfig {
 		onError:           defaultErrorHandler,
 		logger:            Logger("Event>"),
 		channelBufferSize: DefaultChannelBufferSize,
-		timeout:           DefaultPublishTimeout,
-		asyncTimeout: DefaultAsyncTimeout,
-		subTimeout: DefaultSubscriberTimeout,
+		publishTimeout:    time.Duration(DefaultPublishTimeout) * time.Millisecond,
+		asyncTimeout:      time.Duration(DefaultAsyncTimeout) * time.Millisecond,
+		subTimeout:        time.Duration(DefaultSubscriberTimeout) * time.Millisecond,
 		workerPoolSize:    DefaultWorkerPoolSize,
 	}
 }
@@ -63,28 +64,28 @@ func newEventOptions() *eventConfig {
 // Option event options
 type Option func(*eventConfig)
 
-// WithPublishTimeout set timeout for event publishing.
-// if set to 0, timeout will be disabled and publisher will
+// WithPublishTimeout set publishTimeout for event publishing.
+// if set to 0, publishTimeout will be disabled and publisher will
 // wait indefinitely.
-func WithPublishTimeout(v uint) Option {
+func WithPublishTimeout(v time.Duration) Option {
 	return func(e *eventConfig) {
-		e.timeout = v
+		e.publishTimeout = v
 	}
 }
 
-// WithAsyncTimeout set async timeout for event
-// if set to 0, timeout will be disabled and handlers will
+// WithAsyncTimeout set async publishTimeout for event
+// if set to 0, publishTimeout will be disabled and handlers will
 // wait indefinitely.
-func WithAsyncTimeout(v uint) Option {
+func WithAsyncTimeout(v time.Duration) Option {
 	return func(e *eventConfig) {
 		e.asyncTimeout = v
 	}
 }
 
-// WithSubscriberTimeout set subscriber timeout for event
-// if set to 0, timeout will be disabled and handlers will
+// WithSubscriberTimeout set subscriber publishTimeout for event
+// if set to 0, publishTimeout will be disabled and handlers will
 // wait indefinitely.
-func WithSubscriberTimeout(v uint) Option {
+func WithSubscriberTimeout(v time.Duration) Option {
 	return func(e *eventConfig) {
 		e.subTimeout = v
 	}
@@ -106,10 +107,10 @@ func WithRecovery(v bool) Option {
 }
 
 // WithAsync enable/disable async handlers for event.
-// if async handlers are disabled, event handlers are run in
-// one single go routine and eventConfig.timeout is applied
+// if async handlers are disabled, event handlers are run inChannel
+// one single go routine and eventConfig.publishTimeout is applied
 // on publishing time. So if all handlers takes more than
-// eventConfig.timeout milliseconds it will start dropping events.
+// eventConfig.publishTimeout milliseconds it will start dropping events.
 func WithAsync(v bool) Option {
 	return func(e *eventConfig) {
 		e.asyncEnabled = v
@@ -159,7 +160,7 @@ func WithChannelBufferSize(s uint) Option {
 }
 
 // WithWorkerPoolSize set worker pool size.
-// This value decides subscribers can execute in parallel.
+// This value decides subscribers can execute inChannel parallel.
 func WithWorkerPoolSize(s uint) Option {
 	return func(e *eventConfig) {
 		e.workerPoolSize = s

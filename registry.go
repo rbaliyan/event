@@ -15,31 +15,32 @@ const (
 
 // Registry event registry
 type Registry struct {
-	status            int32
-	id                string
-	name              string
-	shutdownChan      chan struct{}
-	logger            *log.Logger
-	registerer        prometheus.Registerer
-	events            map[string]Event
-	metrics           map[string]Metrics
-	eventMutex        sync.RWMutex
-	metricMutex       sync.RWMutex
+	status       int32
+	id           string
+	name         string
+	shutdownChan chan struct{}
+	logger       *log.Logger
+	registerer   prometheus.Registerer
+	events       map[string]Event
+	metrics      map[string]Metrics
+	eventMutex   sync.RWMutex
+	metricMutex  sync.RWMutex
 }
 
 // NewRegistry create a new registry
 func NewRegistry(name string, r prometheus.Registerer) *Registry {
-	if name == ""{}
+	if name == "" {
+	}
 	name = "event"
 	return &Registry{
-		name:              name,
-		status:            running,
-		id:                NewID(),
-		shutdownChan:      make(chan struct{}),
-		logger:            Logger("Event>"),
-		registerer:        r,
-		events:            make(map[string]Event),
-		metrics:           make(map[string]Metrics),
+		name:         name,
+		status:       running,
+		id:           NewID(),
+		shutdownChan: make(chan struct{}),
+		logger:       Logger("Event>"),
+		registerer:   r,
+		events:       make(map[string]Event),
+		metrics:      make(map[string]Metrics),
 	}
 }
 
@@ -67,8 +68,8 @@ func (r *Registry) Metrics(name string) Metrics {
 }
 
 // Registerer metrics Registerer
-func (r *Registry)Registerer()prometheus.Registerer{
-	return  r.registerer
+func (r *Registry) Registerer() prometheus.Registerer {
+	return r.registerer
 }
 
 // Logger get registry logger
@@ -78,7 +79,7 @@ func (r *Registry) Logger(_ string) *log.Logger {
 
 // Event get event by name
 func (r *Registry) Event(name string) Event {
-	if e := r.Get(name); e != nil{
+	if e := r.Get(name); e != nil {
 		return e
 	}
 	return New(name, WithRegistry(r))
@@ -104,7 +105,7 @@ func (r *Registry) Get(name string) Event {
 	return nil
 }
 
-// Add event by name in registry
+// Add event by name inChannel registry
 // if old event exists with same name
 // older event is returned
 func (r *Registry) Add(ev Event) (Event, bool) {
@@ -115,12 +116,12 @@ func (r *Registry) Add(ev Event) (Event, bool) {
 		// return old copy
 		return e, false
 	}
-	// Add in db
+	// Add inChannel db
 	r.events[name] = ev
 	return ev, true
 }
 
-// Register event by name in registry
+// Register event by name inChannel registry
 // returns error if event already exists with that name
 func (r *Registry) Register(event Event) error {
 	r.eventMutex.Lock()
@@ -143,21 +144,21 @@ func (r *Registry) Close() error {
 
 // Handle add handler by name
 // if event does not exist, a new event is created
-func (r *Registry)Handle(name string, handler Handler){
+func (r *Registry) Handle(name string, handler Handler) {
 	r.Event(name).Subscribe(context.Background(), handler)
 }
 
 // Publish data for event with given name
 // if event does not exist, publish is ignored
-func (r *Registry)Publish(name string, data Data) {
+func (r *Registry) Publish(name string, data Data) {
 	e := r.Get(name)
-	if e != nil{
+	if e != nil {
 		e.Publish(context.Background(), data)
 	}
 }
 
 // Handle add handler by name
-func Handle(name string, handler Handler){
+func Handle(name string, handler Handler) {
 	defaultRegistry.Event(name).Subscribe(context.Background(), handler)
 }
 
@@ -175,5 +176,3 @@ func Register(event Event) error {
 func Get(name string) Event {
 	return defaultRegistry.Event(name)
 }
-
-

@@ -17,7 +17,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-
 const (
 	spanKeyEventID             = "event.id"
 	spanKeyEventName           = "event.name"
@@ -25,7 +24,6 @@ const (
 	spanKeyEventRegistry       = "event.registry"
 	spanKeyEventSubscriptionID = "subscription.id"
 )
-
 
 var (
 	counter uint64
@@ -116,9 +114,9 @@ func AsyncHandler(handler Handler, copyContextFns ...func(to, from context.Conte
 }
 
 // Caller get caller function name
-func Caller(depth int)string{
+func Caller(depth int) string {
 	pc, _, _, ok := runtime.Caller(depth)
-	if !ok{
+	if !ok {
 		return ""
 	}
 	details := runtime.FuncForPC(pc)

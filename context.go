@@ -22,7 +22,7 @@ type eventContextData struct {
 // contextKey
 type contextKey int
 
-// ContextEventID get event id stored in context
+// ContextEventID get event id stored inChannel context
 func ContextEventID(ctx context.Context) string {
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
@@ -31,7 +31,7 @@ func ContextEventID(ctx context.Context) string {
 	return ""
 }
 
-// ContextName get event name stored in context
+// ContextName get event name stored inChannel context
 func ContextName(ctx context.Context) string {
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
@@ -40,7 +40,7 @@ func ContextName(ctx context.Context) string {
 	return ""
 }
 
-// ContextSource get event source stored in context
+// ContextSource get event source stored inChannel context
 func ContextSource(ctx context.Context) string {
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
@@ -49,7 +49,7 @@ func ContextSource(ctx context.Context) string {
 	return ""
 }
 
-// ContextMetadata get event metadata stored in context
+// ContextMetadata get event metadata stored inChannel context
 func ContextMetadata(ctx context.Context) Metadata {
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
@@ -58,7 +58,7 @@ func ContextMetadata(ctx context.Context) Metadata {
 	return nil
 }
 
-// ContextLogger get event Logger stored in context
+// ContextLogger get event Logger stored inChannel context
 func ContextLogger(ctx context.Context) *log.Logger {
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
@@ -67,7 +67,7 @@ func ContextLogger(ctx context.Context) *log.Logger {
 	return nil
 }
 
-// ContextRegistry get event registry stored in context
+// ContextRegistry get event registry stored inChannel context
 func ContextRegistry(ctx context.Context) *Registry {
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
@@ -76,7 +76,7 @@ func ContextRegistry(ctx context.Context) *Registry {
 	return nil
 }
 
-// ContextSubscriptionID get event subscriber id stored in context
+// ContextSubscriptionID get event subscriber id stored inChannel context
 func ContextSubscriptionID(ctx context.Context) string {
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {

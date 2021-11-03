@@ -11,46 +11,44 @@ import (
 	"time"
 )
 
-
-func init(){
+func init() {
 	faker.Seed(time.Now().UnixNano())
 }
 
 const waitChTimeoutMS = 100
 
-func waitForMetaData(ch chan Metadata)(Metadata, bool){
+func waitForMetaData(ch chan Metadata, timeout int) (Metadata, bool) {
 	select {
 	case d := <-ch:
 		return d, true
-	case <-time.After(time.Millisecond* waitChTimeoutMS):
+	case <-time.After(time.Millisecond * time.Duration(timeout)):
 		return nil, false
 	}
 }
 
-func waitForData(ch chan Data)(Data, bool){
+func waitForData(ch chan Data, timeout int) (Data, bool) {
 	select {
 	case d := <-ch:
 		return d, true
-	case <-time.After(time.Millisecond* waitChTimeoutMS):
+	case <-time.After(time.Millisecond * time.Duration(timeout)):
 		return nil, false
 	}
 }
 
-func wait(ch chan struct{}) bool {
+func wait(ch chan struct{}, timeout int) bool {
 	select {
 	case <-ch:
 		return true
-	case <-time.After(time.Millisecond* waitChTimeoutMS):
+	case <-time.After(time.Millisecond * time.Duration(timeout)):
 		return false
 	}
 }
 
-
 // Compare metadata
-func CompareMetadata(m1, m2 Metadata)bool{
-	if len(m1) == len(m2){
+func CompareMetadata(m1, m2 Metadata) bool {
+	if len(m1) == len(m2) {
 		for i, x := range m1 {
-			if m2[i] != x{
+			if m2[i] != x {
 				return false
 			}
 		}
@@ -59,36 +57,35 @@ func CompareMetadata(m1, m2 Metadata)bool{
 	return false
 }
 
-
 func TestEvent(t *testing.T) {
 	// With default registry use cancellable context as they will reuse same registry and event
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r := defaultRegistry
 	e := New("test")
-	if err := Register(e); err == nil || !errors.Is(err, ErrDuplicateEvent){
+	if err := Register(e); err == nil || !errors.Is(err, ErrDuplicateEvent) {
 		t.Errorf("duplicate event registered event: %v", err)
 	}
 	ch := make(chan struct{})
 	e.Subscribe(ctx, func(ctx context.Context, ev Event, data Data) {
-		if id:= ContextEventID(ctx); id  == ""{
+		if id := ContextEventID(ctx); id == "" {
 			t.Error("event id is null")
 		}
 		if r1 := ContextRegistry(ctx); r1 == nil {
 			t.Error("registry id is null")
-		} else if r1.id != r.id{
-			t.Errorf("registry is wrong got:%s, expected:%s",r1.id, r.id)
+		} else if r1.id != r.id {
+			t.Errorf("registry is wrong got:%s, expected:%s", r1.id, r.id)
 		}
-		if source:= ContextSource(ctx); source != r.id{
-			t.Errorf("source is wrong got:%s, expected:%s",source ,  r.id)
+		if source := ContextSource(ctx); source != r.id {
+			t.Errorf("source is wrong got:%s, expected:%s", source, r.id)
 		}
-		if data != nil{
+		if data != nil {
 			t.Error("data is not null")
 		}
 		ch <- struct{}{}
 	})
 	e.Publish(context.TODO(), nil)
-	if !wait(ch) {
+	if !wait(ch, waitChTimeoutMS) {
 		t.Error("Failed")
 	}
 	e1 := Get("test")
@@ -96,7 +93,7 @@ func TestEvent(t *testing.T) {
 		t.Fatal("Failed to get event")
 	}
 	e1.Publish(context.TODO(), nil)
-	if !wait(ch) {
+	if !wait(ch, waitChTimeoutMS) {
 		t.Error("Failed")
 	}
 }
@@ -109,7 +106,7 @@ func TestMetadata(t *testing.T) {
 		WithMetrics(true, nil),
 		WithRegistry(r))
 
-	if r.Get(e.Name()) == nil{
+	if r.Get(e.Name()) == nil {
 		t.Fatal("event not registered")
 	}
 	ch1 := make(chan Metadata)
@@ -131,22 +128,22 @@ func TestMetadata(t *testing.T) {
 	msg := "this is a test"
 	m := Metadata([]byte(msg))
 	e.Publish(ContextWithMetadata(context.Background(), m), nil)
-	m1, ok := waitForMetaData(ch1)
-	if !ok{
+	m1, ok := waitForMetaData(ch1, waitChTimeoutMS)
+	if !ok {
 		t.Fatal("metadata not found")
 	}
-	if !CompareMetadata(m, m1){
+	if !CompareMetadata(m, m1) {
 		t.Errorf("metadata is different got:%v, expected:%v", m1, m)
 	}
 	e.Publish(ContextWithMetadata(context.Background(), m), nil)
-	m2, ok := waitForMetaData(ch2)
-	if !ok{
+	m2, ok := waitForMetaData(ch2, waitChTimeoutMS)
+	if !ok {
 		t.Fatal("metadata not found")
 	}
-	if !CompareMetadata(m, m2){
+	if !CompareMetadata(m, m2) {
 		t.Errorf("metadata is different got:%v, expected:%v", m2, m)
 	}
-	if err := r.Close(); err != nil{
+	if err := r.Close(); err != nil {
 		t.Error("failed to close registry")
 	}
 }
@@ -164,7 +161,7 @@ func TestPanic(t *testing.T) {
 			ch1 <- struct{}{}
 		}))
 
-	if r.Get(e.Name()) == nil{
+	if r.Get(e.Name()) == nil {
 		t.Fatal("event not registered")
 	}
 
@@ -172,10 +169,10 @@ func TestPanic(t *testing.T) {
 		panic("test")
 	})
 	e.Publish(context.TODO(), nil)
-	if !wait(ch1){
+	if !wait(ch1, waitChTimeoutMS) {
 		t.Error("Panic failed")
 	}
-	if err := r.Close(); err != nil{
+	if err := r.Close(); err != nil {
 		t.Error("failed to close registry")
 	}
 }
@@ -197,29 +194,29 @@ func TestCancel(t *testing.T) {
 		ch2 <- struct{}{}
 	})
 	e.Publish(context.TODO(), nil)
-	if !wait(ch1) {
+	if !wait(ch1, waitChTimeoutMS) {
 		t.Error("1. Failed")
 	}
-	if !wait(ch2) {
+	if !wait(ch2, waitChTimeoutMS) {
 		t.Error("2. Failed")
 	}
 	cancel1()
 	e.Publish(context.TODO(), nil)
-	if wait(ch1) {
+	if wait(ch1, waitChTimeoutMS) {
 		t.Error("1. Failed")
 	}
-	if !wait(ch2) {
+	if !wait(ch2, waitChTimeoutMS) {
 		t.Error("2. Failed")
 	}
 	cancel2()
 	e.Publish(context.TODO(), nil)
-	if wait(ch1) {
+	if wait(ch1, waitChTimeoutMS) {
 		t.Error("1. Failed")
 	}
-	if wait(ch2) {
+	if wait(ch2, waitChTimeoutMS) {
 		t.Error("2. Failed")
 	}
-	if err := r.Close(); err != nil{
+	if err := r.Close(); err != nil {
 		t.Error("failed to close registry")
 	}
 }
@@ -227,16 +224,16 @@ func TestCancel(t *testing.T) {
 func TestData(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	no := faker.RandomInt(0, math.MaxInt - 1)
+	no := faker.RandomInt(0, math.MaxInt-1)
 	s := faker.Lorem().String()
-	st := struct{
+	st := struct {
 		N int
 		S string
 	}{no, s}
 
 	tests := []struct {
-		name   string
-		args   interface{}
+		name string
+		args interface{}
 	}{
 		{"null", nil},
 		{"number", no},
@@ -259,32 +256,32 @@ func TestData(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e.Publish(context.Background(), tt.args)
-			out, ok := waitForData(ch)
-			if !ok{
+			out, ok := waitForData(ch, waitChTimeoutMS)
+			if !ok {
 				t.Fatal("Sub failed")
 			}
-			if !cmp.Equal(out, tt.args){
+			if !cmp.Equal(out, tt.args) {
 				t.Errorf("diff : %v", cmp.Diff(out, tt.args))
 			}
-			out1, ok := waitForData(ch1)
-			if !ok{
+			out1, ok := waitForData(ch1, waitChTimeoutMS)
+			if !ok {
 				t.Fatal("Sub failed")
 			}
-			if !cmp.Equal(out1, tt.args){
+			if !cmp.Equal(out1, tt.args) {
 				t.Errorf("diff : %v", cmp.Diff(out1, tt.args))
 			}
-			out2, ok := waitForData(ch2)
-			if !ok{
+			out2, ok := waitForData(ch2, waitChTimeoutMS)
+			if !ok {
 				t.Fatal("Sub failed")
 			}
-			if !cmp.Equal(out2, tt.args){
+			if !cmp.Equal(out2, tt.args) {
 				t.Errorf("diff : %v", cmp.Diff(out2, tt.args))
 			}
 		})
 	}
 }
 
-func BenchmarkEvent(b *testing.B){
+func BenchmarkEvent(b *testing.B) {
 	r := NewRegistry("test", nil)
 	e := New("test",
 		WithAsync(true),
@@ -294,30 +291,27 @@ func BenchmarkEvent(b *testing.B){
 	total := int32(b.N)
 	var counter int32
 	e.Subscribe(context.Background(), func(ctx context.Context, event Event, data Data) {
-		if atomic.AddInt32(&counter, 1) >= total{
+		if atomic.AddInt32(&counter, 1) >= total {
 			ch1 <- struct{}{}
 		}
 	})
-	for i:=0; i<b.N; i++{
+	for i := 0; i < b.N; i++ {
 		e.Publish(context.Background(), i)
 	}
 	e.Publish(context.Background(), -1)
-	select {
-	case <-ch1:
-	case <-time.After(time.Second* 2):
-		b.Error("timeout")
+	if !wait(ch1, 2000) {
+		b.Error("publishTimeout")
 	}
-
-	if counter < int32(b.N){
+	if counter < int32(b.N) {
 		b.Error("counter is smaller :", counter, b.N)
 	}
-	if err := r.Close(); err != nil{
+	if err := r.Close(); err != nil {
 		b.Error("failed to close registry")
 	}
 }
 
 func TestPool(t *testing.T) {
-	var poolSize  int32 = 4
+	var poolSize int32 = 4
 	r := NewRegistry("test", nil)
 	e := New("test",
 		WithAsync(true),
@@ -331,16 +325,16 @@ func TestPool(t *testing.T) {
 	ch := make(chan int32)
 	ch1 := make(chan struct{})
 	ch2 := make(chan struct{})
-	go func(){
+	go func() {
 		for {
 			select {
-				case count := <-ch:
+			case count := <-ch:
 				if count > max {
 					max = count
 				}
-				case <-ch1:
-				if atomic.AddInt32(&counter1, 1) >= total{
-					ch2<- struct{}{}
+			case <-ch1:
+				if atomic.AddInt32(&counter1, 1) >= total {
+					ch2 <- struct{}{}
 				}
 			}
 		}
@@ -351,15 +345,68 @@ func TestPool(t *testing.T) {
 		ch1 <- struct{}{}
 	})
 	var i int32
-	for i = 0; i < total; i++{
+	for i = 0; i < total; i++ {
 		e.Publish(context.Background(), i)
 	}
-	select {
-	case <-ch2:
-	case <-time.After(time.Second* 2):
-		t.Error("timeout: ", counter1)
+	if !wait(ch2, 2000) {
+		t.Error("publishTimeout")
 	}
-	if max > total/poolSize {
-		t.Error("Failed", max, counter1)
+	if max > total/2 {
+		t.Error("Failed")
+	}
+}
+
+func TestSingleTransport(t *testing.T) {
+	var poolSize int32 = 4
+	r := NewRegistry("test", nil)
+	e := New("test",
+		WithAsync(true),
+		WithTracing(true),
+		WithPublishTimeout(time.Duration(100)*time.Millisecond),
+		WithTransport(NewSingleTransport(time.Duration(1)*time.Second, 100)),
+		WithWorkerPoolSize(uint(poolSize)),
+		WithMetrics(true, nil), WithRegistry(r))
+	var total int32 = 100
+	var counter int32
+	var counter1 int32
+	var counter2 int32
+	var counter3 int32
+	ch1 := make(chan struct{})
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event, data Data) {
+		atomic.AddInt32(&counter1, 1)
+		if atomic.AddInt32(&counter, 1) >= total {
+			ch1 <- struct{}{}
+		}
+	})
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event, data Data) {
+		atomic.AddInt32(&counter2, 1)
+		if atomic.AddInt32(&counter, 1) >= total {
+			ch1 <- struct{}{}
+		}
+	})
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event, data Data) {
+		atomic.AddInt32(&counter3, 1)
+		if atomic.AddInt32(&counter, 1) >= total {
+			ch1 <- struct{}{}
+		}
+	})
+	var i int32
+	for i = 0; i < total; i++ {
+		e.Publish(context.Background(), i)
+	}
+	if !wait(ch1, 2000) {
+		t.Error("publishTimeout", counter1)
+	}
+	if counter != total {
+		t.Error("Failed", counter, total)
+	}
+	if counter1 >= total {
+		t.Error("Failed", counter1, total)
+	}
+	if counter2 >= total {
+		t.Error("Failed", counter2, total)
+	}
+	if counter3 >= total {
+		t.Error("Failed", counter3, total)
 	}
 }
