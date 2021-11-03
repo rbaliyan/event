@@ -1,2 +1,2 @@
 # event
-Event manager golang
+Event manager
