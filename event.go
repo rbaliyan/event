@@ -416,6 +416,6 @@ func New(name string, opts ...Option) Event {
 }
 
 // Discard create new event which discard all data
-func Discard(_ string) Event {
+func Discard(_ string,_ ...Option) Event {
 	return discardEvent{}
 }
