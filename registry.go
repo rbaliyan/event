@@ -3,7 +3,6 @@ package event
 import (
 	"context"
 	"github.com/prometheus/client_golang/prometheus"
-	"log"
 	"sync"
 	"sync/atomic"
 )
@@ -19,7 +18,6 @@ type Registry struct {
 	id           string
 	name         string
 	shutdownChan chan struct{}
-	logger       *log.Logger
 	registerer   prometheus.Registerer
 	events       map[string]Event
 	metrics      map[string]Metrics
@@ -37,7 +35,6 @@ func NewRegistry(name string, r prometheus.Registerer) *Registry {
 		status:       running,
 		id:           NewID(),
 		shutdownChan: make(chan struct{}),
-		logger:       Logger("Event>"),
 		registerer:   r,
 		events:       make(map[string]Event),
 		metrics:      make(map[string]Metrics),
@@ -70,11 +67,6 @@ func (r *Registry) Metrics(name string) Metrics {
 // Registerer metrics Registerer
 func (r *Registry) Registerer() prometheus.Registerer {
 	return r.registerer
-}
-
-// Logger get registry logger
-func (r *Registry) Logger(_ string) *log.Logger {
-	return r.logger
 }
 
 // Event get event by name

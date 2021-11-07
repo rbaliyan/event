@@ -375,7 +375,7 @@ func New(name string, opts ...Option) Event {
 	e := &eventImpl{
 		status:            1,
 		name:              name,
-		logger:            c.registry.Logger(name),
+		logger:            c.logger,
 		registry:          c.registry,
 		metrics:           c.metrics,
 		recoveryEnabled:   c.recoveryEnabled,

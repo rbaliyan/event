@@ -52,7 +52,7 @@ func newEventOptions() *eventConfig {
 		recoveryEnabled:   true,
 		metricsEnabled:    true,
 		onError:           defaultErrorHandler,
-		logger:            Logger("Event>"),
+		logger:            Logger("event>"),
 		channelBufferSize: DefaultChannelBufferSize,
 		publishTimeout:    time.Duration(DefaultPublishTimeout) * time.Millisecond,
 		asyncTimeout:      time.Duration(DefaultAsyncTimeout) * time.Millisecond,

@@ -28,7 +28,7 @@ const (
 var (
 	counter uint64
 	// DefaultLoggerFlags default flags for logger
-	DefaultLoggerFlags = log.LstdFlags | log.Llongfile | log.Lmsgprefix
+	DefaultLoggerFlags = log.LstdFlags | log.Lshortfile | log.Lmsgprefix
 )
 
 // NewID generate new event id
