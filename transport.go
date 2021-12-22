@@ -98,7 +98,7 @@ func sendWithTimeout(id string, msg Message, ch chan Message, timeout time.Durat
 	}
 	select {
 	case <-ctx.Done():
-		logger.Println("publishTimeout while sending data to:", id)
+		logger.Println("pubTimeout while sending data to:", id)
 	case ch <- msg:
 	}
 }
@@ -189,7 +189,7 @@ func (c *singleChannelTransport) Close() error {
 }
 
 // NewChannelTransport create new transport with channels
-// publishTimeout is the publishTimeout used for sending data per subscriber
+// pubTimeout is the pubTimeout used for sending data per subscriber
 // buffer is the buffer size for channels
 func NewChannelTransport(timeout time.Duration, buffer uint) Transport {
 	c := &channelMuxTransport{

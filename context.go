@@ -98,6 +98,19 @@ func ContextWithMetadata(ctx context.Context, m Metadata) context.Context {
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{metadata: m})
 }
 
+// ContextWithEventID generate a context with event id
+func ContextWithEventID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
+	if ok {
+		s.eventID = id
+		return ctx
+	}
+	return context.WithValue(ctx, eventcontextKey, &eventContextData{eventID: id})
+}
+
 // ContextWithLogger generate a context with event logger
 func ContextWithLogger(ctx context.Context, l *log.Logger) context.Context {
 	if l == nil {

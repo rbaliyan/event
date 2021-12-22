@@ -91,8 +91,8 @@ type eventImpl struct {
 	metrics           Metrics
 	registry          *Registry
 	logger            *log.Logger
-	timeout           time.Duration
-	asyncTimeout      time.Duration
+	pubTimeout        time.Duration
+	poolTimeout       time.Duration
 	subTimeout        time.Duration
 	channelBufferSize int
 	workerPoolSize    int64
@@ -138,9 +138,13 @@ func (e *eventImpl) WithAsync(handler Handler) Handler {
 	return func(ctx context.Context, ev Event, data Data) {
 		// check if worker pool is enabled
 		if e.workerPool != nil {
-			// create context wit publishTimeout to wait for worker pool
-			poolCtx, cancel := context.WithTimeout(ctx, e.asyncTimeout)
-			defer cancel()
+			poolCtx := ctx
+			if e.poolTimeout > 0 {
+				var cancel context.CancelFunc
+				// create context wit pubTimeout to wait for worker pool
+				poolCtx, cancel = context.WithTimeout(ctx, e.poolTimeout)
+				defer cancel()
+			}
 			// try to acquire worker pool
 			// even if error happens, we go ahead with a new go routine
 			if err := e.workerPool.Acquire(poolCtx, 1); err == nil {
@@ -166,7 +170,7 @@ func (e *eventImpl) WithMetrics(handler Handler) Handler {
 	}
 }
 
-// WithTimeout enable publishTimeout for handlers
+// WithTimeout enable pubTimeout for handlers
 func (e *eventImpl) WithTimeout(handler Handler) Handler {
 	if e.subTimeout == 0 {
 		return handler
@@ -221,11 +225,11 @@ func (e *eventImpl) WithRecovery(handler Handler) Handler {
 			_, file, l, _ := runtime.Caller(0)
 			if err := recover(); err != nil {
 				flag := ev.Name()
-				logger.Printf("Event[%s] Recover panic line => %v inChannel %s\n", flag, l, file)
+				logger.Printf("Event[%s] Recover panic line => %v file => %s\n", flag, l, file)
 				logger.Printf("Event[%s] Recover err => %v\n", flag, err)
 				logger.Println(string(debug.Stack()))
 				if e.onError != nil {
-					e.onError(ev, fmt.Errorf("[%s]panic inChannel %s:%d with : %v", flag, file, l, err))
+					e.onError(ev, fmt.Errorf("[%s]panic in %s:%d with : %v", flag, file, l, err))
 				}
 			}
 		}()
@@ -238,9 +242,13 @@ func (e *eventImpl) Publish(ctx context.Context, eventData Data) {
 	if e == nil || atomic.LoadInt32(&e.status) != 1 {
 		return
 	}
+	id := ContextEventID(ctx)
+	if id == "" {
+		id = e.registry.NewEventID()
+	}
 	data := message{
 		data:     eventData,
-		id:       e.registry.NewEventID(),
+		id:       id,
 		source:   e.registry.ID(),
 		metadata: CloneMetadata(ContextMetadata(ctx)),
 	}
@@ -261,20 +269,18 @@ func (e *eventImpl) Publish(ctx context.Context, eventData Data) {
 	}
 
 	_, ok := ctx.Deadline()
-	if t := e.timeout; t != 0 && !ok {
+	if t := e.pubTimeout; t != 0 && !ok {
 		// Add context deadline if not already set
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, t)
 		defer cancel()
 	}
-	//e.logger.Println("Sending data with id:", data.id)
 	// Send data
 	select {
 	case e.transport.Send() <- &data:
 	case <-ctx.Done():
 		e.logger.Println(e.name, "Timeout while sending data on transport")
 	}
-
 	// increment counter
 	e.metrics.Published()
 }
@@ -323,8 +329,6 @@ func (e *eventImpl) Subscribe(ctx context.Context, handler Handler) {
 					e.logger.Println(e.Name(), "channel closed:", subID)
 					return
 				}
-
-				// e.logger.Println("Payload received:", subID)
 				// Update context values and call handler
 				handler(contextWithInfo(data.Context(), data.ID(), e.name, data.Source(), subID, data.Metadata(), e.logger, e.registry),
 					e, data.Payload())
@@ -371,6 +375,30 @@ func New(name string, opts ...Option) Event {
 	for _, opt := range opts {
 		opt(c)
 	}
+	// Get event from registry
+	if ev := c.registry.Get(name); ev != nil {
+		return ev
+	}
+	// check if metrics was supplied
+	if c.metrics == nil {
+		// set metrics
+		if c.metricsEnabled {
+			c.metrics = c.registry.Metrics(name)
+			_ = c.metrics.Register(c.registry.Registerer())
+		} else {
+			// create dummy metrics
+			c.metrics = dummyMetrics{}
+		}
+	}
+	// set default transport of not already set
+	if c.transport == nil {
+		c.transport = NewChannelTransport(c.subTimeout, c.channelBufferSize)
+	}
+	var workerPool *semaphore.Weighted
+	// create worker pool
+	if c.workerPoolSize > 0 {
+		workerPool = semaphore.NewWeighted(int64(c.workerPoolSize))
+	}
 	// create new instance of event
 	e := &eventImpl{
 		status:            1,
@@ -383,39 +411,21 @@ func New(name string, opts ...Option) Event {
 		asyncEnabled:      c.asyncEnabled,
 		channelBufferSize: int(c.channelBufferSize),
 		workerPoolSize:    int64(c.workerPoolSize),
-		asyncTimeout:      c.asyncTimeout,
-		timeout:           c.publishTimeout,
+		poolTimeout:       c.poolTimeout,
+		pubTimeout:        c.pubTimeout,
 		subTimeout:        c.subTimeout,
 		onError:           c.onError,
 		transport:         c.transport,
+		workerPool:        workerPool,
 	}
 	// Add inChannel registry and check if it already exists
 	if ev, ok := c.registry.Add(e); !ok {
 		return ev
 	}
-	// check if metrics was supplied
-	if c.metrics == nil {
-		// set metrics
-		if c.metricsEnabled {
-			e.metrics = e.registry.Metrics(name)
-			_ = e.metrics.Register(e.registry.Registerer())
-		} else {
-			// create dummy metrics
-			c.metrics = dummyMetrics{}
-		}
-	}
-	// set default transport of not already set
-	if e.transport == nil {
-		e.transport = NewChannelTransport(e.subTimeout, c.channelBufferSize)
-	}
-	// create worker pool
-	if e.workerPoolSize > 0 {
-		e.workerPool = semaphore.NewWeighted(e.workerPoolSize)
-	}
 	return e
 }
 
 // Discard create new event which discard all data
-func Discard(_ string,_ ...Option) Event {
+func Discard(_ string, _ ...Option) Event {
 	return discardEvent{}
 }

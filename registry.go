@@ -97,7 +97,7 @@ func (r *Registry) Get(name string) Event {
 	return nil
 }
 
-// Add event by name inChannel registry
+// Add event by name events registry
 // if old event exists with same name
 // older event is returned
 func (r *Registry) Add(ev Event) (Event, bool) {
@@ -108,7 +108,7 @@ func (r *Registry) Add(ev Event) (Event, bool) {
 		// return old copy
 		return e, false
 	}
-	// Add inChannel db
+	// Add in events db
 	r.events[name] = ev
 	return ev, true
 }

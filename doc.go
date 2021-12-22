@@ -6,24 +6,24 @@
 // example:
 //
 //  e := New("event name")
-//  e.Subscribe(context.Background(), func(ctx context.Context, ev Event, data Data){
-//      fmt.Println("msg>", data)
+//  e.Subscribe(context.Background(), func(ctx context.Context, ev Event, d Data){
+//      fmt.Println("msg>", d)
 //  })
 //
 //  e.Publish(context.Background(), "success")
 //
 //
 // Available Options:
-// WithPublishTimeout set publishTimeout inChannel milliseconds for event publishing. Default is 1 second.
-// if set to 0, publishTimeout will be disabled and publisher will wait indefinitely.
-// WithAsyncTimeout set async publishTimeout inChannel milliseconds for event inChannel async mode.  Default is 5 second.
-// if set to 0, publishTimeout will be disabled and handlers will wait indefinitely.
-// WithSubscriberTimeout set subscriber publishTimeout inChannel milliseconds for event subscribers. Default is 30 second.
-// if set to 0, publishTimeout will be disabled and handlers will  wait indefinitely.
+// WithPublishTimeout set pubTimeout inChannel milliseconds for event publishing. Default is 1 second.
+// if set to 0, pubTimeout will be disabled and publisher will wait indefinitely.
+// WithPoolTimeout set async pubTimeout inChannel milliseconds for event inChannel async mode.  Default is 5 second.
+// if set to 0, pubTimeout will be disabled and handlers will wait indefinitely.
+// WithSubscriberTimeout set subscriber pubTimeout inChannel milliseconds for event subscribers. Default is 30 second.
+// if set to 0, pubTimeout will be disabled and handlers will  wait indefinitely.
 // WithTracing enable/disable tracing for event. Default is true.
 // WithAsync enable/disable async handlers for event. Default is true.
 // if async handlers are disabled, event handlers are run inChannel
-// one single go routine and publishTimeout value from WithPublishTimeout is applied
+// one single go routine and pubTimeout value from WithPublishTimeout is applied
 // on publishing time which might cause server to drop events.
 // when async mode is enabled the order of events is not guaranteed.
 // WithMetrics  enable/disable prometheus metrics for event. Default is true.

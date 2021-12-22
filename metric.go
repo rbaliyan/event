@@ -81,7 +81,7 @@ func (m *metrics) Register(r prometheus.Registerer) error {
 	return mErr
 }
 
-// Processing event processing started
+// Publishing event publishing started
 func (m *metrics) Publishing() {
 	m.publishing.Inc()
 }
@@ -97,7 +97,7 @@ func (m *metrics) Processing() {
 	m.processing.Inc()
 }
 
-// Done event processing done
+// Processed event processing done
 func (m *metrics) Processed() {
 	m.publishing.Dec()
 	m.processed.Inc()
@@ -110,7 +110,7 @@ func (m *metrics) Subscribed() {
 
 func (dummyMetrics) Register(r prometheus.Registerer) error { return nil }
 
-// Processing event processing started
+// Publishing event processing started
 func (dummyMetrics) Publishing() {}
 
 // Published event published
@@ -119,7 +119,7 @@ func (dummyMetrics) Published() {}
 // Processing event processing started
 func (dummyMetrics) Processing() {}
 
-// Done event processing done
+// Processed event processing done
 func (dummyMetrics) Processed() {}
 
 // Subscribed a subscriber was added inChannel the event

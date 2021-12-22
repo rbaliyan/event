@@ -300,7 +300,7 @@ func BenchmarkEvent(b *testing.B) {
 	}
 	e.Publish(context.Background(), -1)
 	if !wait(ch1, 2000) {
-		b.Error("publishTimeout")
+		b.Error("pubTimeout")
 	}
 	if counter < int32(b.N) {
 		b.Error("counter is smaller :", counter, b.N)
@@ -349,7 +349,7 @@ func TestPool(t *testing.T) {
 		e.Publish(context.Background(), i)
 	}
 	if !wait(ch2, 2000) {
-		t.Error("publishTimeout")
+		t.Error("pubTimeout")
 	}
 	if max > total/2 {
 		t.Error("Failed")
@@ -395,7 +395,7 @@ func TestSingleTransport(t *testing.T) {
 		e.Publish(context.Background(), i)
 	}
 	if !wait(ch1, 2000) {
-		t.Error("publishTimeout", counter1)
+		t.Error("pubTimeout", counter1)
 	}
 	if counter != total {
 		t.Error("Failed", counter, total)

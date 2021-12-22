@@ -6,14 +6,14 @@ import (
 )
 
 var (
-	// DefaultPublishTimeout default publish publishTimeout inChannel milliseconds
-	DefaultPublishTimeout uint = 1000
+	// DefaultPublishTimeout default publish pubTimeout in milliseconds
+	DefaultPublishTimeout uint = 0
 
-	// DefaultAsyncTimeout default async publishTimeout inChannel milliseconds
-	DefaultAsyncTimeout uint = 5000
+	// DefaultPoolTimeout default async pubTimeout in milliseconds
+	DefaultPoolTimeout uint = 5000
 
-	// DefaultSubscriberTimeout default  subscriber publishTimeout inChannel milliseconds
-	DefaultSubscriberTimeout uint = 3000
+	// DefaultSubscriberTimeout default  subscriber pubTimeout in milliseconds
+	DefaultSubscriberTimeout uint = 0
 
 	// DefaultChannelBufferSize default channel buffer size
 	DefaultChannelBufferSize uint = 100
@@ -30,8 +30,8 @@ type eventConfig struct {
 	tracingEnabled    bool
 	metricsEnabled    bool
 	metrics           Metrics
-	publishTimeout    time.Duration
-	asyncTimeout      time.Duration
+	pubTimeout        time.Duration
+	poolTimeout       time.Duration
 	subTimeout        time.Duration
 	channelBufferSize uint
 	workerPoolSize    uint
@@ -54,36 +54,36 @@ func newEventOptions() *eventConfig {
 		onError:           defaultErrorHandler,
 		logger:            Logger("event>"),
 		channelBufferSize: DefaultChannelBufferSize,
-		publishTimeout:    time.Duration(DefaultPublishTimeout) * time.Millisecond,
-		asyncTimeout:      time.Duration(DefaultAsyncTimeout) * time.Millisecond,
-		subTimeout:        time.Duration(DefaultSubscriberTimeout) * time.Millisecond,
 		workerPoolSize:    DefaultWorkerPoolSize,
+		pubTimeout:        time.Duration(DefaultPublishTimeout) * time.Millisecond,
+		poolTimeout:       time.Duration(DefaultPoolTimeout) * time.Millisecond,
+		subTimeout:        time.Duration(DefaultSubscriberTimeout) * time.Millisecond,
 	}
 }
 
 // Option event options
 type Option func(*eventConfig)
 
-// WithPublishTimeout set publishTimeout for event publishing.
-// if set to 0, publishTimeout will be disabled and publisher will
+// WithPublishTimeout set pubTimeout for event publishing.
+// if set to 0, pubTimeout will be disabled and publisher will
 // wait indefinitely.
 func WithPublishTimeout(v time.Duration) Option {
 	return func(e *eventConfig) {
-		e.publishTimeout = v
+		e.pubTimeout = v
 	}
 }
 
-// WithAsyncTimeout set async publishTimeout for event
-// if set to 0, publishTimeout will be disabled and handlers will
+// WithPoolTimeout set async pubTimeout for event
+// if set to 0, pubTimeout will be disabled and handlers will
 // wait indefinitely.
-func WithAsyncTimeout(v time.Duration) Option {
+func WithPoolTimeout(v time.Duration) Option {
 	return func(e *eventConfig) {
-		e.asyncTimeout = v
+		e.poolTimeout = v
 	}
 }
 
-// WithSubscriberTimeout set subscriber publishTimeout for event
-// if set to 0, publishTimeout will be disabled and handlers will
+// WithSubscriberTimeout set subscriber pubTimeout for event
+// if set to 0, pubTimeout will be disabled and handlers will
 // wait indefinitely.
 func WithSubscriberTimeout(v time.Duration) Option {
 	return func(e *eventConfig) {
@@ -108,9 +108,9 @@ func WithRecovery(v bool) Option {
 
 // WithAsync enable/disable async handlers for event.
 // if async handlers are disabled, event handlers are run inChannel
-// one single go routine and eventConfig.publishTimeout is applied
+// one single go routine and eventConfig.pubTimeout is applied
 // on publishing time. So if all handlers takes more than
-// eventConfig.publishTimeout milliseconds it will start dropping events.
+// eventConfig.pubTimeout milliseconds it will start dropping events.
 func WithAsync(v bool) Option {
 	return func(e *eventConfig) {
 		e.asyncEnabled = v
