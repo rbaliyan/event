@@ -13,20 +13,6 @@ var _ Message = message{}
 var _ Transport = &channelMuxTransport{}
 var _ Transport = &singleChannelTransport{}
 
-// Message transport message
-type Message interface {
-	// ID message ID
-	ID() string
-	// Source message source
-	Source() string
-	// Metadata message metadata
-	Metadata() Metadata
-	// Payload data after unmarshall
-	Payload() Data
-	// Context create context with data, includes tracing information
-	Context() context.Context
-}
-
 // Transport used by events for sending data to subscribers
 type Transport interface {
 	// Send channel for sending data

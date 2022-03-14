@@ -126,7 +126,7 @@ func TestMetadata(t *testing.T) {
 		}
 	})
 	msg := "this is a test"
-	m := Metadata([]byte(msg))
+	m := NewMetadata().Set("", msg)
 	e.Publish(ContextWithMetadata(context.Background(), m), nil)
 	m1, ok := waitForMetaData(ch1, waitChTimeoutMS)
 	if !ok {

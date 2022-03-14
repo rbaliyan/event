@@ -42,9 +42,6 @@ var _ Event = Events{}
 // Data event data
 type Data interface{}
 
-// Metadata metadata
-type Metadata []byte
-
 // Handler event handler
 type Handler func(context.Context, Event, Data)
 
@@ -70,10 +67,6 @@ type Event interface {
 
 // Events a group of events
 type Events []Event
-
-func (m Metadata) String() string {
-	return string(m)
-}
 
 // discardEvent discard all events
 type discardEvent struct{}
@@ -250,7 +243,7 @@ func (e *eventImpl) Publish(ctx context.Context, eventData Data) {
 		data:     eventData,
 		id:       id,
 		source:   e.registry.ID(),
-		metadata: CloneMetadata(ContextMetadata(ctx)),
+		metadata: ContextMetadata(ctx).Copy(),
 	}
 	// increment counter
 	e.metrics.Publishing()

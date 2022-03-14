@@ -40,16 +40,6 @@ func NewID() string {
 	return strconv.FormatUint(atomic.AddUint64(&counter, 1), 10)
 }
 
-// CloneMetadata clone metadata
-func CloneMetadata(m Metadata) Metadata {
-	if len(m) == 0 {
-		return nil
-	}
-	m1 := make([]byte, len(m))
-	copy(m1, []byte(m))
-	return m1
-}
-
 // Sanitize strings and remove special chars
 func Sanitize(s string) string {
 	var result strings.Builder
