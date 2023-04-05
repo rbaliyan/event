@@ -143,7 +143,11 @@ func (e *eventImpl) WithAsync(handler Handler) Handler {
 			if err := e.workerPool.Acquire(poolCtx, 1); err == nil {
 				// release semaphore for worker pool
 				// only when acquire was success
-				defer e.workerPool.Release(1)
+				go func() {
+					defer e.workerPool.Release(1)
+					handler(NewContext(ctx), ev, data)
+				}()
+				return
 			}
 		}
 		// create a new context with data from current context
