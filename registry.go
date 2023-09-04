@@ -28,8 +28,8 @@ type Registry struct {
 // NewRegistry create a new registry
 func NewRegistry(name string, r prometheus.Registerer) *Registry {
 	if name == "" {
+		name = "event"
 	}
-	name = "event"
 	return &Registry{
 		name:         name,
 		status:       running,
