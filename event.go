@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/multierr"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -57,6 +59,7 @@ type Metrics interface {
 
 // Event interface
 type Event interface {
+	io.Closer
 	// Publish send data to all subscribers
 	Publish(context.Context, Data)
 	// Subscribe receive data sent by Publish
@@ -74,6 +77,7 @@ type discardEvent struct{}
 func (discardEvent) Name() string                           { return "" }
 func (discardEvent) Subscribe(_ context.Context, _ Handler) {}
 func (discardEvent) Publish(_ context.Context, _ Data)      {}
+func (discardEvent) Close() error                           { return nil }
 
 // eventImpl event implementation
 type eventImpl struct {
@@ -361,6 +365,17 @@ func (e Events) Publish(ctx context.Context, data Data) {
 	for _, event := range e {
 		event.Publish(ctx, data)
 	}
+}
+
+func (e Events) Close() error {
+	var combinedErr error
+	for _, event := range e {
+		err := event.Close()
+		if err != nil {
+			combinedErr = multierr.Append(combinedErr, err)
+		}
+	}
+	return combinedErr
 }
 
 // New create new instance of event
