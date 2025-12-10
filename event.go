@@ -92,7 +92,6 @@ type eventImpl struct {
 	asyncEnabled      bool
 	recoveryEnabled   bool
 	tracingEnabled    bool
-	shutdownChan      chan struct{}
 	onError           func(Event, error)
 	workerPool        *semaphore.Weighted
 }
@@ -139,7 +138,6 @@ func (e *eventImpl) WithAsync(handler Handler) Handler {
 				defer cancel()
 			}
 			// try to acquire worker pool
-			// even if error happens, we go ahead with a new go routine
 			if err := e.workerPool.Acquire(poolCtx, 1); err == nil {
 				// release semaphore for worker pool
 				// only when acquire was success
@@ -149,6 +147,8 @@ func (e *eventImpl) WithAsync(handler Handler) Handler {
 				}()
 				return
 			}
+			// Log warning when pool is exhausted but still proceed
+			e.logger.Printf("%s: worker pool exhausted, running handler without pool limit", e.name)
 		}
 		// create a new context with data from current context
 		// and call handler inChannel a go routine
@@ -273,8 +273,13 @@ func (e *eventImpl) Publish(ctx context.Context, eventData Data) {
 		defer cancel()
 	}
 	// Send data
+	sendCh := e.transport.Send()
+	if sendCh == nil {
+		e.logger.Println(e.name, "Transport closed, cannot send data")
+		return
+	}
 	select {
-	case e.transport.Send() <- &data:
+	case sendCh <- &data:
 	case <-ctx.Done():
 		e.logger.Println(e.name, "Timeout while sending data on transport")
 	}
@@ -286,7 +291,6 @@ func (e *eventImpl) Publish(ctx context.Context, eventData Data) {
 func (e *eventImpl) Close() error {
 	var combinedErr error
 	if atomic.CompareAndSwapInt32(&e.status, 1, 0) {
-		close(e.shutdownChan)
 		combinedErr = e.transport.Close()
 	}
 	return combinedErr

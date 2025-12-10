@@ -40,7 +40,7 @@ func (m Metadata) String() string {
 
 // Copy metadata
 func (m Metadata) Copy() Metadata {
-	if len(m) == 0 {
+	if m == nil {
 		return nil
 	}
 	m1 := Metadata{}
