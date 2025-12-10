@@ -92,8 +92,17 @@ func ContextWithMetadata(ctx context.Context, m Metadata) context.Context {
 	}
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
-		s.metadata = m
-		return ctx
+		// Create a new struct to avoid race conditions
+		newData := &eventContextData{
+			name:     s.name,
+			source:   s.source,
+			eventID:  s.eventID,
+			subID:    s.subID,
+			metadata: m,
+			logger:   s.logger,
+			registry: s.registry,
+		}
+		return context.WithValue(ctx, eventcontextKey, newData)
 	}
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{metadata: m})
 }
@@ -105,8 +114,17 @@ func ContextWithEventID(ctx context.Context, id string) context.Context {
 	}
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
-		s.eventID = id
-		return ctx
+		// Create a new struct to avoid race conditions
+		newData := &eventContextData{
+			name:     s.name,
+			source:   s.source,
+			eventID:  id,
+			subID:    s.subID,
+			metadata: s.metadata,
+			logger:   s.logger,
+			registry: s.registry,
+		}
+		return context.WithValue(ctx, eventcontextKey, newData)
 	}
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{eventID: id})
 }
@@ -118,8 +136,17 @@ func ContextWithLogger(ctx context.Context, l *log.Logger) context.Context {
 	}
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
-		s.logger = l
-		return ctx
+		// Create a new struct to avoid race conditions
+		newData := &eventContextData{
+			name:     s.name,
+			source:   s.source,
+			eventID:  s.eventID,
+			subID:    s.subID,
+			metadata: s.metadata,
+			logger:   l,
+			registry: s.registry,
+		}
+		return context.WithValue(ctx, eventcontextKey, newData)
 	}
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{logger: l})
 }

@@ -132,7 +132,7 @@ func (c *channelMuxTransport) Close() error {
 	if atomic.CompareAndSwapInt32(&c.status, 1, 0) {
 		if c.inChannel != nil {
 			close(c.inChannel)
-			c.inChannel = nil
+			// Note: Do not set inChannel to nil here to avoid race with fan-out goroutine
 		}
 	}
 	return nil
@@ -168,7 +168,7 @@ func (c *singleChannelTransport) Close() error {
 	if atomic.CompareAndSwapInt32(&c.status, 1, 0) {
 		if c.in != nil {
 			close(c.in)
-			c.in = nil
+			// Note: Do not set in to nil here to avoid race with goroutine
 		}
 	}
 	return nil
@@ -204,7 +204,6 @@ func NewChannelTransport(timeout time.Duration, buffer uint) Transport {
 			c.mutex.RUnlock()
 		}
 		atomic.StoreInt32(&c.status, 0)
-		c.inChannel = nil
 	}()
 	return c
 }
@@ -226,7 +225,6 @@ func NewSingleTransport(timeout time.Duration, buffer uint) Transport {
 			sendWithTimeout("", msg, c.out, timeout)
 		}
 		atomic.StoreInt32(&c.status, 0)
-		c.in = nil
 	}()
 	return c
 }

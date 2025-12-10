@@ -99,7 +99,7 @@ func (m *metrics) Processing() {
 
 // Processed event processing done
 func (m *metrics) Processed() {
-	m.publishing.Dec()
+	m.processing.Dec()
 	m.processed.Inc()
 }
 

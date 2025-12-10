@@ -3,12 +3,15 @@ package event
 import (
 	"context"
 	"errors"
-	"github.com/google/go-cmp/cmp"
-	"math"
-	"sync/atomic"
-	"syreclabs.com/go/faker"
+	"sync"
 	"testing"
 	"time"
+
+	"math"
+	"sync/atomic"
+
+	"github.com/google/go-cmp/cmp"
+	"syreclabs.com/go/faker"
 )
 
 func init() {
@@ -408,5 +411,254 @@ func TestSingleTransport(t *testing.T) {
 	}
 	if counter3 >= total {
 		t.Error("Failed", counter3, total)
+	}
+}
+
+// TestMetadataCopy tests that Metadata.Copy() handles nil and empty cases correctly
+func TestMetadataCopy(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    Metadata
+		wantNil  bool
+		wantLen  int
+	}{
+		{"nil metadata", nil, true, 0},
+		{"empty metadata", Metadata{}, false, 0},
+		{"single key", Metadata{"key": "value"}, false, 1},
+		{"multiple keys", Metadata{"a": "1", "b": "2"}, false, 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.input.Copy()
+			if tt.wantNil {
+				if result != nil {
+					t.Errorf("expected nil, got %v", result)
+				}
+			} else {
+				if result == nil {
+					t.Errorf("expected non-nil, got nil")
+				} else if len(result) != tt.wantLen {
+					t.Errorf("expected len %d, got %d", tt.wantLen, len(result))
+				}
+			}
+		})
+	}
+}
+
+// TestContextImmutability verifies that context modification functions
+// don't mutate the original context data (race condition fix)
+func TestContextImmutability(t *testing.T) {
+	// Create initial context with data
+	ctx := context.Background()
+	ctx = ContextWithMetadata(ctx, Metadata{"key": "original"})
+	ctx = ContextWithEventID(ctx, "event-123")
+
+	// Get original values
+	originalMeta := ContextMetadata(ctx)
+	originalID := ContextEventID(ctx)
+
+	// Modify context with new values
+	ctx2 := ContextWithMetadata(ctx, Metadata{"key": "modified"})
+	ctx3 := ContextWithEventID(ctx, "event-456")
+
+	// Verify original context is unchanged
+	if ContextMetadata(ctx)["key"] != "original" {
+		t.Error("original metadata was mutated")
+	}
+	if ContextEventID(ctx) != "event-123" {
+		t.Error("original event ID was mutated")
+	}
+
+	// Verify new contexts have new values
+	if ContextMetadata(ctx2)["key"] != "modified" {
+		t.Error("new metadata not set correctly")
+	}
+	if ContextEventID(ctx3) != "event-456" {
+		t.Error("new event ID not set correctly")
+	}
+
+	// Verify we didn't accidentally modify the original references
+	if originalMeta["key"] != "original" {
+		t.Error("original metadata reference was mutated")
+	}
+	if originalID != "event-123" {
+		t.Error("original event ID reference was mutated")
+	}
+}
+
+// TestContextConcurrentAccess verifies context functions are safe for concurrent use
+func TestContextConcurrentAccess(t *testing.T) {
+	ctx := context.Background()
+	ctx = ContextWithMetadata(ctx, Metadata{"initial": "value"})
+	ctx = ContextWithEventID(ctx, "initial-id")
+
+	var wg sync.WaitGroup
+	errors := make(chan error, 100)
+
+	// Spawn multiple goroutines that read and write context concurrently
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			// Read operations
+			_ = ContextMetadata(ctx)
+			_ = ContextEventID(ctx)
+			_ = ContextSource(ctx)
+			_ = ContextLogger(ctx)
+			_ = ContextRegistry(ctx)
+
+			// Write operations (should create new contexts, not mutate)
+			newCtx := ContextWithMetadata(ctx, Metadata{"goroutine": "value"})
+			newCtx = ContextWithEventID(newCtx, "new-id")
+
+			// Verify the new context has correct values
+			if ContextEventID(newCtx) != "new-id" {
+				errors <- nil // Signal error occurred
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	if len(errors) > 0 {
+		t.Error("concurrent context access caused errors")
+	}
+}
+
+// TestTransportCloseDoesNotPanic verifies transport close doesn't cause panics
+func TestTransportCloseDoesNotPanic(t *testing.T) {
+	transport := NewChannelTransport(time.Second, 10)
+
+	// Subscribe to get a receive channel
+	ch := transport.Receive("sub1")
+	if ch == nil {
+		t.Fatal("expected receive channel")
+	}
+
+	// Close transport
+	if err := transport.Close(); err != nil {
+		t.Errorf("close error: %v", err)
+	}
+
+	// Verify Send() returns nil after close (not panic)
+	if sendCh := transport.Send(); sendCh != nil {
+		t.Error("expected nil send channel after close")
+	}
+
+	// Verify Receive() returns nil after close
+	if recvCh := transport.Receive("sub2"); recvCh != nil {
+		t.Error("expected nil receive channel after close")
+	}
+
+	// Double close should not panic
+	if err := transport.Close(); err != nil {
+		t.Errorf("double close error: %v", err)
+	}
+}
+
+// TestPublishToClosedTransport verifies publishing to closed transport doesn't panic
+func TestPublishToClosedTransport(t *testing.T) {
+	r := NewRegistry("test", nil)
+	defer r.Close()
+
+	e := New("test-closed",
+		WithAsync(false),
+		WithRegistry(r))
+
+	// Close the registry which closes all events
+	r.Close()
+
+	// This should not panic - the event should handle closed transport gracefully
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("publish to closed transport panicked: %v", r)
+		}
+	}()
+
+	e.Publish(context.Background(), "test data")
+}
+
+// TestEventClose verifies event close works correctly
+func TestEventClose(t *testing.T) {
+	r := NewRegistry("test", nil)
+	e := New("test-close",
+		WithAsync(true),
+		WithRegistry(r))
+
+	ch := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	e.Subscribe(ctx, func(ctx context.Context, ev Event, data Data) {
+		ch <- struct{}{}
+	})
+
+	// Verify event works before close
+	e.Publish(context.Background(), nil)
+	if !wait(ch, waitChTimeoutMS) {
+		t.Error("expected to receive event before close")
+	}
+
+	// Close registry (which closes all events)
+	r.Close()
+
+	// Publish after close should not panic
+	e.Publish(context.Background(), nil)
+
+	// Should not receive anything after close
+	if wait(ch, 50) {
+		t.Error("should not receive event after close")
+	}
+}
+
+// TestWorkerPoolExhaustion verifies behavior when worker pool is exhausted
+func TestWorkerPoolExhaustion(t *testing.T) {
+	r := NewRegistry("test", nil)
+	defer r.Close()
+
+	poolSize := 2
+	e := New("test-pool-exhaust",
+		WithAsync(true),
+		WithWorkerPoolSize(uint(poolSize)),
+		WithPoolTimeout(10*time.Millisecond),
+		WithRegistry(r))
+
+	var processed int32
+	blockCh := make(chan struct{})
+	doneCh := make(chan struct{})
+
+	e.Subscribe(context.Background(), func(ctx context.Context, ev Event, data Data) {
+		atomic.AddInt32(&processed, 1)
+		<-blockCh // Block until released
+	})
+
+	// Publish more events than pool size
+	for i := 0; i < poolSize+2; i++ {
+		e.Publish(context.Background(), i)
+	}
+
+	// Wait a bit for events to be processed
+	time.Sleep(50 * time.Millisecond)
+
+	// All events should eventually be processed (some bypassing pool)
+	go func() {
+		for atomic.LoadInt32(&processed) < int32(poolSize+2) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		close(doneCh)
+	}()
+
+	// Release blocked handlers
+	for i := 0; i < poolSize+2; i++ {
+		blockCh <- struct{}{}
+	}
+
+	select {
+	case <-doneCh:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Errorf("timeout waiting for all events, processed: %d", atomic.LoadInt32(&processed))
 	}
 }
