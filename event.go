@@ -4,8 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"os"
+	"log/slog"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/sync/semaphore"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -26,26 +24,16 @@ var (
 
 	// default registry
 	defaultRegistry *Registry
-
-	logger *log.Logger
 )
 
 func init() {
-	logger = log.New(os.Stdout, "Event>", log.LstdFlags|log.Llongfile)
 	defaultRegistry = NewRegistry("event", nil)
 }
 
-// enforce interface
-var _ Event = &eventImpl{}
-var _ Event = Events{}
+// Handler generic event handler
+type Handler[T any] func(context.Context, Event[T], T)
 
-// Data event data
-type Data interface{}
-
-// Handler event handler
-type Handler func(context.Context, Event, Data)
-
-// Metrics interface
+// Metrics interface for custom metrics implementations
 type Metrics interface {
 	Register(prometheus.Registerer) error
 	Publishing()
@@ -55,139 +43,98 @@ type Metrics interface {
 	Subscribed()
 }
 
-// Event interface
-type Event interface {
-	// Publish send data to all subscribers
-	Publish(context.Context, Data)
-	// Subscribe receive data sent by Publish
-	Subscribe(context.Context, Handler)
-	// Name event name which uniquely identifies this event inChannel Registry
+// BaseEvent non-generic interface for registry storage and heterogeneous collections
+type BaseEvent interface {
+	// Name returns the event name which uniquely identifies this event in Registry
 	Name() string
+	// Close closes the event
+	Close() error
 }
 
-// Events a group of events
-type Events []Event
+// Event generic interface for typed publish/subscribe
+type Event[T any] interface {
+	BaseEvent
+	// Publish sends data to all subscribers (fire and forget)
+	Publish(context.Context, T)
+	// Subscribe registers a handler to receive published data (fire and forget)
+	Subscribe(context.Context, Handler[T])
+}
 
 // discardEvent discard all events
-type discardEvent struct{}
+type discardEvent[T any] struct{}
 
-func (discardEvent) Name() string                           { return "" }
-func (discardEvent) Subscribe(_ context.Context, _ Handler) {}
-func (discardEvent) Publish(_ context.Context, _ Data)      {}
+func (discardEvent[T]) Name() string                           { return "" }
+func (discardEvent[T]) Close() error                           { return nil }
+func (discardEvent[T]) Subscribe(_ context.Context, _ Handler[T]) {}
+func (discardEvent[T]) Publish(_ context.Context, _ T)         {}
 
-// eventImpl event implementation
-type eventImpl struct {
-	status            int32
-	name              string
-	size              int64
-	transport         Transport
-	metrics           Metrics
-	registry          *Registry
-	logger            *log.Logger
-	pubTimeout        time.Duration
-	poolTimeout       time.Duration
-	subTimeout        time.Duration
-	channelBufferSize int
-	workerPoolSize    int64
-	asyncEnabled      bool
-	recoveryEnabled   bool
-	tracingEnabled    bool
-	onError           func(Event, error)
-	workerPool        *semaphore.Weighted
+// eventImpl generic event implementation
+type eventImpl[T any] struct {
+	status          int32
+	name            string
+	size            int64
+	transport       Transport
+	metrics         Metrics
+	registry        *Registry
+	logger          *slog.Logger
+	subTimeout      time.Duration
+	recoveryEnabled bool
+	tracingEnabled  bool
+	onError         func(BaseEvent, error) // for panic recovery only
 }
 
-func (e *eventImpl) String() string {
+func (e *eventImpl[T]) String() string {
 	return e.name
 }
 
 // Name event name
-func (e *eventImpl) Name() string {
+func (e *eventImpl[T]) Name() string {
 	return e.name
 }
 
 // Subscribers events subscribers count
-func (e *eventImpl) Subscribers() int64 {
+func (e *eventImpl[T]) Subscribers() int64 {
 	return atomic.LoadInt64(&e.size)
 }
 
 // Tracer event tracer
-func (e *eventImpl) Tracer() trace.Tracer {
+func (e *eventImpl[T]) Tracer() trace.Tracer {
 	if e.tracingEnabled {
 		return otel.Tracer(e.registry.Name())
 	}
 	return nil
 }
 
-// WithAsync launch handler as async go routine
-// should be applied last inChannel the chain of all middlewares
-// optionally worker pool can be enabled which limit
-// parallel running workers for handlers.
-// we are not re-using go routines.
-func (e *eventImpl) WithAsync(handler Handler) Handler {
-	if !e.asyncEnabled {
-		return handler
-	}
-	return func(ctx context.Context, ev Event, data Data) {
-		// check if worker pool is enabled
-		if e.workerPool != nil {
-			poolCtx := ctx
-			if e.poolTimeout > 0 {
-				var cancel context.CancelFunc
-				// create context wit pubTimeout to wait for worker pool
-				poolCtx, cancel = context.WithTimeout(ctx, e.poolTimeout)
-				defer cancel()
-			}
-			// try to acquire worker pool
-			if err := e.workerPool.Acquire(poolCtx, 1); err == nil {
-				// release semaphore for worker pool
-				// only when acquire was success
-				go func() {
-					defer e.workerPool.Release(1)
-					handler(NewContext(ctx), ev, data)
-				}()
-				return
-			}
-			// Log warning when pool is exhausted but still proceed
-			e.logger.Printf("%s: worker pool exhausted, running handler without pool limit", e.name)
-		}
-		// create a new context with data from current context
-		// and call handler inChannel a go routine
-		go handler(NewContext(ctx), ev, data)
-	}
-}
+// internalHandler is a non-generic handler for middleware chain
+type internalHandler func(context.Context, BaseEvent, any)
 
 // WithMetrics enable metrics for handlers
-// should be applied before async and after recovery
-func (e *eventImpl) WithMetrics(handler Handler) Handler {
-	return func(ctx context.Context, ev Event, data Data) {
-		// call handler
+func (e *eventImpl[T]) WithMetrics(handler internalHandler) internalHandler {
+	return func(ctx context.Context, ev BaseEvent, data any) {
 		e.metrics.Processing()
 		defer e.metrics.Processed()
 		handler(ctx, ev, data)
 	}
 }
 
-// WithTimeout enable pubTimeout for handlers
-func (e *eventImpl) WithTimeout(handler Handler) Handler {
+// WithTimeout enable timeout for handlers
+func (e *eventImpl[T]) WithTimeout(handler internalHandler) internalHandler {
 	if e.subTimeout == 0 {
 		return handler
 	}
-	return func(ctx context.Context, ev Event, data Data) {
+	return func(ctx context.Context, ev BaseEvent, data any) {
 		ctx, cancel := context.WithTimeout(ctx, e.subTimeout)
 		defer cancel()
-		// call handler
 		handler(ctx, ev, data)
 	}
 }
 
 // WithTracing enable tracing for handler
-// should be applied before async and after recovery
-func (e *eventImpl) WithTracing(handler Handler) Handler {
+func (e *eventImpl[T]) WithTracing(handler internalHandler) internalHandler {
 	if !e.tracingEnabled {
 		return handler
 	}
-	return func(ctx context.Context, ev Event, data Data) {
-		// Tracing
+	return func(ctx context.Context, ev BaseEvent, data any) {
 		if tracer := e.Tracer(); tracer != nil {
 			var span trace.Span
 			ctx, span = tracer.Start(ctx, fmt.Sprintf("%s.subscribe", e.name),
@@ -207,13 +154,11 @@ func (e *eventImpl) WithTracing(handler Handler) Handler {
 }
 
 // WithRecovery enable recovery for handlers
-// should always be enabled, only disable for testing
-// should be first middleware applied on the handler.
-func (e *eventImpl) WithRecovery(handler Handler) Handler {
+func (e *eventImpl[T]) WithRecovery(handler internalHandler) internalHandler {
 	if !e.recoveryEnabled {
 		return handler
 	}
-	return func(ctx context.Context, ev Event, data Data) {
+	return func(ctx context.Context, ev BaseEvent, data any) {
 		logger := ContextLogger(ctx)
 		if logger == nil {
 			logger = e.logger
@@ -221,12 +166,15 @@ func (e *eventImpl) WithRecovery(handler Handler) Handler {
 		defer func() {
 			_, file, l, _ := runtime.Caller(0)
 			if err := recover(); err != nil {
-				flag := ev.Name()
-				logger.Printf("Event[%s] Recover panic line => %v file => %s\n", flag, l, file)
-				logger.Printf("Event[%s] Recover err => %v\n", flag, err)
-				logger.Println(string(debug.Stack()))
+				logger.Error("panic recovered in event handler",
+					"event", ev.Name(),
+					"line", l,
+					"file", file,
+					"error", err,
+					"stack", string(debug.Stack()),
+				)
 				if e.onError != nil {
-					e.onError(ev, fmt.Errorf("[%s]panic in %s:%d with : %v", flag, file, l, err))
+					e.onError(ev, fmt.Errorf("[%s]panic in %s:%d with : %v", ev.Name(), file, l, err))
 				}
 			}
 		}()
@@ -234,11 +182,13 @@ func (e *eventImpl) WithRecovery(handler Handler) Handler {
 	}
 }
 
-// Publish context is used to pass other event data i.e. sender id , event id etc.
-func (e *eventImpl) Publish(ctx context.Context, eventData Data) {
+// Publish sends data to all subscribers (fire and forget)
+func (e *eventImpl[T]) Publish(ctx context.Context, eventData T) {
+	// Check for nil event or closed
 	if e == nil || atomic.LoadInt32(&e.status) != 1 {
 		return
 	}
+
 	id := ContextEventID(ctx)
 	if id == "" {
 		id = e.registry.NewEventID()
@@ -265,30 +215,17 @@ func (e *eventImpl) Publish(ctx context.Context, eventData Data) {
 		defer span.End()
 	}
 
-	_, ok := ctx.Deadline()
-	if t := e.pubTimeout; t != 0 && !ok {
-		// Add context deadline if not already set
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, t)
-		defer cancel()
-	}
-	// Send data
+	// Send data to transport
 	sendCh := e.transport.Send()
 	if sendCh == nil {
-		e.logger.Println(e.name, "Transport closed, cannot send data")
-		return
+		return // transport closed
 	}
-	select {
-	case sendCh <- &data:
-	case <-ctx.Done():
-		e.logger.Println(e.name, "Timeout while sending data on transport")
-	}
-	// increment counter
+	sendCh <- &data
 	e.metrics.Published()
 }
 
 // Close shutdown event handling
-func (e *eventImpl) Close() error {
+func (e *eventImpl[T]) Close() error {
 	var combinedErr error
 	if atomic.CompareAndSwapInt32(&e.status, 1, 0) {
 		combinedErr = e.transport.Close()
@@ -296,19 +233,38 @@ func (e *eventImpl) Close() error {
 	return combinedErr
 }
 
-// Subscribe context is passed to all handles.
-// passed context can be used to remove subscription by
-// cancelling context
-func (e *eventImpl) Subscribe(ctx context.Context, handler Handler) {
+// Subscribe registers a handler to receive published data (fire and forget)
+func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T]) {
+	// Check for nil event or closed
 	if e == nil || atomic.LoadInt32(&e.status) != 1 {
 		return
 	}
+
 	atomic.AddInt64(&e.size, 1)
 	subID := e.registry.NewSubscriptionID()
-	// update handler with recovery, tracing and async
-	handler = e.WithAsync(e.WithTimeout(e.WithMetrics(e.WithTracing(e.WithRecovery(handler)))))
+
+	// Wrap typed handler into internal handler
+	internalH := func(ctx context.Context, ev BaseEvent, data any) {
+		// Type assert and call the typed handler
+		typedData, ok := data.(T)
+		if !ok {
+			// For nil interface values, use zero value
+			var zero T
+			typedData = zero
+		}
+		handler(ctx, e, typedData)
+	}
+
+	// Apply middleware chain
+	wrappedHandler := e.WithTimeout(e.WithMetrics(e.WithTracing(e.WithRecovery(internalH))))
+
 	ch := e.transport.Receive(subID)
+	if ch == nil {
+		atomic.AddInt64(&e.size, -1)
+		return // transport closed
+	}
 	e.metrics.Subscribed()
+
 	go func() {
 		defer func() {
 			atomic.AddInt64(&e.size, -1)
@@ -316,31 +272,34 @@ func (e *eventImpl) Subscribe(ctx context.Context, handler Handler) {
 		for {
 			select {
 			case <-e.registry.shutdownChan:
-				e.logger.Println(e.Name(), "shutdown subscriber remove:", subID)
+				e.logger.Info("shutdown subscriber remove", "event", e.Name(), "subscriber_id", subID)
 				e.transport.Delete(subID)
 				return
 
 			case <-ctx.Done():
-				e.logger.Println(e.Name(), "subscriber remove:", subID)
+				e.logger.Info("subscriber remove", "event", e.Name(), "subscriber_id", subID)
 				e.transport.Delete(subID)
 				return
 
 			case data, ok := <-ch:
 				if !ok {
-					e.logger.Println(e.Name(), "channel closed:", subID)
+					e.logger.Info("channel closed", "event", e.Name(), "subscriber_id", subID)
 					return
 				}
 				// Update context values and call handler
-				handler(contextWithInfo(data.Context(), data.ID(), e.name, data.Source(), subID, data.Metadata(), e.logger, e.registry),
+				wrappedHandler(contextWithInfo(data.Context(), data.ID(), e.name, data.Source(), subID, data.Metadata(), e.logger, e.registry),
 					e, data.Payload())
 			}
 		}
 	}()
-	e.logger.Println(e.Name(), "installed subscriber with id:", subID)
+	e.logger.Info("installed subscriber", "event", e.Name(), "subscriber_id", subID)
 }
 
+// Events a group of events with same type
+type Events[T any] []Event[T]
+
 // Names event names
-func (e Events) Names() []string {
+func (e Events[T]) Names() []string {
 	names := make([]string, 0, len(e))
 	for _, event := range e {
 		names = append(names, event.Name())
@@ -349,19 +308,30 @@ func (e Events) Names() []string {
 }
 
 // Name event name
-func (e Events) Name() string {
+func (e Events[T]) Name() string {
 	return strings.Join(e.Names(), ",")
 }
 
-// Subscribe all events inChannel the list
-func (e Events) Subscribe(ctx context.Context, handler Handler) {
+// Close closes all events
+func (e Events[T]) Close() error {
+	var err error
+	for _, event := range e {
+		if cerr := event.Close(); cerr != nil {
+			err = cerr
+		}
+	}
+	return err
+}
+
+// Subscribe all events in the list
+func (e Events[T]) Subscribe(ctx context.Context, handler Handler[T]) {
 	for _, event := range e {
 		event.Subscribe(ctx, handler)
 	}
 }
 
-// Publish to all events inChannel list
-func (e Events) Publish(ctx context.Context, data Data) {
+// Publish to all events in list
+func (e Events[T]) Publish(ctx context.Context, data T) {
 	for _, event := range e {
 		event.Publish(ctx, data)
 	}
@@ -369,64 +339,63 @@ func (e Events) Publish(ctx context.Context, data Data) {
 
 // New create new instance of event
 // and registers with given registry
-func New(name string, opts ...Option) Event {
-	// default config
-	c := newEventOptions()
-	// apply options
-	for _, opt := range opts {
-		opt(c)
+func New[T any](name string, opts ...Option) Event[T] {
+	// Create options with defaults and apply provided options
+	o := newEventOptions(opts...)
+
+	// Get event from registry if already exists
+	if ev := o.registry.Get(name); ev != nil {
+		// Try to return as typed event
+		if typed, ok := ev.(Event[T]); ok {
+			return typed
+		}
+		// Event exists but with different type - return it anyway
+		// This is a user error but we don't panic
 	}
-	// Get event from registry
-	if ev := c.registry.Get(name); ev != nil {
-		return ev
-	}
-	// check if metrics was supplied
-	if c.metrics == nil {
-		// set metrics
-		if c.metricsEnabled {
-			c.metrics = c.registry.Metrics(name)
-			_ = c.metrics.Register(c.registry.Registerer())
+
+	// Setup metrics
+	metrics := o.metrics
+	if metrics == nil {
+		if o.metricsEnabled {
+			metrics = o.registry.Metrics(name)
+			_ = metrics.Register(o.registry.Registerer())
 		} else {
-			// create dummy metrics
-			c.metrics = dummyMetrics{}
+			metrics = dummyMetrics{}
 		}
 	}
-	// set default transport of not already set
-	if c.transport == nil {
-		c.transport = NewChannelTransport(c.subTimeout, c.channelBufferSize)
+
+	// Setup transport
+	transport := o.transport
+	if transport == nil {
+		transport = NewChannelTransport(
+			WithTransportBufferSize(o.channelBufferSize),
+		)
 	}
-	var workerPool *semaphore.Weighted
-	// create worker pool
-	if c.workerPoolSize > 0 {
-		workerPool = semaphore.NewWeighted(int64(c.workerPoolSize))
+
+	// Create new instance of event
+	e := &eventImpl[T]{
+		status:          1,
+		name:            name,
+		logger:          o.logger,
+		registry:        o.registry,
+		metrics:         metrics,
+		recoveryEnabled: o.recoveryEnabled,
+		tracingEnabled:  o.tracingEnabled,
+		subTimeout:      o.subTimeout,
+		onError:         o.onError,
+		transport:       transport,
 	}
-	// create new instance of event
-	e := &eventImpl{
-		status:            1,
-		name:              name,
-		logger:            c.logger,
-		registry:          c.registry,
-		metrics:           c.metrics,
-		recoveryEnabled:   c.recoveryEnabled,
-		tracingEnabled:    c.tracingEnabled,
-		asyncEnabled:      c.asyncEnabled,
-		channelBufferSize: int(c.channelBufferSize),
-		workerPoolSize:    int64(c.workerPoolSize),
-		poolTimeout:       c.poolTimeout,
-		pubTimeout:        c.pubTimeout,
-		subTimeout:        c.subTimeout,
-		onError:           c.onError,
-		transport:         c.transport,
-		workerPool:        workerPool,
-	}
-	// Add inChannel registry and check if it already exists
-	if ev, ok := c.registry.Add(e); !ok {
-		return ev
+
+	// Add in registry and check if it already exists
+	if ev, ok := o.registry.Add(e); !ok {
+		if typed, ok := ev.(Event[T]); ok {
+			return typed
+		}
 	}
 	return e
 }
 
 // Discard create new event which discard all data
-func Discard(_ string, _ ...Option) Event {
-	return discardEvent{}
+func Discard[T any](_ string, _ ...Option) Event[T] {
+	return discardEvent[T]{}
 }

@@ -3,8 +3,7 @@ package event
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
+	"log/slog"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -27,8 +26,6 @@ const (
 
 var (
 	counter uint64
-	// DefaultLoggerFlags default flags for logger
-	DefaultLoggerFlags = log.LstdFlags | log.Lshortfile | log.Lmsgprefix
 )
 
 // NewID generate new event id
@@ -57,23 +54,27 @@ func Sanitize(s string) string {
 	return result.String()
 }
 
-// Logger get logger
-func Logger(prefix string) *log.Logger {
-	return log.New(os.Stdout, prefix, DefaultLoggerFlags)
+// Logger returns a logger with the given component name
+func Logger(component string) *slog.Logger {
+	return slog.Default().With("component", component)
 }
 
 // AsyncHandler convert event handler to async
-func AsyncHandler(handler Handler, copyContextFns ...func(to, from context.Context) context.Context) Handler {
-	return func(ctx context.Context, ev Event, data Data) {
+// This wraps a typed handler to run in a goroutine with panic recovery
+func AsyncHandler[T any](handler Handler[T], copyContextFns ...func(to, from context.Context) context.Context) Handler[T] {
+	return func(ctx context.Context, ev Event[T], data T) {
 		// Call handler with go routine
 		go func() {
 			defer func() {
-				_, _, l, _ := runtime.Caller(1)
+				_, file, l, _ := runtime.Caller(1)
 				if err := recover(); err != nil {
-					flag := ev.Name()
-					logger.Printf("Event[%s] Recover panic line => %v\n", flag, l)
-					logger.Printf("Event[%s] Recover err => %v\n", flag, err)
-					debug.PrintStack()
+					slog.Error("async handler panic recovered",
+						"event", ev.Name(),
+						"line", l,
+						"file", file,
+						"error", err,
+						"stack", string(debug.Stack()),
+					)
 				}
 			}()
 			// Create a new copy of context

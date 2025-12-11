@@ -2,9 +2,10 @@ package event
 
 import (
 	"context"
-	"github.com/prometheus/client_golang/prometheus"
 	"sync"
 	"sync/atomic"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -12,31 +13,77 @@ const (
 	stopped = 0
 )
 
-// Registry event registry
+// registryOptions holds configuration for registry (unexported)
+type registryOptions struct {
+	name       string
+	registerer prometheus.Registerer
+}
+
+// RegistryOption option function for registry configuration
+type RegistryOption func(*registryOptions)
+
+// WithRegistryName sets the registry name
+func WithRegistryName(name string) RegistryOption {
+	return func(o *registryOptions) {
+		if name != "" {
+			o.name = name
+		}
+	}
+}
+
+// WithPrometheusRegisterer sets the prometheus registerer
+func WithPrometheusRegisterer(r prometheus.Registerer) RegistryOption {
+	return func(o *registryOptions) {
+		o.registerer = r
+	}
+}
+
+// newRegistryOptions creates options with defaults and applies provided options
+func newRegistryOptions(opts ...RegistryOption) *registryOptions {
+	o := &registryOptions{
+		name:       "event",
+		registerer: nil,
+	}
+
+	for _, opt := range opts {
+		opt(o)
+	}
+
+	return o
+}
+
+// Registry event registry (unexported fields)
 type Registry struct {
 	status       int32
 	id           string
 	name         string
 	shutdownChan chan struct{}
 	registerer   prometheus.Registerer
-	events       map[string]Event
+	events       map[string]BaseEvent
 	metrics      map[string]Metrics
 	eventMutex   sync.RWMutex
 	metricMutex  sync.RWMutex
 }
 
 // NewRegistry create a new registry
-func NewRegistry(name string, r prometheus.Registerer) *Registry {
-	if name == "" {
-		name = "event"
+func NewRegistry(name string, r prometheus.Registerer, opts ...RegistryOption) *Registry {
+	o := newRegistryOptions(opts...)
+
+	// Override with positional args if provided (backward compatibility)
+	if name != "" {
+		o.name = name
 	}
+	if r != nil {
+		o.registerer = r
+	}
+
 	return &Registry{
-		name:         name,
+		name:         o.name,
 		status:       running,
 		id:           NewID(),
 		shutdownChan: make(chan struct{}),
-		registerer:   r,
-		events:       make(map[string]Event),
+		registerer:   o.registerer,
+		events:       make(map[string]BaseEvent),
 		metrics:      make(map[string]Metrics),
 	}
 }
@@ -69,14 +116,6 @@ func (r *Registry) Registerer() prometheus.Registerer {
 	return r.registerer
 }
 
-// Event get event by name
-func (r *Registry) Event(name string) Event {
-	if e := r.Get(name); e != nil {
-		return e
-	}
-	return New(name, WithRegistry(r))
-}
-
 // NewEventID get new event id
 func (r *Registry) NewEventID() string {
 	return NewID()
@@ -88,7 +127,7 @@ func (r *Registry) NewSubscriptionID() string {
 }
 
 // Get event by name
-func (r *Registry) Get(name string) Event {
+func (r *Registry) Get(name string) BaseEvent {
 	r.eventMutex.RLock()
 	defer r.eventMutex.RUnlock()
 	if obj, ok := r.events[name]; ok {
@@ -100,7 +139,7 @@ func (r *Registry) Get(name string) Event {
 // Add event by name events registry
 // if old event exists with same name
 // older event is returned
-func (r *Registry) Add(ev Event) (Event, bool) {
+func (r *Registry) Add(ev BaseEvent) (BaseEvent, bool) {
 	name := ev.Name()
 	r.eventMutex.Lock()
 	defer r.eventMutex.Unlock()
@@ -113,9 +152,9 @@ func (r *Registry) Add(ev Event) (Event, bool) {
 	return ev, true
 }
 
-// Register event by name inChannel registry
+// Register event by name in registry
 // returns error if event already exists with that name
-func (r *Registry) Register(event Event) error {
+func (r *Registry) Register(event BaseEvent) error {
 	r.eventMutex.Lock()
 	defer r.eventMutex.Unlock()
 	name := event.Name()
@@ -130,41 +169,34 @@ func (r *Registry) Register(event Event) error {
 func (r *Registry) Close() error {
 	if atomic.CompareAndSwapInt32(&r.status, running, stopped) {
 		close(r.shutdownChan)
+		// Close all event transports and wait for them to drain
+		r.eventMutex.RLock()
+		for _, ev := range r.events {
+			ev.Close()
+		}
+		r.eventMutex.RUnlock()
 	}
 	return nil
 }
 
-// Handle add handler by name
-// if event does not exist, a new event is created
-func (r *Registry) Handle(name string, handler Handler) {
-	r.Event(name).Subscribe(context.Background(), handler)
+// Handle add handler by name using any type
+// Note: For type-safe handlers, use New[T]() directly
+func Handle[T any](name string, handler Handler[T]) {
+	New[T](name, WithRegistry(defaultRegistry)).Subscribe(context.Background(), handler)
 }
 
-// Publish data for event with given name
-// if event does not exist, publish is ignored
-func (r *Registry) Publish(name string, data Data) {
-	e := r.Get(name)
-	if e != nil {
-		e.Publish(context.Background(), data)
-	}
-}
-
-// Handle add handler by name
-func Handle(name string, handler Handler) {
-	defaultRegistry.Event(name).Subscribe(context.Background(), handler)
-}
-
-// Publish data to event with given name
-func Publish(name string, data Data) {
-	defaultRegistry.Event(name).Publish(context.Background(), data)
+// Publish data for event with given name using any type
+// Note: For type-safe publishing, use New[T]() directly
+func Publish[T any](name string, data T) {
+	New[T](name, WithRegistry(defaultRegistry)).Publish(context.Background(), data)
 }
 
 // Register event to default registry
-func Register(event Event) error {
+func Register(event BaseEvent) error {
 	return defaultRegistry.Register(event)
 }
 
 // Get event by name from default registry
-func Get(name string) Event {
-	return defaultRegistry.Event(name)
+func Get(name string) BaseEvent {
+	return defaultRegistry.Get(name)
 }

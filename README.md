@@ -1,25 +1,37 @@
-# Event
+# Event v2
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rbaliyan/event.svg)](https://pkg.go.dev/github.com/rbaliyan/event)
-[![Go Report Card](https://goreportcard.com/badge/github.com/rbaliyan/event)](https://goreportcard.com/report/github.com/rbaliyan/event)
+[![CI](https://github.com/rbaliyan/event/actions/workflows/ci.yml/badge.svg)](https://github.com/rbaliyan/event/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/rbaliyan/event/branch/master/graph/badge.svg)](https://codecov.io/gh/rbaliyan/event)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rbaliyan/event/v2.svg)](https://pkg.go.dev/github.com/rbaliyan/event/v2)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rbaliyan/event/v2)](https://goreportcard.com/report/github.com/rbaliyan/event/v2)
 
 A production-grade event pub-sub library for Go with support for distributed event handling, metrics, tracing, and configurable transports.
+
+## V2 Changes
+
+V2 introduces a cleaner architecture with transport-centric design:
+
+- **Fire-and-forget API**: `Publish()` and `Subscribe()` return void - events are facts that happened
+- **Transport owns delivery**: Async behavior, error handling, and graceful shutdown moved to transport layer
+- **Simplified event**: Event focuses on routing and middleware (tracing, metrics, recovery)
+- **Graceful shutdown**: `Transport.Close()` and `Registry.Close()` block until pending messages are delivered
 
 ## Features
 
 - **Pub-Sub Pattern**: Simple publish/subscribe API for event-driven architectures
-- **Async Handlers**: Non-blocking event processing with configurable worker pools
+- **Async Handlers**: Non-blocking event processing (configured at transport level)
 - **OpenTelemetry Tracing**: Built-in distributed tracing support
 - **Prometheus Metrics**: Out-of-the-box metrics for monitoring
 - **Panic Recovery**: Automatic recovery from panics in handlers
 - **Context Propagation**: Full support for Go context with metadata
 - **Configurable Transports**: Pluggable transport layer (channel-based by default)
 - **Registry Scoping**: Namespace events with registries for isolation
+- **Graceful Shutdown**: Transport waits for pending deliveries before closing
 
 ## Installation
 
 ```bash
-go get github.com/rbaliyan/event
+go get github.com/rbaliyan/event/v2
 ```
 
 ## Quick Start
@@ -31,7 +43,7 @@ import (
     "context"
     "fmt"
 
-    "github.com/rbaliyan/event"
+    "github.com/rbaliyan/event/v2"
 )
 
 func main() {
@@ -43,41 +55,52 @@ func main() {
         fmt.Printf("User created: %v\n", data)
     })
 
-    // Publish an event
+    // Publish an event (fire-and-forget)
     e.Publish(context.Background(), map[string]string{"id": "123", "name": "John"})
 }
 ```
 
-## Configuration Options
+## Event Options
 
 Events can be configured with various options:
 
 ```go
 e := event.New("my.event",
-    event.WithAsync(true),                           // Enable async handlers (default: true)
-    event.WithWorkerPoolSize(50),                    // Limit concurrent handlers (default: 100)
-    event.WithPoolTimeout(5*time.Second),            // Timeout for acquiring worker pool slot (default: 5s)
-    event.WithPublishTimeout(2*time.Second),         // Timeout for publishing (default: 0 = no timeout)
-    event.WithSubscriberTimeout(30*time.Second),     // Timeout for handler execution (default: 0 = no timeout)
+    event.WithSubscriberTimeout(30*time.Second),     // Handler execution timeout (default: 0 = no timeout)
     event.WithTracing(true),                         // Enable OpenTelemetry tracing (default: true)
     event.WithMetrics(true, nil),                    // Enable Prometheus metrics (default: true)
     event.WithRecovery(true),                        // Enable panic recovery (default: true)
     event.WithErrorHandler(func(ev event.Event, err error) {
-        log.Printf("Error in event %s: %v", ev.Name(), err)
+        log.Printf("Panic in event %s: %v", ev.Name(), err)
+    }),
+    event.WithChannelBufferSize(100),                // Buffer size for default transport
+)
+```
+
+## Transport Options
+
+Transport controls delivery behavior:
+
+```go
+transport := event.NewChannelTransport(
+    event.WithTransportAsync(true),           // Async handler execution (default: true)
+    event.WithTransportBufferSize(100),       // Channel buffer size (default: 100)
+    event.WithTransportTimeout(time.Second),  // Per-subscriber send timeout (default: 0)
+    event.WithTransportErrorHandler(func(err error) {
+        log.Printf("Transport error: %v", err)
     }),
 )
+
+e := event.New("my.event", event.WithTransport(transport))
 ```
 
 ### Default Values
 
 | Option | Default Value |
 |--------|---------------|
-| Async | `true` |
-| Worker Pool Size | `100` |
-| Pool Timeout | `5000ms` |
-| Publish Timeout | `0` (no timeout) |
+| Async (transport) | `false` (synchronous) |
+| Buffer Size | `0` (blocking) when sync, `100` when async |
 | Subscriber Timeout | `0` (no timeout) |
-| Channel Buffer Size | `100` |
 | Tracing | `true` |
 | Metrics | `true` |
 | Recovery | `true` |
@@ -97,7 +120,7 @@ orderEvent := event.New("order.placed", event.WithRegistry(reg))
 // Get an event by name
 e := reg.Get("user.created")
 
-// Close all events in the registry
+// Close all events in the registry (graceful shutdown)
 reg.Close()
 ```
 
@@ -129,19 +152,27 @@ e.Subscribe(ctx, func(ctx context.Context, ev event.Event, data event.Data) {
 
 ## Transport Layer
 
-The default transport uses Go channels with a fan-out pattern. You can use alternative transports:
+The default transport uses Go channels with a fan-out pattern:
 
 ```go
-// Single channel transport (all subscribers share one channel)
-transport := event.NewSingleTransport(time.Second, 100)
-e := event.New("my.event", event.WithTransport(transport))
+// Fan-out transport (all subscribers receive every message)
+transport := event.NewChannelTransport(
+    event.WithTransportAsync(true),
+    event.WithTransportBufferSize(100),
+)
+
+// Single channel transport (load-balancing - one subscriber receives each message)
+transport := event.NewSingleTransport(
+    event.WithTransportAsync(true),
+    event.WithTransportBufferSize(100),
+)
 
 // Custom transport (implement the Transport interface)
 type Transport interface {
     Send() chan<- Message
     Receive(string) <-chan Message
     Delete(string)
-    Close() error
+    Close() error  // Blocks until all pending messages delivered
 }
 ```
 
@@ -207,6 +238,16 @@ When metrics are enabled, the following Prometheus metrics are exposed:
 
 ## Architecture
 
+### V2 Design
+
+```
+Event (routing + middleware)
+  └── Transport (delivery semantics)
+        ├── Async goroutine spawning
+        ├── Error handling via callback
+        └── Graceful shutdown
+```
+
 ### Middleware Chain
 
 Handlers are wrapped in middleware in this order (innermost to outermost):
@@ -216,15 +257,7 @@ Recovery (panic handling)
   → Tracing (OpenTelemetry spans)
     → Metrics (Prometheus counters)
       → Timeout (context deadline)
-        → Async (goroutine spawning with semaphore)
 ```
-
-### Worker Pool
-
-The worker pool limits concurrent handler execution:
-- Controlled by `WithWorkerPoolSize(n)`
-- Uses a semaphore for limiting
-- Falls back to unlimited goroutines if pool is exhausted (with warning log)
 
 ## Testing
 
@@ -237,6 +270,52 @@ go test -race ./...
 
 # Run benchmarks
 go test -bench=.
+```
+
+## Migration from V1
+
+### Breaking Changes
+
+1. **Import path**: Change to `github.com/rbaliyan/event/v2`
+2. **Publish/Subscribe signatures**: No longer return errors
+3. **Async config moved**: Use transport options instead of event options
+
+### Before (V1)
+
+```go
+import "github.com/rbaliyan/event"
+
+e := event.New("my.event",
+    event.WithAsync(true),
+    event.WithWorkerPoolSize(100),
+    event.WithPublishTimeout(time.Second),
+)
+
+if err := e.Subscribe(ctx, handler); err != nil {
+    log.Fatal(err)
+}
+
+if err := e.Publish(ctx, data); err != nil {
+    log.Fatal(err)
+}
+```
+
+### After (V2)
+
+```go
+import "github.com/rbaliyan/event/v2"
+
+transport := event.NewChannelTransport(
+    event.WithTransportAsync(true),
+    event.WithTransportErrorHandler(func(err error) {
+        log.Printf("error: %v", err)
+    }),
+)
+
+e := event.New("my.event", event.WithTransport(transport))
+
+e.Subscribe(ctx, handler)  // Fire-and-forget
+e.Publish(ctx, data)       // Fire-and-forget
 ```
 
 ## License

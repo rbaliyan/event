@@ -1,177 +1,127 @@
 package event
 
 import (
-	"log"
+	"log/slog"
 	"time"
 )
 
+// Default event configuration values
 var (
-	// DefaultPublishTimeout default publish pubTimeout in milliseconds
-	DefaultPublishTimeout uint = 0
-
-	// DefaultPoolTimeout default async pubTimeout in milliseconds
-	DefaultPoolTimeout uint = 5000
-
-	// DefaultSubscriberTimeout default  subscriber pubTimeout in milliseconds
-	DefaultSubscriberTimeout uint = 0
-
-	// DefaultChannelBufferSize default channel buffer size
-	DefaultChannelBufferSize uint = 100
-
-	// DefaultWorkerPoolSize max parallel active handlers
-	DefaultWorkerPoolSize uint = 100
+	// DefaultSubscriberTimeout default subscriber timeout (0 = no timeout)
+	DefaultSubscriberTimeout time.Duration = 0
 )
 
-// eventConfig event configuration
-type eventConfig struct {
+// eventOptions holds configuration for events (unexported)
+type eventOptions struct {
 	registry          *Registry
-	asyncEnabled      bool
 	recoveryEnabled   bool
 	tracingEnabled    bool
 	metricsEnabled    bool
 	metrics           Metrics
-	pubTimeout        time.Duration
-	poolTimeout       time.Duration
 	subTimeout        time.Duration
 	channelBufferSize uint
-	workerPoolSize    uint
-	onError           func(Event, error)
-	logger            *log.Logger
+	onError           func(BaseEvent, error)
+	logger            *slog.Logger
 	transport         Transport
 }
 
-// defaultErrorHandler default error handler
-func defaultErrorHandler(Event, error) {}
-
-// newEventOptions get new event options
-func newEventOptions() *eventConfig {
-	return &eventConfig{
+// newEventOptions creates options with defaults and applies provided options
+func newEventOptions(opts ...Option) *eventOptions {
+	o := &eventOptions{
 		registry:          defaultRegistry,
-		asyncEnabled:      true,
 		tracingEnabled:    true,
 		recoveryEnabled:   true,
 		metricsEnabled:    true,
-		onError:           defaultErrorHandler,
+		onError:           func(BaseEvent, error) {}, // no-op default
 		logger:            Logger("event>"),
-		channelBufferSize: DefaultChannelBufferSize,
-		workerPoolSize:    DefaultWorkerPoolSize,
-		pubTimeout:        time.Duration(DefaultPublishTimeout) * time.Millisecond,
-		poolTimeout:       time.Duration(DefaultPoolTimeout) * time.Millisecond,
-		subTimeout:        time.Duration(DefaultSubscriberTimeout) * time.Millisecond,
+		channelBufferSize: 0, // blocking by default (sync)
+		subTimeout:        DefaultSubscriberTimeout,
 	}
+
+	// Apply all options
+	for _, opt := range opts {
+		opt(o)
+	}
+
+	return o
 }
 
 // Option event options
-type Option func(*eventConfig)
+type Option func(*eventOptions)
 
-// WithPublishTimeout set pubTimeout for event publishing.
-// if set to 0, pubTimeout will be disabled and publisher will
-// wait indefinitely.
-func WithPublishTimeout(v time.Duration) Option {
-	return func(e *eventConfig) {
-		e.pubTimeout = v
-	}
-}
-
-// WithPoolTimeout set async pubTimeout for event
-// if set to 0, pubTimeout will be disabled and handlers will
-// wait indefinitely.
-func WithPoolTimeout(v time.Duration) Option {
-	return func(e *eventConfig) {
-		e.poolTimeout = v
-	}
-}
-
-// WithSubscriberTimeout set subscriber pubTimeout for event
-// if set to 0, pubTimeout will be disabled and handlers will
-// wait indefinitely.
+// WithSubscriberTimeout set subscriber timeout for event handlers
+// if set to 0, timeout will be disabled and handlers will
+// run indefinitely.
 func WithSubscriberTimeout(v time.Duration) Option {
-	return func(e *eventConfig) {
-		e.subTimeout = v
+	return func(o *eventOptions) {
+		o.subTimeout = v
 	}
 }
 
 // WithTracing enable/disable tracing for event
 func WithTracing(v bool) Option {
-	return func(e *eventConfig) {
-		e.tracingEnabled = v
+	return func(o *eventOptions) {
+		o.tracingEnabled = v
 	}
 }
 
 // WithRecovery enable/disable recovery for event
 // recovery should always be enabled, can be disabled for testing.
 func WithRecovery(v bool) Option {
-	return func(e *eventConfig) {
-		e.recoveryEnabled = v
+	return func(o *eventOptions) {
+		o.recoveryEnabled = v
 	}
 }
 
-// WithAsync enable/disable async handlers for event.
-// if async handlers are disabled, event handlers are run inChannel
-// one single go routine and eventConfig.pubTimeout is applied
-// on publishing time. So if all handlers takes more than
-// eventConfig.pubTimeout milliseconds it will start dropping events.
-func WithAsync(v bool) Option {
-	return func(e *eventConfig) {
-		e.asyncEnabled = v
-	}
-}
-
-// WithMetrics  enable/disable  prometheus  metrics for event
+// WithMetrics enable/disable prometheus metrics for event
 func WithMetrics(v bool, metrics Metrics) Option {
-	return func(e *eventConfig) {
-		e.metricsEnabled = v
-		e.metrics = metrics
+	return func(o *eventOptions) {
+		o.metricsEnabled = v
+		o.metrics = metrics
 	}
 }
 
-// WithErrorHandler set error handler for event
-func WithErrorHandler(v func(Event, error)) Option {
-	return func(e *eventConfig) {
+// WithErrorHandler set error handler for panic recovery
+func WithErrorHandler(v func(BaseEvent, error)) Option {
+	return func(o *eventOptions) {
 		if v != nil {
-			e.onError = v
+			o.onError = v
 		}
 	}
 }
 
 // WithLogger set logger for event
-func WithLogger(l *log.Logger) Option {
-	return func(e *eventConfig) {
+func WithLogger(l *slog.Logger) Option {
+	return func(o *eventOptions) {
 		if l != nil {
-			e.logger = l
+			o.logger = l
 		}
 	}
 }
 
 // WithTransport set transport for event
-func WithTransport(l Transport) Option {
-	return func(e *eventConfig) {
-		if l != nil {
-			e.transport = l
+// Use this to provide a pre-configured transport with custom options
+func WithTransport(t Transport) Option {
+	return func(o *eventOptions) {
+		if t != nil {
+			o.transport = t
 		}
 	}
 }
 
 // WithChannelBufferSize set channel buffer size
+// Only used when creating default transport
 func WithChannelBufferSize(s uint) Option {
-	return func(e *eventConfig) {
-		e.channelBufferSize = s
-	}
-}
-
-// WithWorkerPoolSize set worker pool size.
-// This value decides subscribers can execute inChannel parallel.
-func WithWorkerPoolSize(s uint) Option {
-	return func(e *eventConfig) {
-		e.workerPoolSize = s
+	return func(o *eventOptions) {
+		o.channelBufferSize = s
 	}
 }
 
 // WithRegistry set registry for event
 func WithRegistry(r *Registry) Option {
-	return func(e *eventConfig) {
+	return func(o *eventOptions) {
 		if r != nil {
-			e.registry = r
+			o.registry = r
 		}
 	}
 }

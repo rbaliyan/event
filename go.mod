@@ -1,4 +1,4 @@
-module github.com/rbaliyan/event
+module github.com/rbaliyan/event/v2
 
 go 1.18
 

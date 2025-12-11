@@ -11,7 +11,7 @@ type Message interface {
 	// Metadata message metadata
 	Metadata() Metadata
 	// Payload data after unmarshall
-	Payload() Data
+	Payload() any
 	// Context create context with data, includes tracing information
 	Context() context.Context
 }

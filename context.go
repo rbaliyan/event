@@ -2,7 +2,7 @@ package event
 
 import (
 	"context"
-	"log"
+	"log/slog"
 )
 
 const (
@@ -15,7 +15,7 @@ type eventContextData struct {
 	eventID  string
 	subID    string
 	metadata Metadata
-	logger   *log.Logger
+	logger   *slog.Logger
 	registry *Registry
 }
 
@@ -58,8 +58,8 @@ func ContextMetadata(ctx context.Context) Metadata {
 	return nil
 }
 
-// ContextLogger get event Logger stored inChannel context
-func ContextLogger(ctx context.Context) *log.Logger {
+// ContextLogger get event Logger stored in context
+func ContextLogger(ctx context.Context) *slog.Logger {
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
 		return s.logger
@@ -130,7 +130,7 @@ func ContextWithEventID(ctx context.Context, id string) context.Context {
 }
 
 // ContextWithLogger generate a context with event logger
-func ContextWithLogger(ctx context.Context, l *log.Logger) context.Context {
+func ContextWithLogger(ctx context.Context, l *slog.Logger) context.Context {
 	if l == nil {
 		return ctx
 	}
@@ -151,7 +151,7 @@ func ContextWithLogger(ctx context.Context, l *log.Logger) context.Context {
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{logger: l})
 }
 
-func contextWithInfo(ctx context.Context, id, name, source, subID string, metadata Metadata, l *log.Logger, r *Registry) context.Context {
+func contextWithInfo(ctx context.Context, id, name, source, subID string, metadata Metadata, l *slog.Logger, r *Registry) context.Context {
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{
 		eventID:  id,
 		name:     name,
