@@ -230,12 +230,25 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 	atomic.AddInt64(&e.size, 1)
 	subID := sub.ID()
 
-	// Apply built-in middleware chain (innermost to outermost)
+	// Apply middleware chain (innermost to outermost):
+	// 1. Recovery (innermost) - catch panics
+	// 2. Timeout - enforce handler timeout
+	// 3. Custom middleware (from WithMiddleware)
+	// 4. Bus idempotency - skip duplicates
+	// 5. Bus poison detection (outermost) - skip quarantined messages
 	wrappedHandler := e.WithTimeout(e.WithRecovery(handler))
 
-	// Apply custom middleware (runs after built-in middleware)
+	// Apply custom middleware
 	for i := len(subOpts.middleware) - 1; i >= 0; i-- {
 		wrappedHandler = subOpts.middleware[i](wrappedHandler)
+	}
+
+	// Apply bus-level middleware (outermost - runs first)
+	if e.bus.idempotencyStore != nil {
+		wrappedHandler = IdempotencyMiddleware[T](e.bus.idempotencyStore)(wrappedHandler)
+	}
+	if e.bus.poisonDetector != nil {
+		wrappedHandler = PoisonMiddleware[T](e.bus.poisonDetector)(wrappedHandler)
 	}
 
 	go func() {

@@ -505,7 +505,11 @@ func main() {
 
 ## Idempotency
 
-Prevent duplicate message processing:
+Prevent duplicate message processing.
+
+### Bus-Level (Recommended)
+
+Configure once at bus creation - all subscribers automatically get idempotency:
 
 ```go
 import "github.com/rbaliyan/event/v3/idempotency"
@@ -513,29 +517,43 @@ import "github.com/rbaliyan/event/v3/idempotency"
 func main() {
     ctx := context.Background()
 
-    // Create idempotency store (Redis or PostgreSQL)
+    // Create idempotency store
     store := idempotency.NewRedisStore(redisClient, time.Hour)
-    // OR for PostgreSQL:
-    // store := idempotency.NewPostgresStore(db, idempotency.WithPostgresTTL(time.Hour))
 
-    // In your handler
-    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
-        msgID := event.ContextEventID(ctx)
+    // Configure at bus level - all events get automatic deduplication
+    bus, _ := event.NewBus("order-service",
+        event.WithBusTransport(transport),
+        event.WithBusIdempotency(store),
+    )
+    defer bus.Close(ctx)
 
-        // Check if already processed
-        if dup, _ := store.IsDuplicate(ctx, msgID); dup {
-            return nil // Skip duplicate
-        }
+    orderEvent, _ := event.Register(ctx, bus, event.New[Order]("order.created"))
 
-        // Process order
-        if err := processOrder(ctx, order); err != nil {
-            return err
-        }
-
-        // Mark as processed
-        return store.MarkProcessed(ctx, msgID)
+    // Subscriber is simple - no manual idempotency check needed!
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+        return processOrder(ctx, order) // Just business logic
     })
 }
+```
+
+### Manual Approach
+
+For fine-grained control, check idempotency manually in handlers:
+
+```go
+orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+    msgID := event.ContextEventID(ctx)
+
+    if dup, _ := store.IsDuplicate(ctx, msgID); dup {
+        return nil // Skip duplicate
+    }
+
+    if err := processOrder(ctx, order); err != nil {
+        return err
+    }
+
+    return store.MarkProcessed(ctx, msgID)
+})
 ```
 
 ## Exactly-Once Processing
@@ -607,7 +625,11 @@ The `TransactionalHandler` guarantees:
 
 ## Poison Message Detection
 
-Automatically quarantine messages that keep failing:
+Automatically quarantine messages that keep failing.
+
+### Bus-Level (Recommended)
+
+Configure once at bus creation - all subscribers automatically get poison detection:
 
 ```go
 import "github.com/rbaliyan/event/v3/poison"
@@ -615,41 +637,55 @@ import "github.com/rbaliyan/event/v3/poison"
 func main() {
     ctx := context.Background()
 
-    // Create poison detector (Redis or PostgreSQL)
+    // Create poison detector
     store := poison.NewRedisStore(redisClient)
-    // OR for PostgreSQL:
-    // store := poison.NewPostgresStore(db, poison.WithPostgresFailureTTL(24*time.Hour))
-
     detector := poison.NewDetector(store,
         poison.WithThreshold(5),              // Quarantine after 5 failures
         poison.WithQuarantineTime(time.Hour), // Block for 1 hour
     )
 
-    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
-        msgID := event.ContextEventID(ctx)
+    // Configure at bus level - all events get automatic poison detection
+    bus, _ := event.NewBus("order-service",
+        event.WithBusTransport(transport),
+        event.WithBusPoisonDetection(detector),
+    )
+    defer bus.Close(ctx)
 
-        // Check if message is quarantined
-        if poisoned, _ := detector.Check(ctx, msgID); poisoned {
-            return nil // Skip quarantined message
-        }
+    orderEvent, _ := event.Register(ctx, bus, event.New[Order]("order.created"))
 
-        if err := processOrder(ctx, order); err != nil {
-            // Record failure
-            quarantined, _ := detector.RecordFailure(ctx, msgID)
-            if quarantined {
-                log.Printf("Message %s quarantined after repeated failures", msgID)
-            }
-            return err
-        }
-
-        // Clear failure count on success
-        detector.RecordSuccess(ctx, msgID)
-        return nil
+    // Subscriber is simple - no manual poison check needed!
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+        return processOrder(ctx, order) // Just business logic
     })
 
-    // Release a message from quarantine
+    // Release a message from quarantine when needed
     detector.Release(ctx, messageID)
 }
+```
+
+### Manual Approach
+
+For fine-grained control, check poison status manually:
+
+```go
+orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+    msgID := event.ContextEventID(ctx)
+
+    if poisoned, _ := detector.Check(ctx, msgID); poisoned {
+        return nil // Skip quarantined message
+    }
+
+    if err := processOrder(ctx, order); err != nil {
+        quarantined, _ := detector.RecordFailure(ctx, msgID)
+        if quarantined {
+            log.Printf("Message %s quarantined", msgID)
+        }
+        return err
+    }
+
+    detector.RecordSuccess(ctx, msgID)
+    return nil
+})
 ```
 
 **PostgreSQL Schema for Poison Detection:**

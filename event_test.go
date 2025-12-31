@@ -2289,3 +2289,199 @@ func TestGetBusNotFound(t *testing.T) {
 		t.Errorf("expected ErrBusNotFound, got %v", err)
 	}
 }
+
+// mockIdempotencyStore implements IdempotencyStore for testing
+type mockIdempotencyStore struct {
+	mu        sync.Mutex
+	processed map[string]bool
+}
+
+func newMockIdempotencyStore() *mockIdempotencyStore {
+	return &mockIdempotencyStore{processed: make(map[string]bool)}
+}
+
+func (s *mockIdempotencyStore) IsDuplicate(ctx context.Context, messageID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.processed[messageID], nil
+}
+
+func (s *mockIdempotencyStore) MarkProcessed(ctx context.Context, messageID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.processed[messageID] = true
+	return nil
+}
+
+// mockPoisonDetector implements PoisonDetector for testing
+type mockPoisonDetector struct {
+	mu          sync.Mutex
+	failures    map[string]int
+	quarantined map[string]bool
+	threshold   int
+}
+
+func newMockPoisonDetector(threshold int) *mockPoisonDetector {
+	return &mockPoisonDetector{
+		failures:    make(map[string]int),
+		quarantined: make(map[string]bool),
+		threshold:   threshold,
+	}
+}
+
+func (d *mockPoisonDetector) Check(ctx context.Context, messageID string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.quarantined[messageID], nil
+}
+
+func (d *mockPoisonDetector) RecordFailure(ctx context.Context, messageID string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.failures[messageID]++
+	if d.failures[messageID] >= d.threshold {
+		d.quarantined[messageID] = true
+		return true, nil
+	}
+	return false, nil
+}
+
+func (d *mockPoisonDetector) RecordSuccess(ctx context.Context, messageID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.failures, messageID)
+	return nil
+}
+
+// TestBusLevelIdempotency verifies that bus-level idempotency automatically skips duplicates
+func TestBusLevelIdempotency(t *testing.T) {
+	ctx := context.Background()
+	idempStore := newMockIdempotencyStore()
+
+	bus := mustNewBus(t, "test-idemp-bus-"+faker.RandomString(5),
+		WithBusTransport(channel.New()),
+		WithBusIdempotency(idempStore),
+	)
+	defer bus.Close(ctx)
+
+	ev, err := Register(ctx, bus, New[string]("test.event"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	ev.Subscribe(ctx, func(ctx context.Context, e Event[string], data string) error {
+		callCount.Add(1)
+		return nil
+	})
+
+	// Wait for subscription to be ready
+	time.Sleep(10 * time.Millisecond)
+
+	// Publish same message twice (same event ID via context)
+	msgCtx := ContextWithEventID(ctx, "msg-123")
+	ev.Publish(msgCtx, "hello")
+	time.Sleep(20 * time.Millisecond)
+
+	ev.Publish(msgCtx, "hello again")
+	time.Sleep(20 * time.Millisecond)
+
+	// Should only be called once (second is duplicate)
+	if count := callCount.Load(); count != 1 {
+		t.Errorf("expected handler called 1 time, got %d", count)
+	}
+}
+
+// TestBusLevelPoisonDetection verifies that bus-level poison detection skips quarantined messages
+func TestBusLevelPoisonDetection(t *testing.T) {
+	ctx := context.Background()
+	poisonDetector := newMockPoisonDetector(2) // quarantine after 2 failures
+
+	bus := mustNewBus(t, "test-poison-bus-"+faker.RandomString(5),
+		WithBusTransport(channel.New()),
+		WithBusPoisonDetection(poisonDetector),
+	)
+	defer bus.Close(ctx)
+
+	ev, err := Register(ctx, bus, New[string]("test.poison.event"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	ev.Subscribe(ctx, func(ctx context.Context, e Event[string], data string) error {
+		callCount.Add(1)
+		return errors.New("always fails")
+	})
+
+	// Wait for subscription to be ready
+	time.Sleep(10 * time.Millisecond)
+
+	// Publish message 3 times with same ID
+	msgCtx := ContextWithEventID(ctx, "poison-msg-456")
+	ev.Publish(msgCtx, "first")
+	time.Sleep(20 * time.Millisecond)
+
+	ev.Publish(msgCtx, "second")
+	time.Sleep(20 * time.Millisecond)
+
+	ev.Publish(msgCtx, "third") // should be skipped (quarantined)
+	time.Sleep(20 * time.Millisecond)
+
+	// Should be called twice (third is quarantined)
+	if count := callCount.Load(); count != 2 {
+		t.Errorf("expected handler called 2 times, got %d", count)
+	}
+
+	// Verify message is quarantined
+	poisonDetector.mu.Lock()
+	isQuarantined := poisonDetector.quarantined["poison-msg-456"]
+	poisonDetector.mu.Unlock()
+	if !isQuarantined {
+		t.Error("expected message to be quarantined")
+	}
+}
+
+// TestBusLevelMiddlewareCombined verifies both idempotency and poison detection work together
+func TestBusLevelMiddlewareCombined(t *testing.T) {
+	ctx := context.Background()
+	idempStore := newMockIdempotencyStore()
+	poisonDetector := newMockPoisonDetector(3)
+
+	bus := mustNewBus(t, "test-combined-bus-"+faker.RandomString(5),
+		WithBusTransport(channel.New()),
+		WithBusIdempotency(idempStore),
+		WithBusPoisonDetection(poisonDetector),
+	)
+	defer bus.Close(ctx)
+
+	ev, err := Register(ctx, bus, New[string]("test.combined.event"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	ev.Subscribe(ctx, func(ctx context.Context, e Event[string], data string) error {
+		callCount.Add(1)
+		return nil // success
+	})
+
+	// Wait for subscription to be ready
+	time.Sleep(10 * time.Millisecond)
+
+	// Publish two different messages
+	ev.Publish(ContextWithEventID(ctx, "msg-1"), "first")
+	time.Sleep(20 * time.Millisecond)
+
+	ev.Publish(ContextWithEventID(ctx, "msg-2"), "second")
+	time.Sleep(20 * time.Millisecond)
+
+	// Publish duplicate of first message
+	ev.Publish(ContextWithEventID(ctx, "msg-1"), "duplicate")
+	time.Sleep(20 * time.Millisecond)
+
+	// Should be called twice (third is duplicate)
+	if count := callCount.Load(); count != 2 {
+		t.Errorf("expected handler called 2 times, got %d", count)
+	}
+}

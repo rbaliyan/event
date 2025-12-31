@@ -215,6 +215,9 @@ type busOptions struct {
 	tracingEnabled  bool
 	recoveryEnabled bool
 	metricsEnabled  bool
+	// Subscriber middleware stores (applied automatically to all subscribers)
+	idempotencyStore IdempotencyStore
+	poisonDetector   PoisonDetector
 }
 
 // BusOption option function for bus configuration
@@ -259,6 +262,57 @@ func WithBusLogger(l *slog.Logger) BusOption {
 	}
 }
 
+// WithBusIdempotency configures automatic idempotency checking for all subscribers.
+// When set, all event handlers will automatically skip duplicate messages.
+// This eliminates the need to manually check idempotency in each handler.
+//
+// Example:
+//
+//	store := idempotency.NewRedisStore(redisClient, time.Hour)
+//	bus, _ := event.NewBus("my-app",
+//	    event.WithBusTransport(transport),
+//	    event.WithBusIdempotency(store),
+//	)
+//
+//	// Subscriber is simple - no manual idempotency check needed
+//	orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+//	    return processOrder(ctx, order) // Just business logic!
+//	})
+func WithBusIdempotency(store IdempotencyStore) BusOption {
+	return func(o *busOptions) {
+		if store != nil {
+			o.idempotencyStore = store
+		}
+	}
+}
+
+// WithBusPoisonDetection configures automatic poison message detection for all subscribers.
+// When set, all event handlers will automatically skip quarantined messages and track failures.
+// Messages that fail repeatedly will be quarantined and skipped until released.
+//
+// Example:
+//
+//	detector := poison.NewDetector(poison.NewRedisStore(redisClient),
+//	    poison.WithThreshold(5),
+//	    poison.WithQuarantineTime(time.Hour),
+//	)
+//	bus, _ := event.NewBus("my-app",
+//	    event.WithBusTransport(transport),
+//	    event.WithBusPoisonDetection(detector),
+//	)
+//
+//	// Subscriber is simple - no manual poison detection needed
+//	orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+//	    return processOrder(ctx, order) // Just business logic!
+//	})
+func WithBusPoisonDetection(detector PoisonDetector) BusOption {
+	return func(o *busOptions) {
+		if detector != nil {
+			o.poisonDetector = detector
+		}
+	}
+}
+
 // newBusOptions creates options with defaults and applies provided options
 func newBusOptions(opts ...BusOption) *busOptions {
 	o := &busOptions{
@@ -287,6 +341,9 @@ type Bus struct {
 	events          map[string]any
 	eventTypes      map[string]reflect.Type // Track registered types for type checking
 	eventMutex      sync.RWMutex
+	// Subscriber middleware (applied automatically to all subscribers)
+	idempotencyStore IdempotencyStore
+	poisonDetector   PoisonDetector
 }
 
 // NewBus creates a new event bus and registers it in the global registry.
@@ -317,17 +374,19 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 	}
 
 	bus := &Bus{
-		name:            name,
-		status:          busRunning,
-		id:              NewID(),
-		shutdownChan:    make(chan struct{}),
-		transport:       transport,
-		logger:          o.logger.With("component", "bus>"+name),
-		tracingEnabled:  o.tracingEnabled,
-		recoveryEnabled: o.recoveryEnabled,
-		metricsEnabled:  o.metricsEnabled,
-		events:          make(map[string]any),
-		eventTypes:      make(map[string]reflect.Type),
+		name:             name,
+		status:           busRunning,
+		id:               NewID(),
+		shutdownChan:     make(chan struct{}),
+		transport:        transport,
+		logger:           o.logger.With("component", "bus>"+name),
+		tracingEnabled:   o.tracingEnabled,
+		recoveryEnabled:  o.recoveryEnabled,
+		metricsEnabled:   o.metricsEnabled,
+		events:           make(map[string]any),
+		eventTypes:       make(map[string]reflect.Type),
+		idempotencyStore: o.idempotencyStore,
+		poisonDetector:   o.poisonDetector,
 	}
 
 	// Register in global registry (use LoadOrStore to handle race condition)
@@ -371,6 +430,16 @@ func (b *Bus) NewEventID() string {
 // NewSubscriptionID generates a new subscription ID
 func (b *Bus) NewSubscriptionID() string {
 	return NewID()
+}
+
+// IdempotencyStore returns the bus-level idempotency store (may be nil)
+func (b *Bus) IdempotencyStore() IdempotencyStore {
+	return b.idempotencyStore
+}
+
+// PoisonDetector returns the bus-level poison detector (may be nil)
+func (b *Bus) PoisonDetector() PoisonDetector {
+	return b.poisonDetector
 }
 
 // Get returns an event by name

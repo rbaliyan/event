@@ -6,6 +6,34 @@ import (
 	"time"
 )
 
+// IdempotencyStore is an interface for idempotency tracking.
+// Implementations can use in-memory, Redis, PostgreSQL, or other storage backends.
+// This interface is compatible with idempotency.Store from the idempotency package.
+type IdempotencyStore interface {
+	// IsDuplicate checks if a message ID has already been processed.
+	// Returns true if the message should be skipped (already processed).
+	IsDuplicate(ctx context.Context, messageID string) (bool, error)
+
+	// MarkProcessed marks a message ID as successfully processed.
+	MarkProcessed(ctx context.Context, messageID string) error
+}
+
+// PoisonDetector is an interface for detecting and handling poison messages.
+// Poison messages are messages that repeatedly fail processing.
+// This interface is compatible with poison.Detector from the poison package.
+type PoisonDetector interface {
+	// Check checks if a message is currently quarantined.
+	// Returns true if the message is quarantined and should be skipped.
+	Check(ctx context.Context, messageID string) (bool, error)
+
+	// RecordFailure records a processing failure for a message.
+	// Returns true if the message was just quarantined (threshold reached).
+	RecordFailure(ctx context.Context, messageID string) (bool, error)
+
+	// RecordSuccess records a successful processing and clears the failure count.
+	RecordSuccess(ctx context.Context, messageID string) error
+}
+
 // DeduplicationStore is an interface for storing seen message IDs.
 // Implementations can use in-memory, Redis, or other storage backends.
 type DeduplicationStore interface {
@@ -309,6 +337,94 @@ func CircuitBreakerMiddleware[T any](cb *CircuitBreaker) Middleware[T] {
 				cb.RecordSuccess()
 			} else {
 				cb.RecordFailure()
+			}
+
+			return err
+		}
+	}
+}
+
+// IdempotencyMiddleware creates a middleware that prevents duplicate message processing.
+// Uses IdempotencyStore to check and mark messages as processed.
+//
+// Example usage:
+//
+//	store := idempotency.NewRedisStore(redisClient, time.Hour)
+//	ev.Subscribe(ctx, handler, event.WithMiddleware(event.IdempotencyMiddleware[Order](store)))
+func IdempotencyMiddleware[T any](store IdempotencyStore) Middleware[T] {
+	return func(next Handler[T]) Handler[T] {
+		return func(ctx context.Context, ev Event[T], data T) error {
+			messageID := ContextEventID(ctx)
+			if messageID == "" {
+				return next(ctx, ev, data)
+			}
+
+			// Check if already processed
+			isDuplicate, err := store.IsDuplicate(ctx, messageID)
+			if err != nil {
+				ContextLogger(ctx).Warn("idempotency check failed", "error", err)
+				return next(ctx, ev, data)
+			}
+			if isDuplicate {
+				ContextLogger(ctx).Debug("skipping duplicate message", "message_id", messageID)
+				return nil
+			}
+
+			// Process message
+			err = next(ctx, ev, data)
+
+			// Only mark as processed on success
+			if err == nil {
+				if markErr := store.MarkProcessed(ctx, messageID); markErr != nil {
+					ContextLogger(ctx).Warn("failed to mark as processed", "error", markErr)
+				}
+			}
+
+			return err
+		}
+	}
+}
+
+// PoisonMiddleware creates a middleware that detects and quarantines poison messages.
+// Poison messages are messages that repeatedly fail processing.
+//
+// Example usage:
+//
+//	detector := poison.NewDetector(poison.NewRedisStore(redisClient))
+//	ev.Subscribe(ctx, handler, event.WithMiddleware(event.PoisonMiddleware[Order](detector)))
+func PoisonMiddleware[T any](detector PoisonDetector) Middleware[T] {
+	return func(next Handler[T]) Handler[T] {
+		return func(ctx context.Context, ev Event[T], data T) error {
+			messageID := ContextEventID(ctx)
+			if messageID == "" {
+				return next(ctx, ev, data)
+			}
+
+			// Check if message is quarantined
+			isPoisoned, err := detector.Check(ctx, messageID)
+			if err != nil {
+				ContextLogger(ctx).Warn("poison check failed", "error", err)
+				// Continue processing on check failure
+			} else if isPoisoned {
+				ContextLogger(ctx).Debug("skipping quarantined message", "message_id", messageID)
+				return nil // Ack and skip
+			}
+
+			// Process message
+			err = next(ctx, ev, data)
+
+			// Record result
+			if err == nil {
+				if successErr := detector.RecordSuccess(ctx, messageID); successErr != nil {
+					ContextLogger(ctx).Warn("failed to record success", "error", successErr)
+				}
+			} else {
+				quarantined, failErr := detector.RecordFailure(ctx, messageID)
+				if failErr != nil {
+					ContextLogger(ctx).Warn("failed to record failure", "error", failErr)
+				} else if quarantined {
+					ContextLogger(ctx).Warn("message quarantined after repeated failures", "message_id", messageID)
+				}
 			}
 
 			return err
