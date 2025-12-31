@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package message;
+
+option go_package = "github.com/rbaliyan/event/v3/transport/message";
+
+import "google/protobuf/any.proto";
+import "google/protobuf/struct.proto";
+
+// ProtoMessage is the wire format for event messages using Protocol Buffers.
+// It supports both strongly-typed proto.Message payloads (via Any) and
+// dynamic JSON-like payloads (via Struct).
+message ProtoMessage {
+  // Unique message identifier
+  string id = 1;
+
+  // Source of the message (usually bus ID)
+  string source = 2;
+
+  // Optional metadata key-value pairs
+  map<string, string> metadata = 3;
+
+  // Number of times this message has been retried
+  int32 retry_count = 4;
+
+  // Payload - either a strongly-typed proto.Message or a dynamic value
+  oneof payload {
+    // For proto.Message payloads - provides type URL for unmarshaling
+    google.protobuf.Any any_payload = 10;
+
+    // For dynamic payloads (maps, slices, primitives)
+    google.protobuf.Value struct_payload = 11;
+  }
+}

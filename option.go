@@ -1,41 +1,38 @@
 package event
 
 import (
-	"log/slog"
+	"context"
 	"time"
+
+	"github.com/rbaliyan/event/v3/transport"
+	"github.com/rbaliyan/event/v3/transport/message"
 )
 
 // Default event configuration values
 var (
 	// DefaultSubscriberTimeout default subscriber timeout (0 = no timeout)
 	DefaultSubscriberTimeout time.Duration = 0
+	// DefaultMaxRetries default max retry attempts (0 = unlimited)
+	DefaultMaxRetries = 0
 )
 
 // eventOptions holds configuration for events (unexported)
+// These are event-level concerns, not bus-level infrastructure
 type eventOptions struct {
-	registry          *Registry
-	recoveryEnabled   bool
-	tracingEnabled    bool
-	metricsEnabled    bool
-	metrics           Metrics
-	subTimeout        time.Duration
-	channelBufferSize uint
-	onError           func(BaseEvent, error)
-	logger            *slog.Logger
-	transport         Transport
+	subTimeout time.Duration
+	onError    func(*Bus, string, error)
+	maxRetries int                                                             // Max retry attempts (0 = unlimited)
+	dlqHandler func(ctx context.Context, msg message.Message, err error) error // Dead letter queue handler (returns error if storage fails)
 }
+
+// EventOption is an alias for Option (for API clarity)
+type EventOption = Option
 
 // newEventOptions creates options with defaults and applies provided options
 func newEventOptions(opts ...Option) *eventOptions {
 	o := &eventOptions{
-		registry:          defaultRegistry,
-		tracingEnabled:    true,
-		recoveryEnabled:   true,
-		metricsEnabled:    true,
-		onError:           func(BaseEvent, error) {}, // no-op default
-		logger:            Logger("event>"),
-		channelBufferSize: 0, // blocking by default (sync)
-		subTimeout:        DefaultSubscriberTimeout,
+		onError:    func(*Bus, string, error) {}, // no-op default
+		subTimeout: DefaultSubscriberTimeout,
 	}
 
 	// Apply all options
@@ -58,31 +55,9 @@ func WithSubscriberTimeout(v time.Duration) Option {
 	}
 }
 
-// WithTracing enable/disable tracing for event
-func WithTracing(v bool) Option {
-	return func(o *eventOptions) {
-		o.tracingEnabled = v
-	}
-}
-
-// WithRecovery enable/disable recovery for event
-// recovery should always be enabled, can be disabled for testing.
-func WithRecovery(v bool) Option {
-	return func(o *eventOptions) {
-		o.recoveryEnabled = v
-	}
-}
-
-// WithMetrics enable/disable prometheus metrics for event
-func WithMetrics(v bool, metrics Metrics) Option {
-	return func(o *eventOptions) {
-		o.metricsEnabled = v
-		o.metrics = metrics
-	}
-}
-
-// WithErrorHandler set error handler for panic recovery
-func WithErrorHandler(v func(BaseEvent, error)) Option {
+// WithErrorHandler set error handler for panic recovery.
+// The handler receives the bus, event name, and error.
+func WithErrorHandler(v func(*Bus, string, error)) Option {
 	return func(o *eventOptions) {
 		if v != nil {
 			o.onError = v
@@ -90,38 +65,137 @@ func WithErrorHandler(v func(BaseEvent, error)) Option {
 	}
 }
 
-// WithLogger set logger for event
-func WithLogger(l *slog.Logger) Option {
+// WithMaxRetries sets the maximum number of retry attempts for failed messages.
+// After maxRetries attempts, the message is sent to DLQ (if configured) or acked.
+// Set to 0 (default) for unlimited retries.
+//
+// Example:
+//
+//	event := New[Order]("orders", WithMaxRetries(3))
+func WithMaxRetries(maxRetries int) Option {
 	return func(o *eventOptions) {
-		if l != nil {
-			o.logger = l
+		if maxRetries >= 0 {
+			o.maxRetries = maxRetries
 		}
 	}
 }
 
-// WithTransport set transport for event
-// Use this to provide a pre-configured transport with custom options
-func WithTransport(t Transport) Option {
+// WithDeadLetterQueue configures a handler for messages that fail permanently.
+// Messages are sent to DLQ when:
+//   - Handler returns ErrReject
+//   - Max retries are exhausted (if WithMaxRetries is set)
+//   - Message decode fails (malformed message)
+//
+// The handler receives the original message and the last error.
+// IMPORTANT: If the DLQ handler returns an error, the message will NOT be acknowledged
+// and will be retried. This ensures no message loss if DLQ storage fails.
+//
+// Use this for logging, alerting, or storing failed messages for manual review.
+//
+// Example:
+//
+//	event := New[Order]("orders",
+//	    WithMaxRetries(3),
+//	    WithDeadLetterQueue(func(ctx context.Context, msg Message, err error) error {
+//	        if err := dlqStore.Save(ctx, msg, err); err != nil {
+//	            return err // Don't ACK - retry later
+//	        }
+//	        log.Error("message failed permanently",
+//	            "msg_id", msg.ID(),
+//	            "error", err,
+//	        )
+//	        return nil // ACK - message safely stored
+//	    }),
+//	)
+func WithDeadLetterQueue(handler func(ctx context.Context, msg message.Message, err error) error) Option {
 	return func(o *eventOptions) {
-		if t != nil {
-			o.transport = t
+		if handler != nil {
+			o.dlqHandler = handler
 		}
 	}
 }
 
-// WithChannelBufferSize set channel buffer size
-// Only used when creating default transport
-func WithChannelBufferSize(s uint) Option {
-	return func(o *eventOptions) {
-		o.channelBufferSize = s
+// Middleware wraps a handler to add cross-cutting concerns.
+// Middleware is applied in order: first middleware wraps the outermost layer.
+//
+// Example:
+//
+//	func LoggingMiddleware[T any](next event.Handler[T]) event.Handler[T] {
+//	    return func(ctx context.Context, ev event.Event[T], data T) error {
+//	        start := time.Now()
+//	        err := next(ctx, ev, data)
+//	        log.Info("handler completed", "event", ev.Name(), "duration", time.Since(start), "error", err)
+//	        return err
+//	    }
+//	}
+type Middleware[T any] func(Handler[T]) Handler[T]
+
+// subscribeOptions holds configuration for subscriptions
+type subscribeOptions[T any] struct {
+	mode       transport.DeliveryMode
+	middleware []Middleware[T]
+}
+
+// SubscribeOption configures subscription behavior
+type SubscribeOption[T any] func(*subscribeOptions[T])
+
+// newSubscribeOptions creates options with defaults and applies provided options
+func newSubscribeOptions[T any](opts ...SubscribeOption[T]) *subscribeOptions[T] {
+	o := &subscribeOptions[T]{
+		mode: transport.Broadcast, // Default to broadcast (all receive)
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return o
+}
+
+// AsWorker configures the subscription to use worker pool mode.
+// In this mode, only one subscriber receives each message (load balancing).
+// Multiple workers compete for messages - each message is processed by exactly one worker.
+func AsWorker[T any]() SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.mode = transport.WorkerPool
 	}
 }
 
-// WithRegistry set registry for event
-func WithRegistry(r *Registry) Option {
-	return func(o *eventOptions) {
-		if r != nil {
-			o.registry = r
-		}
+// AsBroadcast configures the subscription to use broadcast mode (default).
+// In this mode, all subscribers receive every message (fan-out).
+func AsBroadcast[T any]() SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.mode = transport.Broadcast
+	}
+}
+
+// WithMiddleware adds custom middleware to the subscription handler chain.
+// Middleware is applied in order: first middleware wraps the outermost layer.
+// Custom middleware runs AFTER the built-in middleware (recovery, tracing, metrics, timeout).
+//
+// Example:
+//
+//	// Logging middleware
+//	func LoggingMiddleware[T any](next event.Handler[T]) event.Handler[T] {
+//	    return func(ctx context.Context, ev event.Event[T], data T) error {
+//	        log.Info("processing", "event", ev.Name())
+//	        return next(ctx, ev, data)
+//	    }
+//	}
+//
+//	// Rate limiting middleware
+//	func RateLimitMiddleware[T any](limiter *rate.Limiter) event.Middleware[T] {
+//	    return func(next event.Handler[T]) event.Handler[T] {
+//	        return func(ctx context.Context, ev event.Event[T], data T) error {
+//	            if err := limiter.Wait(ctx); err != nil {
+//	                return event.ErrDefer
+//	            }
+//	            return next(ctx, ev, data)
+//	        }
+//	    }
+//	}
+//
+//	ev.Subscribe(ctx, handler, event.WithMiddleware(LoggingMiddleware[string], RateLimitMiddleware[string](limiter)))
+func WithMiddleware[T any](middleware ...Middleware[T]) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.middleware = append(o.middleware, middleware...)
 	}
 }

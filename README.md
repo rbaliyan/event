@@ -1,40 +1,51 @@
-# Event v2
+# Event v3
+
+> **BETA**: This is a beta release. The API may change before the stable v3.0.0 release. Please report any issues or feedback.
 
 [![CI](https://github.com/rbaliyan/event/actions/workflows/ci.yml/badge.svg)](https://github.com/rbaliyan/event/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/rbaliyan/event/branch/master/graph/badge.svg)](https://codecov.io/gh/rbaliyan/event)
-[![Go Reference](https://pkg.go.dev/badge/github.com/rbaliyan/event/v2.svg)](https://pkg.go.dev/github.com/rbaliyan/event/v2)
-[![Go Report Card](https://goreportcard.com/badge/github.com/rbaliyan/event/v2)](https://goreportcard.com/report/github.com/rbaliyan/event/v2)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rbaliyan/event/v3.svg)](https://pkg.go.dev/github.com/rbaliyan/event/v3)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rbaliyan/event/v3)](https://goreportcard.com/report/github.com/rbaliyan/event/v3)
 
-A production-grade event pub-sub library for Go with support for distributed event handling, metrics, tracing, and configurable transports.
-
-## V2 Changes
-
-V2 introduces a cleaner architecture with transport-centric design:
-
-- **Fire-and-forget API**: `Publish()` and `Subscribe()` return void - events are facts that happened
-- **Transport owns delivery**: Async behavior, error handling, and graceful shutdown moved to transport layer
-- **Simplified event**: Event focuses on routing and middleware (tracing, metrics, recovery)
-- **Graceful shutdown**: `Transport.Close()` and `Registry.Close()` block until pending messages are delivered
+A **production-grade event pub-sub library** for Go with support for distributed event handling, exactly-once semantics, sagas, scheduled messages, and multiple transports. Comparable to MassTransit (.NET), Axon (Java), and Spring Cloud Stream.
 
 ## Features
 
-- **Pub-Sub Pattern**: Simple publish/subscribe API for event-driven architectures
-- **Async Handlers**: Non-blocking event processing (configured at transport level)
-- **OpenTelemetry Tracing**: Built-in distributed tracing support
-- **Prometheus Metrics**: Out-of-the-box metrics for monitoring
-- **Panic Recovery**: Automatic recovery from panics in handlers
-- **Context Propagation**: Full support for Go context with metadata
-- **Configurable Transports**: Pluggable transport layer (channel-based by default)
-- **Registry Scoping**: Namespace events with registries for isolation
-- **Graceful Shutdown**: Transport waits for pending deliveries before closing
+### Core
+- **Type-Safe Generics**: `Event[T]` ensures compile-time type safety
+- **Multiple Transports**: Channel (in-memory), Redis Streams, NATS JetStream, Kafka
+- **Fire-and-Forget API**: `Publish()` and `Subscribe()` are void - events are facts
+- **Delivery Modes**: Broadcast (fan-out) or WorkerPool (load balancing)
+
+### Reliability
+- **Transactional Outbox**: Atomic publish with database writes (PostgreSQL, MongoDB, Redis)
+- **Dead Letter Queue**: Store, list, and replay failed messages
+- **Idempotency**: Prevent duplicate processing (Redis, in-memory)
+- **Poison Detection**: Auto-quarantine repeatedly failing messages
+- **At-Least-Once Delivery**: Via Redis Streams, NATS, or Kafka
+
+### Advanced
+- **Saga Orchestration**: Multi-step workflows with compensation
+- **Scheduled Messages**: Delayed/scheduled delivery (Redis, PostgreSQL, MongoDB)
+- **Batch Processing**: High-throughput batch handlers
+- **Rate Limiting**: Distributed rate limiting (Redis)
+- **Circuit Breaker**: Failure isolation pattern
+- **Schema Registry**: Payload validation and versioning
+
+### Observability
+- **OpenTelemetry Tracing**: Distributed tracing across services
+- **Prometheus Metrics**: Out-of-the-box monitoring
+- **Health Checks**: Transport health and consumer lag monitoring
 
 ## Installation
 
 ```bash
-go get github.com/rbaliyan/event/v2
+go get github.com/rbaliyan/event/v3
 ```
 
 ## Quick Start
+
+### Basic Usage with Type Safety
 
 ```go
 package main
@@ -42,280 +53,887 @@ package main
 import (
     "context"
     "fmt"
+    "log"
 
-    "github.com/rbaliyan/event/v2"
+    "github.com/rbaliyan/event/v3"
+    "github.com/rbaliyan/event/v3/transport/channel"
+)
+
+type Order struct {
+    ID     string
+    Amount float64
+}
+
+func main() {
+    ctx := context.Background()
+
+    // Create a bus with channel transport
+    bus, err := event.NewBus("my-app", event.WithBusTransport(channel.New()))
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer bus.Close(ctx)
+
+    // Create a type-safe event
+    orderEvent := event.New[Order]("order.created")
+
+    // Register event with bus
+    orderEvent, err := event.Register(ctx, bus, orderEvent)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Subscribe with type-safe handler
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
+        fmt.Printf("Order received: %s, Amount: $%.2f\n", order.ID, order.Amount)
+        return nil
+    })
+
+    // Publish (fire-and-forget)
+    orderEvent.Publish(ctx, Order{ID: "ORD-123", Amount: 99.99})
+}
+```
+
+## Transports
+
+### Redis Streams (Recommended for Production)
+
+Redis Streams provides at-least-once delivery. Since Redis Streams doesn't have native
+deduplication or DLQ features, reliability stores can be injected:
+
+```go
+import (
+    "github.com/rbaliyan/event/v3"
+    "github.com/rbaliyan/event/v3/transport/redis"
+    redisclient "github.com/redis/go-redis/v9"
 )
 
 func main() {
-    // Create an event
-    e := event.New("user.created")
+    ctx := context.Background()
 
-    // Subscribe to the event
-    e.Subscribe(context.Background(), func(ctx context.Context, ev event.Event, data event.Data) {
-        fmt.Printf("User created: %v\n", data)
+    rdb := redisclient.NewClient(&redisclient.Options{
+        Addr: "localhost:6379",
     })
 
-    // Publish an event (fire-and-forget)
-    e.Publish(context.Background(), map[string]string{"id": "123", "name": "John"})
+    // Basic setup
+    transport, _ := redis.New(rdb,
+        redis.WithConsumerGroup("order-service"),
+        redis.WithMaxLen(10000),             // Stream max length
+        redis.WithMaxAge(24*time.Hour),      // Message retention
+        redis.WithClaimInterval(30*time.Second, time.Minute), // Orphan claiming
+    )
+
+    // With reliability store injection
+    transport, _ := redis.New(rdb,
+        redis.WithConsumerGroup("order-service"),
+        redis.WithIdempotencyStore(idempStore),  // Deduplication
+        redis.WithDLQHandler(dlqHandler),         // Dead letter handling
+        redis.WithPoisonDetector(poisonDetector), // Poison message detection
+        redis.WithMaxRetries(3),                  // Retry limit before DLQ
+    )
+
+    bus, err := event.NewBus("order-service", event.WithBusTransport(transport))
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer bus.Close(ctx)
+
+    orderEvent := event.New[Order]("order.created")
+    event.Register(ctx, bus, orderEvent)
 }
 ```
 
-## Event Options
+### NATS
 
-Events can be configured with various options:
+The NATS transport provides two modes:
 
-```go
-e := event.New("my.event",
-    event.WithSubscriberTimeout(30*time.Second),     // Handler execution timeout (default: 0 = no timeout)
-    event.WithTracing(true),                         // Enable OpenTelemetry tracing (default: true)
-    event.WithMetrics(true, nil),                    // Enable Prometheus metrics (default: true)
-    event.WithRecovery(true),                        // Enable panic recovery (default: true)
-    event.WithErrorHandler(func(ev event.Event, err error) {
-        log.Printf("Panic in event %s: %v", ev.Name(), err)
-    }),
-    event.WithChannelBufferSize(100),                // Buffer size for default transport
-)
-```
+#### NATS Core (At-Most-Once)
 
-## Transport Options
-
-Transport controls delivery behavior:
+For ephemeral events where message loss is acceptable:
 
 ```go
-transport := event.NewChannelTransport(
-    event.WithTransportAsync(true),           // Async handler execution (default: true)
-    event.WithTransportBufferSize(100),       // Channel buffer size (default: 100)
-    event.WithTransportTimeout(time.Second),  // Per-subscriber send timeout (default: 0)
-    event.WithTransportErrorHandler(func(err error) {
-        log.Printf("Transport error: %v", err)
-    }),
+import (
+    "github.com/rbaliyan/event/v3/transport/nats"
+    natsgo "github.com/nats-io/nats.go"
 )
 
-e := event.New("my.event", event.WithTransport(transport))
-```
+func main() {
+    ctx := context.Background()
 
-### Default Values
+    nc, _ := natsgo.Connect("nats://localhost:4222")
 
-| Option | Default Value |
-|--------|---------------|
-| Async (transport) | `false` (synchronous) |
-| Buffer Size | `0` (blocking) when sync, `100` when async |
-| Subscriber Timeout | `0` (no timeout) |
-| Tracing | `true` |
-| Metrics | `true` |
-| Recovery | `true` |
+    // NATS Core - simple pub/sub, no persistence
+    transport, _ := nats.New(nc,
+        nats.WithCoreLogger(logger),
+    )
 
-## Working with Registries
+    // Optional: Add library-level reliability stores
+    transport, _ := nats.New(nc,
+        nats.WithIdempotencyStore(idempStore),  // Deduplication
+        nats.WithDLQHandler(dlqHandler),         // Dead letter handling
+        nats.WithPoisonDetector(poisonDetector), // Poison message detection
+    )
 
-Registries provide namespace isolation for events:
-
-```go
-// Create a custom registry
-reg := event.NewRegistry("myapp", prometheusRegisterer)
-
-// Create events within the registry
-userEvent := event.New("user.created", event.WithRegistry(reg))
-orderEvent := event.New("order.placed", event.WithRegistry(reg))
-
-// Get an event by name
-e := reg.Get("user.created")
-
-// Close all events in the registry (graceful shutdown)
-reg.Close()
-```
-
-## Context and Metadata
-
-Pass metadata through event context:
-
-```go
-// Add metadata to context
-ctx := event.ContextWithMetadata(context.Background(), event.Metadata{
-    "request_id": "abc-123",
-    "user_id":    "user-456",
-})
-
-// Publish with metadata
-e.Publish(ctx, data)
-
-// Access metadata in handler
-e.Subscribe(ctx, func(ctx context.Context, ev event.Event, data event.Data) {
-    meta := event.ContextMetadata(ctx)
-    requestID := meta.Get("request_id")
-
-    // Other context helpers
-    eventID := event.ContextEventID(ctx)
-    source := event.ContextSource(ctx)
-    subID := event.ContextSubscriptionID(ctx)
-})
-```
-
-## Transport Layer
-
-The default transport uses Go channels with a fan-out pattern:
-
-```go
-// Fan-out transport (all subscribers receive every message)
-transport := event.NewChannelTransport(
-    event.WithTransportAsync(true),
-    event.WithTransportBufferSize(100),
-)
-
-// Single channel transport (load-balancing - one subscriber receives each message)
-transport := event.NewSingleTransport(
-    event.WithTransportAsync(true),
-    event.WithTransportBufferSize(100),
-)
-
-// Custom transport (implement the Transport interface)
-type Transport interface {
-    Send() chan<- Message
-    Receive(string) <-chan Message
-    Delete(string)
-    Close() error  // Blocks until all pending messages delivered
+    bus, _ := event.NewBus("my-app", event.WithBusTransport(transport))
+    defer bus.Close(ctx)
 }
 ```
 
-## Cancellation and Cleanup
+#### NATS JetStream (At-Least-Once)
 
-Subscriptions can be cancelled using context:
+For durable messaging with native broker features:
 
 ```go
-ctx, cancel := context.WithCancel(context.Background())
+import (
+    "github.com/rbaliyan/event/v3/transport/nats"
+    natsgo "github.com/nats-io/nats.go"
+)
 
-e.Subscribe(ctx, func(ctx context.Context, ev event.Event, data event.Data) {
-    // Handle event
-})
+func main() {
+    ctx := context.Background()
 
-// Later, cancel the subscription
-cancel()
+    nc, _ := natsgo.Connect("nats://localhost:4222")
+    js, _ := nc.JetStream()
+
+    // JetStream with native features - no external stores needed
+    transport, _ := nats.NewJetStream(js,
+        nats.WithStreamName("ORDERS"),
+        nats.WithDeduplication(time.Hour),  // Native dedup via Nats-Msg-Id header
+        nats.WithMaxDeliver(5),             // Native retry limit
+        nats.WithAckWait(30*time.Second),   // Acknowledgment timeout
+    )
+
+    bus, _ := event.NewBus("my-app", event.WithBusTransport(transport))
+    defer bus.Close(ctx)
+}
 ```
 
-## Multiple Subscribers
+### Kafka
 
-Events support multiple subscribers with fan-out delivery:
+Kafka provides native dead letter topic (DLT) support:
 
 ```go
-e := event.New("notifications")
+import (
+    "github.com/rbaliyan/event/v3/transport/kafka"
+    "github.com/IBM/sarama"
+)
 
-// All subscribers receive every published message
-e.Subscribe(ctx, emailHandler)
-e.Subscribe(ctx, smsHandler)
-e.Subscribe(ctx, pushHandler)
+func main() {
+    ctx := context.Background()
 
-e.Publish(ctx, notification) // Delivered to all three handlers
+    config := sarama.NewConfig()
+    config.Consumer.Offsets.AutoCommit.Enable = false // Required for at-least-once
+
+    // Basic setup
+    transport, _ := kafka.New(
+        []string{"localhost:9092"},
+        config,
+        kafka.WithConsumerGroup("order-service"),
+    )
+
+    // With native dead letter topic support
+    transport, _ := kafka.New(
+        []string{"localhost:9092"},
+        config,
+        kafka.WithConsumerGroup("order-service"),
+        kafka.WithDeadLetterTopic("orders.dlq"), // Native DLT routing
+        kafka.WithMaxRetries(3),                  // Retry before sending to DLT
+        kafka.WithRetention(24*time.Hour),        // Topic retention
+    )
+
+    bus, _ := event.NewBus("my-app", event.WithBusTransport(transport))
+    defer bus.Close(ctx)
+}
 ```
 
-## Event Groups
+### Transport Feature Comparison
 
-Work with multiple events as a group:
+| Feature | Redis Streams | NATS Core | NATS JetStream | Kafka |
+|---------|:-------------:|:---------:|:--------------:|:-----:|
+| Persistence | ✅ | ❌ | ✅ | ✅ |
+| At-Least-Once | ✅ | ❌ | ✅ | ✅ |
+| Native Deduplication | ❌ (inject store) | ❌ (inject store) | ✅ | ❌ |
+| Native DLQ/DLT | ❌ (inject handler) | ❌ (inject handler) | ❌ | ✅ |
+| Native Retry Limits | ❌ | ❌ | ✅ (MaxDeliver) | ✅ |
+| Consumer Groups | ✅ | Queue Groups | ✅ | ✅ |
+| Health Checks | ✅ | ✅ | ✅ | ✅ |
+| Lag Monitoring | ✅ | ❌ | ❌ | ✅ |
+
+**Native vs Injected Features:**
+- **Native features** are handled by the broker (more efficient, no external dependencies)
+- **Injected stores** provide library-level features where the broker lacks native support
+
+## Transactional Outbox Pattern
+
+Ensure atomic publish with database writes - never lose messages:
 
 ```go
-events := event.Events{
-    event.New("event1"),
-    event.New("event2"),
-    event.New("event3"),
+import (
+    "database/sql"
+    "github.com/rbaliyan/event/v3/outbox"
+)
+
+func main() {
+    ctx := context.Background()
+
+    db, _ := sql.Open("postgres", "postgres://localhost/mydb")
+
+    // Create outbox publisher
+    publisher := outbox.NewPostgresPublisher(db)
+
+    // Start relay to publish messages from outbox to transport
+    relay := outbox.NewRelay(publisher.Store(), transport,
+        outbox.WithPollDelay(100*time.Millisecond),
+        outbox.WithBatchSize(100),
+    )
+    go relay.Start(ctx)
+
+    // In your business logic - atomic with DB transaction
+    tx, _ := db.BeginTx(ctx, nil)
+
+    // Update order status
+    tx.Exec("UPDATE orders SET status = 'shipped' WHERE id = $1", orderID)
+
+    // Store event in outbox (same transaction)
+    publisher.PublishInTransaction(ctx, tx, "order.shipped", order, map[string]string{
+        "source": "order-service",
+    })
+
+    tx.Commit() // Both succeed or both fail
+}
+```
+
+**SQL Schema:**
+```sql
+CREATE TABLE event_outbox (
+    id           BIGSERIAL PRIMARY KEY,
+    event_name   VARCHAR(255) NOT NULL,
+    event_id     VARCHAR(36) NOT NULL,
+    payload      BYTEA NOT NULL,
+    metadata     JSONB,
+    created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+    published_at TIMESTAMP,
+    status       VARCHAR(20) NOT NULL DEFAULT 'pending'
+);
+CREATE INDEX idx_outbox_pending ON event_outbox(status, created_at) WHERE status = 'pending';
+```
+
+## Dead Letter Queue (DLQ)
+
+Store and replay failed messages:
+
+```go
+import "github.com/rbaliyan/event/v3/dlq"
+
+func main() {
+    ctx := context.Background()
+
+    // Create DLQ store
+    dlqStore := dlq.NewPostgresStore(db)
+
+    // Create DLQ manager
+    manager := dlq.NewManager(dlqStore, transport)
+
+    // Configure event with DLQ handler
+    orderEvent := event.New[Order]("order.process",
+        event.WithMaxRetries(3),
+        event.WithDeadLetterQueue(func(ctx context.Context, msg transport.Message, err error) error {
+            return manager.Store(ctx,
+                "order.process",
+                msg.ID(),
+                msg.Payload().([]byte),
+                msg.Metadata(),
+                err,
+                msg.RetryCount(),
+                "order-service",
+            )
+        }),
+    )
+
+    // Later: List failed messages
+    messages, _ := manager.List(ctx, dlq.Filter{
+        EventName:      "order.process",
+        ExcludeRetried: true,
+        Limit:          100,
+    })
+
+    // Replay failed messages
+    replayed, _ := manager.Replay(ctx, dlq.Filter{
+        EventName: "order.process",
+    })
+    fmt.Printf("Replayed %d messages\n", replayed)
+
+    // Get statistics
+    stats, _ := manager.Stats(ctx)
+    fmt.Printf("Pending: %d, Total: %d\n", stats.PendingMessages, stats.TotalMessages)
+}
+```
+
+## Saga Orchestration
+
+Coordinate distributed transactions with compensation:
+
+```go
+import "github.com/rbaliyan/event/v3/saga"
+
+// Define saga steps
+type CreateOrderStep struct {
+    orderService *OrderService
 }
 
-// Subscribe to all events
-events.Subscribe(ctx, handler)
+func (s *CreateOrderStep) Name() string { return "create-order" }
 
-// Publish to all events
-events.Publish(ctx, data)
+func (s *CreateOrderStep) Execute(ctx context.Context, data any) error {
+    order := data.(*Order)
+    return s.orderService.Create(ctx, order)
+}
+
+func (s *CreateOrderStep) Compensate(ctx context.Context, data any) error {
+    order := data.(*Order)
+    return s.orderService.Cancel(ctx, order.ID)
+}
+
+// Similar for ReserveInventoryStep, ProcessPaymentStep, etc.
+
+func main() {
+    ctx := context.Background()
+
+    // Create saga with persistence
+    store := saga.NewPostgresStore(db)
+
+    orderSaga := saga.New("order-creation",
+        &CreateOrderStep{orderService},
+        &ReserveInventoryStep{inventoryService},
+        &ProcessPaymentStep{paymentService},
+        &SendConfirmationStep{emailService},
+    ).WithStore(store)
+
+    // Execute saga
+    sagaID := uuid.New().String()
+    order := &Order{ID: "ORD-123", Items: items}
+
+    if err := orderSaga.Execute(ctx, sagaID, order); err != nil {
+        // Saga failed - compensations were automatically run
+        log.Printf("Order saga failed: %v", err)
+    }
+
+    // Resume failed sagas after fix
+    failedSagas, _ := store.List(ctx, saga.StoreFilter{
+        Status: []saga.Status{saga.StatusFailed},
+    })
+
+    for _, state := range failedSagas {
+        orderSaga.Resume(ctx, state.ID)
+    }
+}
 ```
 
-## Metrics
+## Scheduled Messages
 
-When metrics are enabled, the following Prometheus metrics are exposed:
+Schedule messages for future delivery:
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `event_<name>_published_total` | Counter | Total messages published |
-| `event_<name>_subscribed_total` | Counter | Total subscribers added |
-| `event_<name>_processed_total` | Counter | Total messages processed |
-| `event_<name>_publishing_count` | Gauge | Messages currently being published |
-| `event_<name>_processing_count` | Gauge | Messages currently being processed |
+```go
+import "github.com/rbaliyan/event/v3/scheduler"
 
-## Architecture
+func main() {
+    ctx := context.Background()
 
-### V2 Design
+    // Create scheduler with Redis
+    sched := scheduler.NewRedisScheduler(redisClient, transport,
+        scheduler.WithPollInterval(100*time.Millisecond),
+        scheduler.WithBatchSize(100),
+    )
 
+    // Start scheduler
+    go sched.Start(ctx)
+
+    // Schedule a message for later
+    payload, _ := json.Marshal(Order{ID: "ORD-123"})
+
+    // Schedule for specific time
+    msgID, _ := sched.ScheduleAt(ctx, "order.reminder", payload, nil,
+        time.Now().Add(24*time.Hour))
+
+    // Or schedule after delay
+    msgID, _ = sched.ScheduleAfter(ctx, "order.reminder", payload, nil,
+        time.Hour)
+
+    // Cancel scheduled message
+    sched.Cancel(ctx, msgID)
+
+    // List scheduled messages
+    messages, _ := sched.List(ctx, scheduler.Filter{
+        EventName: "order.reminder",
+        Before:    time.Now().Add(48 * time.Hour),
+    })
+}
 ```
-Event (routing + middleware)
-  └── Transport (delivery semantics)
-        ├── Async goroutine spawning
-        ├── Error handling via callback
-        └── Graceful shutdown
+
+## Batch Processing
+
+Process messages in batches for high throughput:
+
+```go
+import "github.com/rbaliyan/event/v3/batch"
+
+func main() {
+    ctx := context.Background()
+
+    // Create batch processor
+    processor := batch.NewProcessor[Order](
+        batch.WithBatchSize(100),
+        batch.WithTimeout(time.Second),
+        batch.WithMaxRetries(3),
+        batch.WithOnError(func(b []any, err error) {
+            log.Printf("Batch of %d failed: %v", len(b), err)
+        }),
+    )
+
+    // Subscribe with batch handler
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
+        // This is called per-message; use processor for batching
+        return nil
+    })
+
+    // Or use processor directly with subscription messages
+    sub, _ := transport.Subscribe(ctx, "order.process", transport.WorkerPool)
+
+    go processor.Process(ctx, sub.Messages(), func(ctx context.Context, orders []Order) error {
+        // Bulk insert all orders at once
+        return db.BulkInsert(ctx, orders)
+    })
+}
 ```
 
-### Middleware Chain
+## Idempotency
 
-Handlers are wrapped in middleware in this order (innermost to outermost):
+Prevent duplicate message processing:
 
+```go
+import "github.com/rbaliyan/event/v3/idempotency"
+
+func main() {
+    ctx := context.Background()
+
+    // Create idempotency store (Redis or PostgreSQL)
+    store := idempotency.NewRedisStore(redisClient, time.Hour)
+    // OR for PostgreSQL:
+    // store := idempotency.NewPostgresStore(db, idempotency.WithPostgresTTL(time.Hour))
+
+    // In your handler
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
+        msgID := event.ContextEventID(ctx)
+
+        // Check if already processed
+        if dup, _ := store.IsDuplicate(ctx, msgID); dup {
+            return nil // Skip duplicate
+        }
+
+        // Process order
+        if err := processOrder(ctx, order); err != nil {
+            return err
+        }
+
+        // Mark as processed
+        return store.MarkProcessed(ctx, msgID)
+    })
+}
 ```
-Recovery (panic handling)
-  → Tracing (OpenTelemetry spans)
-    → Metrics (Prometheus counters)
-      → Timeout (context deadline)
+
+## Exactly-Once Processing
+
+For true exactly-once semantics, use `TransactionalHandler` which combines idempotency checking with database transactions:
+
+```go
+import (
+    "github.com/rbaliyan/event/v3/idempotency"
+    "github.com/rbaliyan/event/v3/transaction"
+)
+
+func main() {
+    ctx := context.Background()
+
+    db, _ := sql.Open("postgres", "postgres://localhost/mydb")
+
+    // Create transaction manager and idempotency store
+    txManager := transaction.NewSQLManager(db)
+    idempStore := idempotency.NewPostgresStore(db,
+        idempotency.WithPostgresTTL(24*time.Hour),
+    )
+
+    // Create transactional handler - atomic exactly-once processing
+    handler := transaction.NewTransactionalHandler(
+        func(ctx context.Context, tx transaction.Transaction, order Order) error {
+            sqlTx := tx.(transaction.SQLTransactionProvider).Tx()
+
+            // All operations in the same transaction
+            _, err := sqlTx.ExecContext(ctx,
+                "UPDATE inventory SET quantity = quantity - $1 WHERE product_id = $2",
+                order.Quantity, order.ProductID)
+            if err != nil {
+                return err
+            }
+
+            _, err = sqlTx.ExecContext(ctx,
+                "INSERT INTO orders (id, product_id, quantity) VALUES ($1, $2, $3)",
+                order.ID, order.ProductID, order.Quantity)
+            return err
+        },
+        txManager,
+        idempStore,
+        func(order Order) string { return order.ID },
+    )
+
+    // Use in event subscription
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
+        return handler.Handle(ctx, order)
+    })
+}
 ```
+
+**PostgreSQL Schema for Idempotency:**
+```sql
+CREATE TABLE event_idempotency (
+    message_id VARCHAR(255) PRIMARY KEY,
+    processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+CREATE INDEX idx_event_idempotency_expires ON event_idempotency(expires_at);
+```
+
+The `TransactionalHandler` guarantees:
+- Idempotency check within the transaction (no race conditions)
+- Business logic within the same transaction
+- Mark-as-processed within the same transaction
+- Atomic commit/rollback of all operations
+
+## Poison Message Detection
+
+Automatically quarantine messages that keep failing:
+
+```go
+import "github.com/rbaliyan/event/v3/poison"
+
+func main() {
+    ctx := context.Background()
+
+    // Create poison detector (Redis or PostgreSQL)
+    store := poison.NewRedisStore(redisClient)
+    // OR for PostgreSQL:
+    // store := poison.NewPostgresStore(db, poison.WithPostgresFailureTTL(24*time.Hour))
+
+    detector := poison.NewDetector(store,
+        poison.WithThreshold(5),              // Quarantine after 5 failures
+        poison.WithQuarantineTime(time.Hour), // Block for 1 hour
+    )
+
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
+        msgID := event.ContextEventID(ctx)
+
+        // Check if message is quarantined
+        if poisoned, _ := detector.Check(ctx, msgID); poisoned {
+            return nil // Skip quarantined message
+        }
+
+        if err := processOrder(ctx, order); err != nil {
+            // Record failure
+            quarantined, _ := detector.RecordFailure(ctx, msgID)
+            if quarantined {
+                log.Printf("Message %s quarantined after repeated failures", msgID)
+            }
+            return err
+        }
+
+        // Clear failure count on success
+        detector.RecordSuccess(ctx, msgID)
+        return nil
+    })
+
+    // Release a message from quarantine
+    detector.Release(ctx, messageID)
+}
+```
+
+**PostgreSQL Schema for Poison Detection:**
+```sql
+CREATE TABLE poison_failures (
+    message_id VARCHAR(255) PRIMARY KEY,
+    failure_count INTEGER NOT NULL DEFAULT 1,
+    first_failure_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    last_failure_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+CREATE TABLE poison_quarantine (
+    message_id VARCHAR(255) PRIMARY KEY,
+    quarantined_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    reason TEXT
+);
+```
+
+## Rate Limiting
+
+Distributed rate limiting for consumers:
+
+```go
+import "github.com/rbaliyan/event/v3/ratelimit"
+
+func main() {
+    ctx := context.Background()
+
+    // Create rate limiter: 100 requests per second
+    limiter := ratelimit.NewRedisLimiter(redisClient, "order-processor", 100, time.Second)
+
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
+        // Wait for rate limit
+        if err := limiter.Wait(ctx); err != nil {
+            return event.ErrDefer.Wrap(err) // Retry later
+        }
+
+        return processOrder(ctx, order)
+    })
+
+    // Check remaining capacity
+    remaining, _ := limiter.Remaining(ctx)
+    fmt.Printf("Remaining: %d requests\n", remaining)
+}
+```
+
+## Error Handling
+
+Use semantic error types to control message acknowledgment:
+
+```go
+import "github.com/rbaliyan/event/v3"
+
+orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
+    err := processOrder(ctx, order)
+
+    switch {
+    case err == nil:
+        return nil // ACK - message processed successfully
+
+    case errors.Is(err, ErrTemporary):
+        return event.ErrNack // NACK - retry immediately
+
+    case errors.Is(err, ErrTransient):
+        return event.ErrDefer // NACK - retry with backoff
+
+    case errors.Is(err, ErrPermanent):
+        return event.ErrReject // ACK + send to DLQ
+
+    default:
+        return event.ErrDefer.Wrap(err) // Default: retry with backoff
+    }
+})
+```
+
+## Middleware
+
+### Deduplication Middleware
+
+```go
+import "github.com/rbaliyan/event/v3"
+
+store := event.NewInMemoryDeduplicationStore(time.Hour, 10000)
+
+orderEvent.Subscribe(ctx, handler,
+    event.WithMiddleware(event.DeduplicationMiddleware(store)),
+)
+```
+
+### Circuit Breaker Middleware
+
+```go
+cb := event.NewCircuitBreaker(
+    5,              // Open after 5 failures
+    2,              // Close after 2 successes
+    30*time.Second, // Reset timeout
+)
+
+orderEvent.Subscribe(ctx, handler,
+    event.WithMiddleware(event.CircuitBreakerMiddleware(cb)),
+)
+```
+
+## Publisher vs Subscriber Features
+
+| Publisher Side | Subscriber Side | Must Match |
+|----------------|-----------------|------------|
+| Outbox | DLQ | Event Name |
+| Outbox Relay | Idempotency | Codec |
+| Scheduler | Deduplication | Schema |
+| | Poison Detection | Transport |
+| | Rate Limiting | Transport Config |
+| | Batch Processing | |
+| | Circuit Breaker | |
+
+## Database Support
+
+| Component | PostgreSQL | MongoDB | Redis | In-Memory |
+|-----------|:----------:|:-------:|:-----:|:---------:|
+| Outbox | ✅ | ✅ | ✅ | - |
+| DLQ | ✅ | ✅ | ✅ | ✅ |
+| Saga | ✅ | ✅ | ✅ | - |
+| Scheduler | ✅ | ✅ | ✅ | - |
+| Idempotency | ✅ | - | ✅ | ✅ |
+| Poison | ✅ | - | ✅ | - |
+| Transaction | ✅ | ✅ | - | - |
+| Rate Limit | - | - | ✅ | - |
 
 ## Testing
 
-```bash
-# Run all tests
-go test ./...
-
-# Run tests with race detector
-go test -race ./...
-
-# Run benchmarks
-go test -bench=.
-```
-
-## Migration from V1
-
-### Breaking Changes
-
-1. **Import path**: Change to `github.com/rbaliyan/event/v2`
-2. **Publish/Subscribe signatures**: No longer return errors
-3. **Async config moved**: Use transport options instead of event options
-
-### Before (V1)
+Use built-in test utilities:
 
 ```go
-import "github.com/rbaliyan/event"
+import "github.com/rbaliyan/event/v3"
 
-e := event.New("my.event",
-    event.WithAsync(true),
-    event.WithWorkerPoolSize(100),
-    event.WithPublishTimeout(time.Second),
-)
+func TestOrderHandler(t *testing.T) {
+    // Create test bus (no tracing, metrics, or recovery)
+    bus := event.TestBus(channel.New())
+    defer bus.Close(context.Background())
 
-if err := e.Subscribe(ctx, handler); err != nil {
-    log.Fatal(err)
-}
+    // Create recording transport to capture messages
+    recorder := event.NewRecordingTransport(channel.New())
 
-if err := e.Publish(ctx, data); err != nil {
-    log.Fatal(err)
+    // Create test handler to capture calls
+    handler := event.NewTestHandler(func(ctx context.Context, e event.Event, order Order) error {
+        return nil
+    })
+
+    orderEvent := event.New[Order]("order.created")
+    event.Register(ctx, bus, orderEvent)
+
+    orderEvent.Subscribe(ctx, handler.Handler())
+    orderEvent.Publish(ctx, Order{ID: "test"})
+
+    // Wait for handler to be called
+    if !handler.WaitFor(1, 100*time.Millisecond) {
+        t.Error("handler not called")
+    }
+
+    // Check received data
+    orders := handler.Received()
+    if orders[0].ID != "test" {
+        t.Error("wrong order ID")
+    }
 }
 ```
 
-### After (V2)
+## Full Example: Order Processing System
 
 ```go
-import "github.com/rbaliyan/event/v2"
+package main
 
-transport := event.NewChannelTransport(
-    event.WithTransportAsync(true),
-    event.WithTransportErrorHandler(func(err error) {
-        log.Printf("error: %v", err)
-    }),
+import (
+    "context"
+    "database/sql"
+    "log"
+    "time"
+
+    "github.com/rbaliyan/event/v3"
+    "github.com/rbaliyan/event/v3/dlq"
+    "github.com/rbaliyan/event/v3/idempotency"
+    "github.com/rbaliyan/event/v3/outbox"
+    "github.com/rbaliyan/event/v3/poison"
+    "github.com/rbaliyan/event/v3/transport/redis"
+    redisclient "github.com/redis/go-redis/v9"
 )
 
-e := event.New("my.event", event.WithTransport(transport))
+type Order struct {
+    ID     string  `json:"id"`
+    Amount float64 `json:"amount"`
+    Status string  `json:"status"`
+}
 
-e.Subscribe(ctx, handler)  // Fire-and-forget
-e.Publish(ctx, data)       // Fire-and-forget
+func main() {
+    ctx := context.Background()
+
+    // Setup infrastructure
+    db, _ := sql.Open("postgres", "postgres://localhost/orders")
+    rdb := redisclient.NewClient(&redisclient.Options{Addr: "localhost:6379"})
+
+    // Create transport
+    transport, _ := redis.New(rdb, redis.WithConsumerGroup("order-service"))
+
+    // Create bus
+    bus, _ := event.NewBus("order-service", event.WithBusTransport(transport))
+    defer bus.Close(ctx)
+
+    // === PUBLISHER SIDE ===
+
+    // Outbox for atomic publishing
+    outboxPublisher := outbox.NewPostgresPublisher(db)
+    relay := outbox.NewRelay(outboxPublisher.Store(), transport)
+    go relay.Start(ctx)
+
+    // Publish order created event atomically with DB update
+    publishOrder := func(ctx context.Context, order Order) error {
+        tx, _ := db.BeginTx(ctx, nil)
+        tx.Exec("INSERT INTO orders (id, amount) VALUES ($1, $2)", order.ID, order.Amount)
+        outboxPublisher.PublishInTransaction(ctx, tx, "order.created", order, nil)
+        return tx.Commit()
+    }
+
+    // === SUBSCRIBER SIDE ===
+
+    // Create stores (all PostgreSQL for consistency)
+    dlqStore := dlq.NewPostgresStore(db)
+    dlqManager := dlq.NewManager(dlqStore, transport)
+    idempStore := idempotency.NewPostgresStore(db, idempotency.WithPostgresTTL(24*time.Hour))
+    poisonStore := poison.NewPostgresStore(db, poison.WithPostgresFailureTTL(24*time.Hour))
+    poisonDetector := poison.NewDetector(poisonStore, poison.WithThreshold(5))
+
+    // Create event
+    orderEvent := event.New[Order]("order.created",
+        event.WithMaxRetries(3),
+        event.WithDeadLetterQueue(func(ctx context.Context, msg transport.Message, err error) error {
+            return dlqManager.Store(ctx, "order.created", msg.ID(),
+                msg.Payload().([]byte), msg.Metadata(), err, msg.RetryCount(), "order-service")
+        }),
+    )
+    event.Register(ctx, bus, orderEvent)
+
+    // Subscribe with all protections
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
+        msgID := event.ContextEventID(ctx)
+
+        // Check poison
+        if poisoned, _ := poisonDetector.Check(ctx, msgID); poisoned {
+            return nil
+        }
+
+        // Check idempotency
+        if dup, _ := idempStore.IsDuplicate(ctx, msgID); dup {
+            return nil
+        }
+
+        // Process order
+        if err := processOrder(ctx, order); err != nil {
+            poisonDetector.RecordFailure(ctx, msgID)
+            return event.ErrDefer.Wrap(err)
+        }
+
+        // Mark processed
+        idempStore.MarkProcessed(ctx, msgID)
+        poisonDetector.RecordSuccess(ctx, msgID)
+
+        log.Printf("Processed order: %s", order.ID)
+        return nil
+    })
+
+    // Publish a test order
+    publishOrder(ctx, Order{ID: "ORD-001", Amount: 99.99})
+
+    // Keep running
+    select {}
+}
+
+func processOrder(ctx context.Context, order Order) error {
+    // Business logic here
+    return nil
+}
 ```
 
 ## License

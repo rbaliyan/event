@@ -4,13 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"runtime"
 	"runtime/debug"
-	"strconv"
 	"strings"
-	"sync/atomic"
+	"time"
 
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -20,22 +19,9 @@ const (
 	spanKeyEventID             = "event.id"
 	spanKeyEventName           = "event.name"
 	spanKeyEventSource         = "event.source"
-	spanKeyEventRegistry       = "event.registry"
+	spanKeyEventBus            = "event.bus"
 	spanKeyEventSubscriptionID = "subscription.id"
 )
-
-var (
-	counter uint64
-)
-
-// NewID generate new event id
-func NewID() string {
-	u, err := uuid.NewRandom()
-	if err == nil {
-		return u.String()
-	}
-	return strconv.FormatUint(atomic.AddUint64(&counter, 1), 10)
-}
 
 // Sanitize strings and remove special chars
 func Sanitize(s string) string {
@@ -54,15 +40,12 @@ func Sanitize(s string) string {
 	return result.String()
 }
 
-// Logger returns a logger with the given component name
-func Logger(component string) *slog.Logger {
-	return slog.Default().With("component", component)
-}
-
 // AsyncHandler convert event handler to async
-// This wraps a typed handler to run in a goroutine with panic recovery
+// This wraps a typed handler to run in a goroutine with panic recovery.
+// Returns nil immediately since the actual handler runs asynchronously.
+// Errors from the async handler are logged but cannot trigger retries.
 func AsyncHandler[T any](handler Handler[T], copyContextFns ...func(to, from context.Context) context.Context) Handler[T] {
-	return func(ctx context.Context, ev Event[T], data T) {
+	return func(ctx context.Context, ev Event[T], data T) error {
 		// Call handler with go routine
 		go func() {
 			defer func() {
@@ -99,8 +82,15 @@ func AsyncHandler[T any](handler Handler[T], copyContextFns ...func(to, from con
 					}))
 				defer span.End()
 			}
-			handler(newCtx, ev, data)
+			if err := handler(newCtx, ev, data); err != nil {
+				slog.Error("async handler error",
+					"event", ev.Name(),
+					"error", err,
+				)
+			}
 		}()
+		// Async handler always acks immediately - errors are logged but can't retry
+		return nil
 	}
 }
 
@@ -115,4 +105,16 @@ func Caller(depth int) string {
 		return details.Name()
 	}
 	return ""
+}
+
+// Jitter adds randomness to a duration to prevent thundering herd.
+// Returns a duration between d*(1-factor) and d*(1+factor).
+// Factor should be between 0 and 1 (e.g., 0.3 for +/-30% jitter).
+func Jitter(d time.Duration, factor float64) time.Duration {
+	if factor <= 0 || factor > 1 {
+		return d
+	}
+	// Random value between -factor and +factor
+	jitter := (rand.Float64()*2 - 1) * factor
+	return time.Duration(float64(d) * (1 + jitter))
 }
