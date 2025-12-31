@@ -1,9 +1,7 @@
 # Event v3
 
-> **BETA**: This is a beta release. The API may change before the stable v3.0.0 release. Please report any issues or feedback.
-
 [![CI](https://github.com/rbaliyan/event/actions/workflows/ci.yml/badge.svg)](https://github.com/rbaliyan/event/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/rbaliyan/event/branch/master/graph/badge.svg)](https://codecov.io/gh/rbaliyan/event)
+[![codecov](https://codecov.io/gh/rbaliyan/event/branch/development/graph/badge.svg)](https://codecov.io/gh/rbaliyan/event)
 [![Go Reference](https://pkg.go.dev/badge/github.com/rbaliyan/event/v3.svg)](https://pkg.go.dev/github.com/rbaliyan/event/v3)
 [![Go Report Card](https://goreportcard.com/badge/github.com/rbaliyan/event/v3)](https://goreportcard.com/report/github.com/rbaliyan/event/v3)
 
@@ -74,17 +72,14 @@ func main() {
     }
     defer bus.Close(ctx)
 
-    // Create a type-safe event
-    orderEvent := event.New[Order]("order.created")
-
-    // Register event with bus
-    orderEvent, err := event.Register(ctx, bus, orderEvent)
+    // Create and register a type-safe event
+    orderEvent, err := event.Register(ctx, bus, event.New[Order]("order.created"))
     if err != nil {
         log.Fatal(err)
     }
 
     // Subscribe with type-safe handler
-    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
         fmt.Printf("Order received: %s, Amount: $%.2f\n", order.ID, order.Amount)
         return nil
     })
@@ -323,7 +318,10 @@ CREATE INDEX idx_outbox_pending ON event_outbox(status, created_at) WHERE status
 Store and replay failed messages:
 
 ```go
-import "github.com/rbaliyan/event/v3/dlq"
+import (
+    "github.com/rbaliyan/event/v3/dlq"
+    "github.com/rbaliyan/event/v3/transport/message"
+)
 
 func main() {
     ctx := context.Background()
@@ -337,7 +335,7 @@ func main() {
     // Configure event with DLQ handler
     orderEvent := event.New[Order]("order.process",
         event.WithMaxRetries(3),
-        event.WithDeadLetterQueue(func(ctx context.Context, msg transport.Message, err error) error {
+        event.WithDeadLetterQueue(func(ctx context.Context, msg message.Message, err error) error {
             return manager.Store(ctx,
                 "order.process",
                 msg.ID(),
@@ -837,6 +835,7 @@ import (
     "github.com/rbaliyan/event/v3/idempotency"
     "github.com/rbaliyan/event/v3/outbox"
     "github.com/rbaliyan/event/v3/poison"
+    "github.com/rbaliyan/event/v3/transport/message"
     "github.com/rbaliyan/event/v3/transport/redis"
     redisclient "github.com/redis/go-redis/v9"
 )
@@ -888,7 +887,7 @@ func main() {
     // Create event
     orderEvent := event.New[Order]("order.created",
         event.WithMaxRetries(3),
-        event.WithDeadLetterQueue(func(ctx context.Context, msg transport.Message, err error) error {
+        event.WithDeadLetterQueue(func(ctx context.Context, msg message.Message, err error) error {
             return dlqManager.Store(ctx, "order.created", msg.ID(),
                 msg.Payload().([]byte), msg.Metadata(), err, msg.RetryCount(), "order-service")
         }),
@@ -896,7 +895,7 @@ func main() {
     event.Register(ctx, bus, orderEvent)
 
     // Subscribe with all protections
-    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
         msgID := event.ContextEventID(ctx)
 
         // Check poison

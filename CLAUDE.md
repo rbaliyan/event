@@ -32,18 +32,20 @@ go mod tidy            # Clean up dependencies
 
 ### Constructor Pattern
 
-Use the `New(*Config, ...Option)`, `Start(ctx) error`, `Close(ctx) error` pattern:
+Use the `New(name, ...Option) (*T, error)`, `Close(ctx) error` pattern:
 
 ```go
-// New creates instance without errors, only validates/populates config
-func New(cfg *Config, opts ...Option) *Client
+// NewBus creates a bus and returns error if transport missing or duplicate name
+func NewBus(name string, opts ...BusOption) (*Bus, error)
 
-// Start initializes connections/resources (can return error)
-// Use Connect() for client-like systems, Start() for server-like systems
-func (c *Client) Start(ctx context.Context) error
+// New creates an unbound event (must be registered with a bus)
+func New[T any](name string, opts ...EventOption) Event[T]
+
+// Register binds event to bus (returns error if type mismatch or bus closed)
+func Register[T any](ctx context.Context, bus *Bus, event Event[T]) (Event[T], error)
 
 // Close gracefully shuts down
-func (c *Client) Close(ctx context.Context) error
+func (b *Bus) Close(ctx context.Context) error
 ```
 
 ### Options Pattern
@@ -86,35 +88,39 @@ func New(opts ...Option) *Client {
 ### Key Principles
 
 - Unexported config/options structs - only expose Option functions
-- `New()` never returns error - just creates instance
-- `Start()/Connect()` returns error - does actual initialization
+- `NewBus()` returns error - validates transport is provided and name is unique
+- `New[T]()` returns unbound event - must be registered with `Register()`
+- `Register()` returns error - does actual binding to bus and transport
 - Dependent field resolution happens after all options applied, before copying to client
 
 ## Architecture
 
 ### Core Components
 
-**Event (event.go)** - Central pub-sub implementation with `Publish()` and `Subscribe()` methods. Uses atomic operations for lock-free status management.
+**Bus (bus.go)** - Central event bus that manages events and their lifecycle. Owns transport, tracing, metrics, and recovery settings. Provides global bus registry with full name support (`busname://eventname`).
 
-**Registry (registry.go)** - Scopes events to a namespace with lifecycle management. Thread-safe event storage with RWMutex. Provides both instance-based and global default registry.
+**Event (event.go)** - Generic typed pub-sub implementation with `Publish()` and `Subscribe()` methods. Uses atomic operations for lock-free status management. Returns `ErrEventNotBound` if not registered.
 
-**Transport (transport.go)** - Pluggable transport layer with two implementations:
-- `channelMuxTransport`: Fan-out pattern - single input broadcasts to multiple subscriber channels (default)
-- `singleChannelTransport`: All subscribers receive from one shared channel
+**Transport (transport/)** - Pluggable transport layer with multiple implementations:
+- `channel`: In-memory channel-based transport
+- `redis`: Redis Streams transport with consumer groups
+- `nats`: NATS Core and JetStream transports
+- `kafka`: Apache Kafka transport with DLT support
 
-**Context (context.go)** - Event metadata propagation through context, storing Event ID, Subscription ID, Source Registry ID, Metadata, Logger, and Registry.
+**Context (context.go)** - Event metadata propagation through context, storing Event ID, Subscription ID, Source Bus ID, Metadata, Logger, and Bus reference.
 
-**Metrics (metric.go)** - Prometheus integration tracking published/subscribed/processed totals and current counts. Lazy initialization with dummy implementation for zero-overhead when disabled.
+**Middleware (middleware.go)** - Built-in middleware for deduplication, circuit breaker, and custom handlers. Applied via `WithMiddleware()` subscribe option.
 
-### V2 Design
+### V3 Design
 
-Transport owns delivery semantics:
+Bus owns infrastructure, Event owns routing:
 ```
-Event (routing + middleware)
-  └── Transport (delivery semantics)
-        ├── Async goroutine spawning
-        ├── Error handling via callback
-        └── Graceful shutdown
+Bus (transport, tracing, metrics, recovery)
+  └── Event (routing + type safety)
+        └── Transport (delivery semantics)
+              ├── Delivery modes (Broadcast/WorkerPool)
+              ├── Message acknowledgment
+              └── Graceful shutdown
 ```
 
 ### Middleware Chain Execution Order
@@ -122,22 +128,23 @@ Event (routing + middleware)
 When a handler is subscribed, it's wrapped in this chain (innermost to outermost):
 ```
 Recovery (panic handling)
-  → Tracing (OpenTelemetry spans)
-    → Metrics (Prometheus counters)
-      → Timeout (context deadline)
+  → Timeout (context deadline)
+    → Custom middleware (via WithMiddleware)
 ```
 
 ### Key Design Patterns
 
 - **Functional Options Pattern**: Configuration via `Option` functions
-- **Interface-Based Extensibility**: Transport and Metrics are interfaces for custom implementations
+- **Interface-Based Extensibility**: Transport is an interface for custom implementations
 - **Atomic Status Management**: `int32` status flags with CompareAndSwap for lock-free state checks
-- **Graceful Shutdown**: Registry shutdown broadcasts to all events via shutdown channel
-- **Fire-and-Forget**: `Publish()` and `Subscribe()` return void - events are facts that happened
+- **Graceful Shutdown**: Bus shutdown broadcasts to all events via shutdown channel
+- **Global Bus Registry**: Buses registered by name, events accessible via `busname://eventname`
+- **Type-Safe Generics**: `Event[T]` ensures compile-time type safety
 
 ### Default Configuration
 
-- Async: false (synchronous by default)
-- Buffer size: 0 (blocking) when sync, 100 when async
-- Worker pool size: 100 (when async enabled)
+- Tracing: enabled (OpenTelemetry)
+- Recovery: enabled (panic handling)
+- Metrics: enabled (OpenTelemetry)
 - Subscriber timeout: 0 (no timeout)
+- Delivery mode: Broadcast (all subscribers receive)
