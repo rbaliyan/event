@@ -259,10 +259,12 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 }
 
 // Subscribe creates a subscription to receive messages for an event
-func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.DeliveryMode) (transport.Subscription, error) {
+func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transport.SubscribeOption) (transport.Subscription, error) {
 	if !t.isOpen() {
 		return nil, transport.ErrTransportClosed
 	}
+
+	subOpts := transport.ApplySubscribeOptions(opts...)
 
 	if _, ok := t.events.Load(name); !ok {
 		return nil, transport.ErrEventNotRegistered
@@ -270,7 +272,7 @@ func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.D
 
 	// Determine consumer group based on delivery mode
 	var groupID string
-	if mode == transport.WorkerPool {
+	if subOpts.DeliveryMode == transport.WorkerPool {
 		// Same group = competing consumers (load balancing)
 		groupID = t.groupID + "-" + name
 	} else {
@@ -284,9 +286,14 @@ func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.D
 		return nil, err
 	}
 
+	bufSize := 100
+	if subOpts.BufferSize > 0 {
+		bufSize = subOpts.BufferSize
+	}
+
 	sub := &subscription{
 		id:          transport.NewID(),
-		ch:          make(chan transport.Message, 100),
+		ch:          make(chan transport.Message, bufSize),
 		closedCh:    make(chan struct{}),
 		consumer:    consumer,
 		topic:       t.topicName(name),
@@ -305,7 +312,7 @@ func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.D
 		sub.consumeLoop(ctx, t.logger)
 	}()
 
-	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "group", groupID, "mode", mode)
+	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "group", groupID, "mode", subOpts.DeliveryMode)
 	return sub, nil
 }
 

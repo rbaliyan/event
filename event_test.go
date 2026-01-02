@@ -81,21 +81,18 @@ func CompareMetadata(m1, m2 map[string]string) bool {
 func TestEvent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("test"))
-	if err != nil {
+	e := New[any]("test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
-	// Duplicate registration should return same event
-	e2, err := Register(context.Background(), bus, New[any]("test"))
-	if err != nil {
-		t.Fatalf("duplicate register failed: %v", err)
-	}
-	if e != e2 {
-		t.Error("expected same event for duplicate registration")
+	// Duplicate registration should return error
+	e2 := New[any]("test")
+	if err := Register(context.Background(), bus, e2); !errors.Is(err, ErrEventExists) {
+		t.Fatalf("expected ErrEventExists for duplicate register, got: %v", err)
 	}
 
 	ch := make(chan struct{})
@@ -135,11 +132,11 @@ func TestEvent(t *testing.T) {
 }
 
 func TestMetadata(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("test"))
-	if err != nil {
+	e := New[any]("test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -188,14 +185,14 @@ func TestMetadata(t *testing.T) {
 
 func TestPanic(t *testing.T) {
 	ch1 := make(chan struct{})
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("test",
+	e := New[any]("test",
 		WithErrorHandler(func(bus *Bus, name string, err error) {
 			ch1 <- struct{}{}
-		})))
-	if err != nil {
+		}))
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -213,11 +210,11 @@ func TestPanic(t *testing.T) {
 }
 
 func TestCancel(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("test"))
-	if err != nil {
+	e := New[any]("test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 	ch1 := make(chan struct{})
@@ -262,7 +259,7 @@ func TestCancel(t *testing.T) {
 func TestData(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	no := faker.RandomInt(0, math.MaxInt-1)
@@ -284,8 +281,8 @@ func TestData(t *testing.T) {
 	ch := make(chan any)
 	ch1 := make(chan any)
 	ch2 := make(chan any)
-	e, err := Register(context.Background(), bus, New[any]("test-data"))
-	if err != nil {
+	e := New[any]("test-data")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 	e.Subscribe(ctx, func(ctx context.Context, event Event[any], data any) error {
@@ -329,11 +326,11 @@ func TestData(t *testing.T) {
 }
 
 func BenchmarkEvent(b *testing.B) {
-	bus := mustNewBus(b, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(b, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[int]("test"))
-	if err != nil {
+	e := New[int]("test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		b.Fatalf("failed to register event: %v", err)
 	}
 	ch1 := make(chan struct{})
@@ -363,11 +360,11 @@ func TestPool(t *testing.T) {
 		channel.WithAsync(true),
 		channel.WithWorkerPoolSize(poolSize),
 	)
-	bus := mustNewBus(t, "test", WithBusTransport(transport))
+	bus := mustNewBus(t, "test", WithTransport(transport))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[int32]("test"))
-	if err != nil {
+	e := New[int32]("test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 	var total int32 = 100
@@ -416,11 +413,11 @@ func TestWorkerPoolDeliveryMode(t *testing.T) {
 		channel.WithTimeout(time.Duration(100)*time.Millisecond),
 	)
 	// Create bus (delivery mode is now per-subscription)
-	bus := mustNewBus(t, "test", WithBusTransport(transport))
+	bus := mustNewBus(t, "test", WithTransport(transport))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[int32]("test"))
-	if err != nil {
+	e := New[int32]("test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 	var total int32 = 100
@@ -491,7 +488,6 @@ func TestWorkerPoolDeliveryMode(t *testing.T) {
 		t.Error("Failed - subscriber 3 got all messages", counter3, total)
 	}
 }
-
 
 // TestContextImmutability verifies that context modification functions
 // don't mutate the original context data (race condition fix)
@@ -584,7 +580,7 @@ func TestTransportCloseDoesNotPanic(t *testing.T) {
 	}
 
 	// Subscribe to get a subscription
-	sub, err := tr.Subscribe(context.Background(), "test", transport.Broadcast)
+	sub, err := tr.Subscribe(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
@@ -598,7 +594,7 @@ func TestTransportCloseDoesNotPanic(t *testing.T) {
 	}
 
 	// Verify Subscribe returns error after close
-	_, err = tr.Subscribe(context.Background(), "test", transport.Broadcast)
+	_, err = tr.Subscribe(context.Background(), "test")
 	if err == nil {
 		t.Error("expected error after close")
 	}
@@ -611,9 +607,9 @@ func TestTransportCloseDoesNotPanic(t *testing.T) {
 
 // TestEventClose verifies event close works correctly
 func TestEventClose(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
-	e, err := Register(context.Background(), bus, New[any]("test-close"))
-	if err != nil {
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	e := New[any]("test-close")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -651,11 +647,11 @@ func TestWorkerPoolBackpressure(t *testing.T) {
 		channel.WithAsync(true),
 		channel.WithWorkerPoolSize(poolSize),
 	)
-	bus := mustNewBus(t, "test", WithBusTransport(transport))
+	bus := mustNewBus(t, "test", WithTransport(transport))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[int]("test-pool-backpressure"))
-	if err != nil {
+	e := New[int]("test-pool-backpressure")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -703,10 +699,10 @@ func TestGracefulShutdown(t *testing.T) {
 	transport := channel.New(
 		channel.WithAsync(true),
 	)
-	bus := mustNewBus(t, "test", WithBusTransport(transport))
+	bus := mustNewBus(t, "test", WithTransport(transport))
 
-	e, err := Register(context.Background(), bus, New[int]("test-graceful"))
-	if err != nil {
+	e := New[int]("test-graceful")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -775,7 +771,7 @@ func TestTransportErrorHandler(t *testing.T) {
 	}
 
 	// Subscribe but don't read from channel (will cause timeout)
-	sub, err := tr.Subscribe(context.Background(), "test", transport.Broadcast)
+	sub, err := tr.Subscribe(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
@@ -802,19 +798,19 @@ func TestTransportErrorHandler(t *testing.T) {
 
 // TestEventsSlice verifies Events slice publish/subscribe
 func TestEventsSlice(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e1, err := Register(context.Background(), bus, New[string]("event1"))
-	if err != nil {
+	e1 := New[string]("event1")
+	if err := Register(context.Background(), bus, e1); err != nil {
 		t.Fatalf("failed to register event1: %v", err)
 	}
-	e2, err := Register(context.Background(), bus, New[string]("event2"))
-	if err != nil {
+	e2 := New[string]("event2")
+	if err := Register(context.Background(), bus, e2); err != nil {
 		t.Fatalf("failed to register event2: %v", err)
 	}
-	e3, err := Register(context.Background(), bus, New[string]("event3"))
-	if err != nil {
+	e3 := New[string]("event3")
+	if err := Register(context.Background(), bus, e3); err != nil {
 		t.Fatalf("failed to register event3: %v", err)
 	}
 
@@ -857,10 +853,10 @@ func TestContextName(t *testing.T) {
 	}
 
 	// Test context with name (via handler context)
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
-	e, err := Register(context.Background(), bus, New[any]("test-context-name"))
-	if err != nil {
+	e := New[any]("test-context-name")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -960,13 +956,13 @@ func TestNewContext(t *testing.T) {
 
 // TestBusPublishSubscribe verifies basic bus publish/subscribe
 func TestBusPublishSubscribe(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	ch := make(chan any)
 
-	e, err := Register(context.Background(), bus, New[any]("global-test-2"))
-	if err != nil {
+	e := New[any]("global-test-2")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 	e.Subscribe(context.Background(), func(ctx context.Context, ev Event[any], data any) error {
@@ -996,7 +992,7 @@ func TestTransportCloseWithSubscriptions(t *testing.T) {
 	}
 
 	// Create subscription
-	sub, err := tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+	sub, err := tr.Subscribe(context.Background(), "test-event")
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
@@ -1013,7 +1009,7 @@ func TestTransportCloseWithSubscriptions(t *testing.T) {
 	}
 
 	// Verify Subscribe returns error after close
-	_, err = tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+	_, err = tr.Subscribe(context.Background(), "test-event")
 	if !errors.Is(err, transport.ErrTransportClosed) {
 		t.Errorf("expected ErrTransportClosed, got: %v", err)
 	}
@@ -1044,12 +1040,12 @@ func TestTransportCloseWithSubscriptions(t *testing.T) {
 
 // TestWithSubscriberTimeout verifies WithSubscriberTimeout option
 func TestWithSubscriberTimeout(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	timeout := 50 * time.Millisecond
-	e, err := Register(context.Background(), bus, New[any]("timeout-test", WithSubscriberTimeout(timeout)))
-	if err != nil {
+	e := New[any]("timeout-test", WithSubscriberTimeout(timeout))
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1078,11 +1074,11 @@ func TestWithSubscriberTimeout(t *testing.T) {
 
 // TestBusLogger verifies bus logger is used by events
 func TestBusLogger(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("logger-test"))
-	if err != nil {
+	e := New[any]("logger-test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1143,11 +1139,11 @@ func TestCaller(t *testing.T) {
 
 // TestAsyncHandler verifies AsyncHandler function
 func TestAsyncHandler(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[string]("async-handler-test"))
-	if err != nil {
+	e := New[string]("async-handler-test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1174,11 +1170,11 @@ func TestAsyncHandler(t *testing.T) {
 
 // TestAsyncHandlerWithPanic verifies AsyncHandler recovers from panic
 func TestAsyncHandlerWithPanic(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("async-panic-test"))
-	if err != nil {
+	e := New[any]("async-panic-test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1201,11 +1197,11 @@ func TestAsyncHandlerWithPanic(t *testing.T) {
 
 // TestEventString verifies eventImpl.String()
 func TestEventString(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("string-test"))
-	if err != nil {
+	e := New[any]("string-test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1218,11 +1214,11 @@ func TestEventString(t *testing.T) {
 
 // TestEventSubscribers verifies eventImpl.Subscribers()
 func TestEventSubscribers(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("subscribers-test"))
-	if err != nil {
+	e := New[any]("subscribers-test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1277,7 +1273,7 @@ func TestSubscriptionClose(t *testing.T) {
 	}
 
 	// Create subscriber
-	sub, err := tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+	sub, err := tr.Subscribe(context.Background(), "test-event")
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
@@ -1308,7 +1304,7 @@ func TestSubscriptionCloseOnClosedTransport(t *testing.T) {
 	}
 
 	// Create subscriber
-	sub, err := tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+	sub, err := tr.Subscribe(context.Background(), "test-event")
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
@@ -1334,7 +1330,7 @@ func TestTransportSubscribeRace(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			sub, err := tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+			sub, err := tr.Subscribe(context.Background(), "test-event")
 			if err != nil {
 				t.Errorf("subscribe failed: %v", err)
 				return
@@ -1363,7 +1359,7 @@ func TestWithTransportLogger(t *testing.T) {
 	}
 
 	// Verify transport works with custom logger
-	sub, err := tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+	sub, err := tr.Subscribe(context.Background(), "test-event")
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
@@ -1375,11 +1371,11 @@ func TestWithTransportLogger(t *testing.T) {
 
 // TestBusMetricsIntegration verifies bus metrics work with events
 func TestBusMetricsIntegration(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("metrics-test"))
-	if err != nil {
+	e := New[any]("metrics-test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1398,7 +1394,7 @@ func TestBusMetricsIntegration(t *testing.T) {
 
 // TestBusWithEmptyName verifies NewBus handles empty name
 func TestBusWithEmptyName(t *testing.T) {
-	bus := mustNewBus(t, "", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	if bus.Name() != DefaultBusName {
@@ -1406,37 +1402,34 @@ func TestBusWithEmptyName(t *testing.T) {
 	}
 }
 
-// TestBusRegister verifies Bus.Register creates or returns existing event
+// TestBusRegister verifies Bus.Register works correctly
 func TestBusRegister(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// First call creates event
-	e1, err := Register(context.Background(), bus, New[any]("test-event"))
-	if err != nil {
+	e1 := New[any]("test-event")
+	if err := Register(context.Background(), bus, e1); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 	if e1 == nil {
 		t.Fatal("expected event")
 	}
 
-	// Second call returns same event
-	e2, err := Register(context.Background(), bus, New[any]("test-event"))
-	if err != nil {
-		t.Fatalf("duplicate register failed: %v", err)
-	}
-	if e1 != e2 {
-		t.Error("expected same event instance")
+	// Second call with same name returns error
+	e2 := New[any]("test-event")
+	if err := Register(context.Background(), bus, e2); !errors.Is(err, ErrEventExists) {
+		t.Fatalf("expected ErrEventExists, got: %v", err)
 	}
 }
 
 // TestContextSubscriptionID verifies ContextSubscriptionID in handler
 func TestContextSubscriptionID(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("sub-id-test"))
-	if err != nil {
+	e := New[any]("sub-id-test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1477,7 +1470,7 @@ func TestTransportPublishTimeout(t *testing.T) {
 	}
 
 	// Create subscriber but don't read from it
-	sub, err := tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+	sub, err := tr.Subscribe(context.Background(), "test-event")
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
@@ -1504,11 +1497,11 @@ func TestTransportPublishTimeout(t *testing.T) {
 
 // TestTracingDisabled verifies tracing can be disabled at bus level
 func TestTracingDisabled(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()), WithBusTracing(false))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()), WithTracing(false))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("no-tracing-test"))
-	if err != nil {
+	e := New[any]("no-tracing-test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1527,11 +1520,11 @@ func TestTracingDisabled(t *testing.T) {
 
 // TestRecoveryDisabled verifies recovery can be disabled at bus level
 func TestRecoveryDisabled(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()), WithBusRecovery(false))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()), WithRecovery(false))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("no-recovery-test"))
-	if err != nil {
+	e := New[any]("no-recovery-test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1558,13 +1551,13 @@ func TestMultipleSubscribersGetUniqueIDs(t *testing.T) {
 		t.Fatalf("register failed: %v", err)
 	}
 
-	sub1, err := tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+	sub1, err := tr.Subscribe(context.Background(), "test-event")
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
 	defer sub1.Close(context.Background())
 
-	sub2, err := tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+	sub2, err := tr.Subscribe(context.Background(), "test-event")
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
@@ -1587,9 +1580,9 @@ func TestBroadcastMultipleSubscribers(t *testing.T) {
 	}
 
 	// Create two broadcast subscribers
-	sub1, _ := tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+	sub1, _ := tr.Subscribe(context.Background(), "test-event")
 	defer sub1.Close(context.Background())
-	sub2, _ := tr.Subscribe(context.Background(), "test-event", transport.Broadcast)
+	sub2, _ := tr.Subscribe(context.Background(), "test-event")
 	defer sub2.Close(context.Background())
 
 	// Publish a message
@@ -1620,17 +1613,17 @@ func TestBroadcastMultipleSubscribers(t *testing.T) {
 
 // TestUnsubscribedEventDropsMessages verifies that events without subscribers drop messages
 func TestUnsubscribedEventDropsMessages(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Register two events
-	subscribedEvent, err := Register(context.Background(), bus, New[string]("subscribed-event"))
-	if err != nil {
+	subscribedEvent := New[string]("subscribed-event")
+	if err := Register(context.Background(), bus, subscribedEvent); err != nil {
 		t.Fatalf("failed to register subscribed event: %v", err)
 	}
 
-	unsubscribedEvent, err := Register(context.Background(), bus, New[string]("unsubscribed-event"))
-	if err != nil {
+	unsubscribedEvent := New[string]("unsubscribed-event")
+	if err := Register(context.Background(), bus, unsubscribedEvent); err != nil {
 		t.Fatalf("failed to register unsubscribed event: %v", err)
 	}
 
@@ -1673,17 +1666,17 @@ func TestUnsubscribedEventDropsMessages(t *testing.T) {
 
 // TestBlockedSubscriberDoesNotAffectOtherEvents verifies event isolation when one subscriber is blocked
 func TestBlockedSubscriberDoesNotAffectOtherEvents(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Register two events
-	blockedEvent, err := Register(context.Background(), bus, New[string]("blocked-event"))
-	if err != nil {
+	blockedEvent := New[string]("blocked-event")
+	if err := Register(context.Background(), bus, blockedEvent); err != nil {
 		t.Fatalf("failed to register blocked event: %v", err)
 	}
 
-	fastEvent, err := Register(context.Background(), bus, New[string]("fast-event"))
-	if err != nil {
+	fastEvent := New[string]("fast-event")
+	if err := Register(context.Background(), bus, fastEvent); err != nil {
 		t.Fatalf("failed to register fast event: %v", err)
 	}
 
@@ -1748,13 +1741,16 @@ func TestBlockedSubscriberDoesNotAffectOtherEvents(t *testing.T) {
 
 // TestMultipleEventsIndependentDelivery verifies each event delivers only to its own subscribers
 func TestMultipleEventsIndependentDelivery(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Register three events
-	event1, _ := Register(context.Background(), bus, New[string]("event-1"))
-	event2, _ := Register(context.Background(), bus, New[string]("event-2"))
-	event3, _ := Register(context.Background(), bus, New[string]("event-3"))
+	event1 := New[string]("event-1")
+	Register(context.Background(), bus, event1)
+	event2 := New[string]("event-2")
+	Register(context.Background(), bus, event2)
+	event3 := New[string]("event-3")
+	Register(context.Background(), bus, event3)
 
 	// Create channels to track received messages per event
 	received1 := make(chan string, 10)
@@ -1873,36 +1869,31 @@ func TestAsyncHandlerWithContextCopy(t *testing.T) {
 	}
 }
 
-// TestBusAddDuplicate verifies Bus returns existing event for same name
+// TestBusAddDuplicate verifies Bus returns error for duplicate event name
 func TestBusAddDuplicate(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Create first event
-	e1, err := Register(context.Background(), bus, New[any]("add-test"))
-	if err != nil {
+	e1 := New[any]("add-test")
+	if err := Register(context.Background(), bus, e1); err != nil {
 		t.Fatalf("failed to register first event: %v", err)
 	}
 
-	// Create second event with same name
-	e2, err := Register(context.Background(), bus, New[any]("add-test"))
-	if err != nil {
-		t.Fatalf("failed to register duplicate event: %v", err)
-	}
-
-	// Should be same event
-	if e1 != e2 {
-		t.Error("expected same event for duplicate Register")
+	// Create second event with same name - should fail
+	e2 := New[any]("add-test")
+	if err := Register(context.Background(), bus, e2); !errors.Is(err, ErrEventExists) {
+		t.Fatalf("expected ErrEventExists for duplicate, got: %v", err)
 	}
 }
 
 // TestNewEventWithExistingEventID verifies publishing with existing event ID
 func TestNewEventWithExistingEventID(t *testing.T) {
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[any]("existing-id-test"))
-	if err != nil {
+	e := New[any]("existing-id-test")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1933,11 +1924,11 @@ func TestTypedEvent(t *testing.T) {
 		Name string
 	}
 
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e, err := Register(context.Background(), bus, New[User]("user.created"))
-	if err != nil {
+	e := New[User]("user.created")
+	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -1967,15 +1958,15 @@ func TestTypedEventsSlice(t *testing.T) {
 		Amount float64
 	}
 
-	bus := mustNewBus(t, "test", WithBusTransport(channel.New()))
+	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	e1, err := Register(context.Background(), bus, New[Order]("order.created"))
-	if err != nil {
+	e1 := New[Order]("order.created")
+	if err := Register(context.Background(), bus, e1); err != nil {
 		t.Fatalf("failed to register order.created: %v", err)
 	}
-	e2, err := Register(context.Background(), bus, New[Order]("order.updated"))
-	if err != nil {
+	e2 := New[Order]("order.updated")
+	if err := Register(context.Background(), bus, e2); err != nil {
 		t.Fatalf("failed to register order.updated: %v", err)
 	}
 
@@ -2008,7 +1999,7 @@ func TestTypedEventsSlice(t *testing.T) {
 // TestGetBus verifies GetBus returns registered buses
 func TestGetBus(t *testing.T) {
 	busName := "test-getbus-" + NewID()
-	bus := mustNewBus(t, busName, WithBusTransport(channel.New()))
+	bus := mustNewBus(t, busName, WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// GetBus should return the bus
@@ -2031,10 +2022,10 @@ func TestListBuses(t *testing.T) {
 	busName1 := "test-list-1-" + NewID()
 	busName2 := "test-list-2-" + NewID()
 
-	bus1 := mustNewBus(t, busName1, WithBusTransport(channel.New()))
+	bus1 := mustNewBus(t, busName1, WithTransport(channel.New()))
 	defer bus1.Close(context.Background())
 
-	bus2 := mustNewBus(t, busName2, WithBusTransport(channel.New()))
+	bus2 := mustNewBus(t, busName2, WithTransport(channel.New()))
 	defer bus2.Close(context.Background())
 
 	names := ListBuses()
@@ -2060,11 +2051,11 @@ func TestListBuses(t *testing.T) {
 // TestDuplicateBusError verifies NewBus returns error for duplicate name
 func TestDuplicateBusError(t *testing.T) {
 	busName := "test-duplicate-" + NewID()
-	bus1 := mustNewBus(t, busName, WithBusTransport(channel.New()))
+	bus1 := mustNewBus(t, busName, WithTransport(channel.New()))
 	defer bus1.Close(context.Background())
 
 	// Try to create another bus with same name
-	_, err := NewBus(busName, WithBusTransport(channel.New()))
+	_, err := NewBus(busName, WithTransport(channel.New()))
 	if err == nil {
 		t.Fatal("expected error for duplicate bus name")
 	}
@@ -2076,7 +2067,7 @@ func TestDuplicateBusError(t *testing.T) {
 // TestBusUnregisteredOnClose verifies bus is removed from registry on Close
 func TestBusUnregisteredOnClose(t *testing.T) {
 	busName := "test-unregister-" + NewID()
-	bus := mustNewBus(t, busName, WithBusTransport(channel.New()))
+	bus := mustNewBus(t, busName, WithTransport(channel.New()))
 
 	// Bus should be registered
 	if GetBus(busName) == nil {
@@ -2092,7 +2083,7 @@ func TestBusUnregisteredOnClose(t *testing.T) {
 	}
 
 	// Should be able to create a new bus with same name
-	bus2, err := NewBus(busName, WithBusTransport(channel.New()))
+	bus2, err := NewBus(busName, WithTransport(channel.New()))
 	if err != nil {
 		t.Fatalf("could not create bus after Close: %v", err)
 	}
@@ -2106,12 +2097,12 @@ func TestGetEventByFullName(t *testing.T) {
 	}
 
 	busName := "test-fullname-" + NewID()
-	bus := mustNewBus(t, busName, WithBusTransport(channel.New()))
+	bus := mustNewBus(t, busName, WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Register event
-	_, err := Register(context.Background(), bus, New[Order]("order.created"))
-	if err != nil {
+	ev := New[Order]("order.created")
+	if err := Register(context.Background(), bus, ev); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -2136,18 +2127,18 @@ func TestGetEventTypeMismatch(t *testing.T) {
 	}
 
 	busName := "test-mismatch-" + NewID()
-	bus := mustNewBus(t, busName, WithBusTransport(channel.New()))
+	bus := mustNewBus(t, busName, WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Register event as Order
-	_, err := Register(context.Background(), bus, New[Order]("order.created"))
-	if err != nil {
+	ev := New[Order]("order.created")
+	if err := Register(context.Background(), bus, ev); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
 	// Try to get as User - should fail
 	fullName := busName + "://order.created"
-	_, err = Get[User](fullName)
+	_, err := Get[User](fullName)
 	if err == nil {
 		t.Fatal("expected error for type mismatch")
 	}
@@ -2163,12 +2154,12 @@ func TestPublishByFullName(t *testing.T) {
 	}
 
 	busName := "test-publish-fn-" + NewID()
-	bus := mustNewBus(t, busName, WithBusTransport(channel.New()))
+	bus := mustNewBus(t, busName, WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Register and subscribe
-	ev, err := Register(context.Background(), bus, New[Order]("order.created"))
-	if err != nil {
+	ev := New[Order]("order.created")
+	if err := Register(context.Background(), bus, ev); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
@@ -2180,8 +2171,7 @@ func TestPublishByFullName(t *testing.T) {
 
 	// Publish using full name
 	fullName := busName + "://order.created"
-	err = Publish(context.Background(), fullName, Order{ID: "test-123"})
-	if err != nil {
+	if err := Publish(context.Background(), fullName, Order{ID: "test-123"}); err != nil {
 		t.Fatalf("Publish failed: %v", err)
 	}
 
@@ -2203,23 +2193,22 @@ func TestSubscribeByFullName(t *testing.T) {
 	}
 
 	busName := "test-subscribe-fn-" + NewID()
-	bus := mustNewBus(t, busName, WithBusTransport(channel.New()))
+	bus := mustNewBus(t, busName, WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Register event
-	ev, err := Register(context.Background(), bus, New[Order]("order.created"))
-	if err != nil {
+	ev := New[Order]("order.created")
+	if err := Register(context.Background(), bus, ev); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
 	// Subscribe using full name
 	ch := make(chan Order)
 	fullName := busName + "://order.created"
-	err = Subscribe(context.Background(), fullName, func(ctx context.Context, e Event[Order], order Order) error {
+	if err := Subscribe(context.Background(), fullName, func(ctx context.Context, e Event[Order], order Order) error {
 		ch <- order
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 
@@ -2264,7 +2253,7 @@ func TestInvalidFullName(t *testing.T) {
 // TestGetEventNotFound verifies error for non-existent event
 func TestGetEventNotFound(t *testing.T) {
 	busName := "test-notfound-" + NewID()
-	bus := mustNewBus(t, busName, WithBusTransport(channel.New()))
+	bus := mustNewBus(t, busName, WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Try to get non-existent event
@@ -2359,13 +2348,13 @@ func TestBusLevelIdempotency(t *testing.T) {
 	idempStore := newMockIdempotencyStore()
 
 	bus := mustNewBus(t, "test-idemp-bus-"+faker.RandomString(5),
-		WithBusTransport(channel.New()),
-		WithBusIdempotency(idempStore),
+		WithTransport(channel.New()),
+		WithIdempotency(idempStore),
 	)
 	defer bus.Close(ctx)
 
-	ev, err := Register(ctx, bus, New[string]("test.event"))
-	if err != nil {
+	ev := New[string]("test.event")
+	if err := Register(ctx, bus, ev); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2398,13 +2387,13 @@ func TestBusLevelPoisonDetection(t *testing.T) {
 	poisonDetector := newMockPoisonDetector(2) // quarantine after 2 failures
 
 	bus := mustNewBus(t, "test-poison-bus-"+faker.RandomString(5),
-		WithBusTransport(channel.New()),
-		WithBusPoisonDetection(poisonDetector),
+		WithTransport(channel.New()),
+		WithPoisonDetection(poisonDetector),
 	)
 	defer bus.Close(ctx)
 
-	ev, err := Register(ctx, bus, New[string]("test.poison.event"))
-	if err != nil {
+	ev := New[string]("test.poison.event")
+	if err := Register(ctx, bus, ev); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2449,14 +2438,14 @@ func TestBusLevelMiddlewareCombined(t *testing.T) {
 	poisonDetector := newMockPoisonDetector(3)
 
 	bus := mustNewBus(t, "test-combined-bus-"+faker.RandomString(5),
-		WithBusTransport(channel.New()),
-		WithBusIdempotency(idempStore),
-		WithBusPoisonDetection(poisonDetector),
+		WithTransport(channel.New()),
+		WithIdempotency(idempStore),
+		WithPoisonDetection(poisonDetector),
 	)
 	defer bus.Close(ctx)
 
-	ev, err := Register(ctx, bus, New[string]("test.combined.event"))
-	if err != nil {
+	ev := New[string]("test.combined.event")
+	if err := Register(ctx, bus, ev); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2483,5 +2472,453 @@ func TestBusLevelMiddlewareCombined(t *testing.T) {
 	// Should be called twice (third is duplicate)
 	if count := callCount.Load(); count != 2 {
 		t.Errorf("expected handler called 2 times, got %d", count)
+	}
+}
+
+// mockMonitorStore implements MonitorStore for testing
+type mockMonitorStore struct {
+	mu      sync.Mutex
+	started map[string]bool
+	status  map[string]string
+}
+
+func newMockMonitorStore() *mockMonitorStore {
+	return &mockMonitorStore{
+		started: make(map[string]bool),
+		status:  make(map[string]string),
+	}
+}
+
+func (s *mockMonitorStore) RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string, workerPool bool, metadata map[string]string, traceID, spanID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.started[eventID] = true
+	return nil
+}
+
+func (s *mockMonitorStore) RecordComplete(ctx context.Context, eventID, subscriptionID, status string, handlerErr error, duration time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status[eventID] = status
+	return nil
+}
+
+func (s *mockMonitorStore) wasRecorded(eventID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.started[eventID]
+}
+
+// mockSchemaProvider implements SchemaProvider for testing
+type mockSchemaProvider struct {
+	mu      sync.RWMutex
+	schemas map[string]*EventSchema
+}
+
+func newMockSchemaProvider() *mockSchemaProvider {
+	return &mockSchemaProvider{
+		schemas: make(map[string]*EventSchema),
+	}
+}
+
+func (p *mockSchemaProvider) Get(ctx context.Context, eventName string) (*EventSchema, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if schema, ok := p.schemas[eventName]; ok {
+		// Return a copy
+		copy := *schema
+		return &copy, nil
+	}
+	return nil, nil
+}
+
+func (p *mockSchemaProvider) Set(ctx context.Context, schema *EventSchema) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.schemas[schema.Name] = schema
+	return nil
+}
+
+func (p *mockSchemaProvider) Delete(ctx context.Context, eventName string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.schemas, eventName)
+	return nil
+}
+
+func (p *mockSchemaProvider) Watch(ctx context.Context) (<-chan SchemaChangeEvent, error) {
+	ch := make(chan SchemaChangeEvent, 100)
+	return ch, nil
+}
+
+func (p *mockSchemaProvider) List(ctx context.Context) ([]*EventSchema, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	result := make([]*EventSchema, 0, len(p.schemas))
+	for _, schema := range p.schemas {
+		copy := *schema
+		result = append(result, &copy)
+	}
+	return result, nil
+}
+
+func (p *mockSchemaProvider) Close() error {
+	return nil
+}
+
+// TestSchemaLoadingOnRegister verifies that schemas are loaded when events are registered
+func TestSchemaLoadingOnRegister(t *testing.T) {
+	ctx := context.Background()
+	provider := newMockSchemaProvider()
+
+	// Pre-register a schema
+	provider.Set(ctx, &EventSchema{
+		Name:              "order.created",
+		Version:           1,
+		SubTimeout:        5 * time.Second,
+		MaxRetries:        3,
+		EnableMonitor:     true,
+		EnableIdempotency: true,
+		EnablePoison:      false,
+	})
+
+	bus := mustNewBus(t, "test-schema-load-"+faker.RandomString(5),
+		WithTransport(channel.New()),
+		WithSchemaProvider(provider),
+	)
+	defer bus.Close(ctx)
+
+	ev := New[string]("order.created")
+	if err := Register(ctx, bus, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify schema was loaded by checking internal state
+	impl := ev.(*eventImpl[string])
+	if !impl.schema.loaded {
+		t.Error("expected schema to be loaded")
+	}
+	if !impl.schema.enableMonitor {
+		t.Error("expected enableMonitor to be true")
+	}
+	if !impl.schema.enableIdempotency {
+		t.Error("expected enableIdempotency to be true")
+	}
+	if impl.schema.enablePoison {
+		t.Error("expected enablePoison to be false")
+	}
+	if impl.subTimeout != 5*time.Second {
+		t.Errorf("expected subTimeout 5s, got %v", impl.subTimeout)
+	}
+	if impl.maxRetries != 3 {
+		t.Errorf("expected maxRetries 3, got %d", impl.maxRetries)
+	}
+}
+
+// TestSchemaNotFoundFallback verifies that missing schema doesn't prevent registration
+func TestSchemaNotFoundFallback(t *testing.T) {
+	ctx := context.Background()
+	provider := newMockSchemaProvider()
+	// Don't pre-register any schema
+
+	bus := mustNewBus(t, "test-schema-notfound-"+faker.RandomString(5),
+		WithTransport(channel.New()),
+		WithSchemaProvider(provider),
+	)
+	defer bus.Close(ctx)
+
+	ev := New[string]("order.created")
+	if err := Register(ctx, bus, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify schema was not loaded
+	impl := ev.(*eventImpl[string])
+	if impl.schema.loaded {
+		t.Error("expected schema NOT to be loaded")
+	}
+}
+
+// TestSchemaControlsMiddleware verifies that schema flags control which middleware is applied
+func TestSchemaControlsMiddleware(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("schema enables only monitor", func(t *testing.T) {
+		provider := newMockSchemaProvider()
+		provider.Set(ctx, &EventSchema{
+			Name:              "test.event",
+			Version:           1,
+			EnableMonitor:     true,
+			EnableIdempotency: false,
+			EnablePoison:      false,
+		})
+
+		idempStore := newMockIdempotencyStore()
+		poisonDetector := newMockPoisonDetector(2)
+		monitorStore := newMockMonitorStore()
+
+		bus := mustNewBus(t, "test-schema-monitor-"+faker.RandomString(5),
+			WithTransport(channel.New()),
+			WithSchemaProvider(provider),
+			WithIdempotency(idempStore),
+			WithPoisonDetection(poisonDetector),
+			WithMonitor(monitorStore),
+		)
+		defer bus.Close(ctx)
+
+		ev := New[string]("test.event")
+		if err := Register(ctx, bus, ev); err != nil {
+			t.Fatal(err)
+		}
+
+		var received atomic.Bool
+		ev.Subscribe(ctx, func(ctx context.Context, e Event[string], data string) error {
+			received.Store(true)
+			return nil
+		})
+
+		time.Sleep(10 * time.Millisecond)
+
+		msgID := "test-msg-" + faker.RandomString(5)
+		ev.Publish(ContextWithEventID(ctx, msgID), "hello")
+		time.Sleep(30 * time.Millisecond)
+
+		if !received.Load() {
+			t.Error("handler should have been called")
+		}
+
+		// Monitor should have recorded (enabled in schema)
+		if !monitorStore.wasRecorded(msgID) {
+			t.Error("monitor should have recorded the event")
+		}
+
+		// Idempotency store should NOT have been called (disabled in schema)
+		idempStore.mu.Lock()
+		_, wasProcessed := idempStore.processed[msgID]
+		idempStore.mu.Unlock()
+		if wasProcessed {
+			t.Error("idempotency should NOT have been applied (disabled in schema)")
+		}
+	})
+
+	t.Run("schema enables only idempotency", func(t *testing.T) {
+		provider := newMockSchemaProvider()
+		provider.Set(ctx, &EventSchema{
+			Name:              "test.idemp.event",
+			Version:           1,
+			EnableMonitor:     false,
+			EnableIdempotency: true,
+			EnablePoison:      false,
+		})
+
+		idempStore := newMockIdempotencyStore()
+		monitorStore := newMockMonitorStore()
+
+		bus := mustNewBus(t, "test-schema-idemp-"+faker.RandomString(5),
+			WithTransport(channel.New()),
+			WithSchemaProvider(provider),
+			WithIdempotency(idempStore),
+			WithMonitor(monitorStore),
+		)
+		defer bus.Close(ctx)
+
+		ev := New[string]("test.idemp.event")
+		if err := Register(ctx, bus, ev); err != nil {
+			t.Fatal(err)
+		}
+
+		var callCount atomic.Int32
+		ev.Subscribe(ctx, func(ctx context.Context, e Event[string], data string) error {
+			callCount.Add(1)
+			return nil
+		})
+
+		time.Sleep(10 * time.Millisecond)
+
+		msgID := "test-msg-" + faker.RandomString(5)
+		// Publish same message twice
+		ev.Publish(ContextWithEventID(ctx, msgID), "hello")
+		time.Sleep(20 * time.Millisecond)
+		ev.Publish(ContextWithEventID(ctx, msgID), "hello again")
+		time.Sleep(20 * time.Millisecond)
+
+		// Should only be called once (idempotency enabled)
+		if count := callCount.Load(); count != 1 {
+			t.Errorf("expected 1 call, got %d (idempotency should skip duplicate)", count)
+		}
+
+		// Monitor should NOT have recorded (disabled in schema)
+		if monitorStore.wasRecorded(msgID) {
+			t.Error("monitor should NOT have recorded (disabled in schema)")
+		}
+	})
+}
+
+// TestNoSchemaFallbackToBusMiddleware verifies middleware is applied when no schema exists
+func TestNoSchemaFallbackToBusMiddleware(t *testing.T) {
+	ctx := context.Background()
+	provider := newMockSchemaProvider()
+	// No schema registered
+
+	idempStore := newMockIdempotencyStore()
+	monitorStore := newMockMonitorStore()
+
+	bus := mustNewBus(t, "test-no-schema-fallback-"+faker.RandomString(5),
+		WithTransport(channel.New()),
+		WithSchemaProvider(provider),
+		WithIdempotency(idempStore),
+		WithMonitor(monitorStore),
+	)
+	defer bus.Close(ctx)
+
+	ev := New[string]("unregistered.event")
+	if err := Register(ctx, bus, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	ev.Subscribe(ctx, func(ctx context.Context, e Event[string], data string) error {
+		callCount.Add(1)
+		return nil
+	})
+
+	time.Sleep(10 * time.Millisecond)
+
+	msgID := "test-msg-" + faker.RandomString(5)
+	// Publish same message twice
+	ev.Publish(ContextWithEventID(ctx, msgID), "hello")
+	time.Sleep(20 * time.Millisecond)
+	ev.Publish(ContextWithEventID(ctx, msgID), "hello again")
+	time.Sleep(20 * time.Millisecond)
+
+	// Should only be called once - idempotency is applied as fallback
+	if count := callCount.Load(); count != 1 {
+		t.Errorf("expected 1 call, got %d (fallback idempotency should skip duplicate)", count)
+	}
+
+	// Monitor should have recorded (fallback behavior)
+	if !monitorStore.wasRecorded(msgID) {
+		t.Error("monitor should have recorded (fallback behavior)")
+	}
+}
+
+// TestSchemaDisablesAllMiddleware verifies that schema can disable all middleware
+func TestSchemaDisablesAllMiddleware(t *testing.T) {
+	ctx := context.Background()
+	provider := newMockSchemaProvider()
+	provider.Set(ctx, &EventSchema{
+		Name:              "test.no.middleware",
+		Version:           1,
+		EnableMonitor:     false,
+		EnableIdempotency: false,
+		EnablePoison:      false,
+	})
+
+	idempStore := newMockIdempotencyStore()
+	poisonDetector := newMockPoisonDetector(2)
+	monitorStore := newMockMonitorStore()
+
+	bus := mustNewBus(t, "test-schema-disable-all-"+faker.RandomString(5),
+		WithTransport(channel.New()),
+		WithSchemaProvider(provider),
+		WithIdempotency(idempStore),
+		WithPoisonDetection(poisonDetector),
+		WithMonitor(monitorStore),
+	)
+	defer bus.Close(ctx)
+
+	ev := New[string]("test.no.middleware")
+	if err := Register(ctx, bus, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	var callCount atomic.Int32
+	ev.Subscribe(ctx, func(ctx context.Context, e Event[string], data string) error {
+		callCount.Add(1)
+		return nil
+	})
+
+	time.Sleep(10 * time.Millisecond)
+
+	msgID := "test-msg-" + faker.RandomString(5)
+	// Publish same message twice
+	ev.Publish(ContextWithEventID(ctx, msgID), "hello")
+	time.Sleep(20 * time.Millisecond)
+	ev.Publish(ContextWithEventID(ctx, msgID), "hello again")
+	time.Sleep(20 * time.Millisecond)
+
+	// Should be called twice - no idempotency
+	if count := callCount.Load(); count != 2 {
+		t.Errorf("expected 2 calls, got %d (no middleware should be applied)", count)
+	}
+
+	// Monitor should NOT have recorded
+	if monitorStore.wasRecorded(msgID) {
+		t.Error("monitor should NOT have recorded (disabled in schema)")
+	}
+
+	// Idempotency should NOT have been applied
+	idempStore.mu.Lock()
+	_, wasProcessed := idempStore.processed[msgID]
+	idempStore.mu.Unlock()
+	if wasProcessed {
+		t.Error("idempotency should NOT have been applied (disabled in schema)")
+	}
+}
+
+// TestSchemaTimeoutApplied verifies that schema timeout is applied to events
+func TestSchemaTimeoutApplied(t *testing.T) {
+	ctx := context.Background()
+	provider := newMockSchemaProvider()
+	provider.Set(ctx, &EventSchema{
+		Name:       "test.timeout",
+		Version:    1,
+		SubTimeout: 100 * time.Millisecond,
+	})
+
+	bus := mustNewBus(t, "test-schema-timeout-"+faker.RandomString(5),
+		WithTransport(channel.New()),
+		WithSchemaProvider(provider),
+	)
+	defer bus.Close(ctx)
+
+	// Event without timeout option - should get timeout from schema
+	ev := New[string]("test.timeout")
+	if err := Register(ctx, bus, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	impl := ev.(*eventImpl[string])
+	if impl.subTimeout != 100*time.Millisecond {
+		t.Errorf("expected subTimeout 100ms from schema, got %v", impl.subTimeout)
+	}
+}
+
+// TestEventTimeoutOverridesSchema verifies that event-level timeout takes precedence
+func TestEventTimeoutOverridesSchema(t *testing.T) {
+	ctx := context.Background()
+	provider := newMockSchemaProvider()
+	provider.Set(ctx, &EventSchema{
+		Name:       "test.timeout.override",
+		Version:    1,
+		SubTimeout: 100 * time.Millisecond,
+	})
+
+	bus := mustNewBus(t, "test-schema-timeout-override-"+faker.RandomString(5),
+		WithTransport(channel.New()),
+		WithSchemaProvider(provider),
+	)
+	defer bus.Close(ctx)
+
+	// Event WITH timeout option - should keep event timeout
+	ev := New[string]("test.timeout.override", WithSubscriberTimeout(500*time.Millisecond))
+	if err := Register(ctx, bus, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	impl := ev.(*eventImpl[string])
+	// Event timeout should be preserved (schema doesn't override existing values)
+	if impl.subTimeout != 500*time.Millisecond {
+		t.Errorf("expected subTimeout 500ms from event option, got %v", impl.subTimeout)
 	}
 }

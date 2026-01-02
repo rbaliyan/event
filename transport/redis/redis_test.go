@@ -365,7 +365,7 @@ func TestTransportSubscribe(t *testing.T) {
 	tr.RegisterEvent(ctx, "sub-event")
 
 	t.Run("subscribe to registered event", func(t *testing.T) {
-		sub, err := tr.Subscribe(ctx, "sub-event", transport.Broadcast)
+		sub, err := tr.Subscribe(ctx, "sub-event")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -383,7 +383,7 @@ func TestTransportSubscribe(t *testing.T) {
 	})
 
 	t.Run("subscribe to unregistered event returns error", func(t *testing.T) {
-		_, err := tr.Subscribe(ctx, "unknown-event", transport.Broadcast)
+		_, err := tr.Subscribe(ctx, "unknown-event")
 		if err != transport.ErrEventNotRegistered {
 			t.Errorf("expected ErrEventNotRegistered, got %v", err)
 		}
@@ -394,8 +394,8 @@ func TestTransportSubscribe(t *testing.T) {
 		defer tr2.Close(context.Background())
 
 		tr2.RegisterEvent(ctx, "worker-event")
-		sub1, _ := tr2.Subscribe(ctx, "worker-event", transport.WorkerPool)
-		sub2, _ := tr2.Subscribe(ctx, "worker-event", transport.WorkerPool)
+		sub1, _ := tr2.Subscribe(ctx, "worker-event", transport.WithDeliveryMode(transport.WorkerPool))
+		sub2, _ := tr2.Subscribe(ctx, "worker-event", transport.WithDeliveryMode(transport.WorkerPool))
 		defer sub1.Close(context.Background())
 		defer sub2.Close(context.Background())
 
@@ -412,8 +412,8 @@ func TestTransportSubscribe(t *testing.T) {
 		defer tr2.Close(context.Background())
 
 		tr2.RegisterEvent(ctx, "broadcast-event")
-		sub1, _ := tr2.Subscribe(ctx, "broadcast-event", transport.Broadcast)
-		sub2, _ := tr2.Subscribe(ctx, "broadcast-event", transport.Broadcast)
+		sub1, _ := tr2.Subscribe(ctx, "broadcast-event")
+		sub2, _ := tr2.Subscribe(ctx, "broadcast-event")
 		defer sub1.Close(context.Background())
 		defer sub2.Close(context.Background())
 
@@ -444,7 +444,7 @@ func TestSubscriptionClose(t *testing.T) {
 	ctx := context.Background()
 	tr.RegisterEvent(ctx, "close-event")
 
-	sub, _ := tr.Subscribe(ctx, "close-event", transport.Broadcast)
+	sub, _ := tr.Subscribe(ctx, "close-event")
 
 	// Close should not error
 	err := sub.Close(context.Background())

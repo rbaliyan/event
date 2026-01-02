@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +14,18 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// isNamespaceNotFoundError checks if the error is a MongoDB namespace not found error.
+// This occurs when querying collection stats for a non-existent collection.
+func isNamespaceNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "ns not found") ||
+		strings.Contains(errStr, "NamespaceNotFound") ||
+		strings.Contains(errStr, "Collection") && strings.Contains(errStr, "not found")
+}
 
 /*
 MongoDB Schema:
@@ -50,6 +63,7 @@ type MongoMessage struct {
 	Payload     []byte             `bson:"payload"`
 	Metadata    map[string]string  `bson:"metadata,omitempty"`
 	CreatedAt   time.Time          `bson:"created_at"`
+	ClaimedAt   *time.Time         `bson:"claimed_at,omitempty"` // When claimed for processing (HA)
 	PublishedAt *time.Time         `bson:"published_at,omitempty"`
 	Status      Status             `bson:"status"`
 	RetryCount  int                `bson:"retry_count"`
@@ -72,9 +86,19 @@ func (m *MongoMessage) ToMessage() *Message {
 	}
 }
 
+// CappedInfo contains information about a capped collection
+type CappedInfo struct {
+	Capped   bool  // Whether the collection is capped
+	Size     int64 // Maximum size in bytes
+	MaxDocs  int64 // Maximum number of documents (0 = unlimited)
+	StorSize int64 // Current storage size in bytes
+	Count    int64 // Current document count
+}
+
 // MongoStore defines the interface for MongoDB outbox storage
 type MongoStore struct {
 	collection *mongo.Collection
+	cappedInfo *CappedInfo // Cached capped info (nil = not checked yet)
 }
 
 // NewMongoStore creates a new MongoDB outbox store
@@ -95,9 +119,15 @@ func (s *MongoStore) Collection() *mongo.Collection {
 	return s.collection
 }
 
-// EnsureIndexes creates the required indexes for the outbox collection
-func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
-	indexes := []mongo.IndexModel{
+// Indexes returns the required indexes for the outbox collection.
+// Users can use this to create indexes manually or merge with their own indexes.
+//
+// Example:
+//
+//	indexes := store.Indexes()
+//	_, err := collection.Indexes().CreateMany(ctx, indexes)
+func (s *MongoStore) Indexes() []mongo.IndexModel {
+	return []mongo.IndexModel{
 		{
 			Keys: bson.D{
 				{Key: "status", Value: 1},
@@ -111,9 +141,121 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 			Options: options.Index().SetSparse(true),
 		},
 	}
+}
 
-	_, err := s.collection.Indexes().CreateMany(ctx, indexes)
+// EnsureIndexes creates the required indexes for the outbox collection
+func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
+	_, err := s.collection.Indexes().CreateMany(ctx, s.Indexes())
 	return err
+}
+
+// IsCapped returns whether the collection is a capped collection.
+// The result is cached after the first call.
+func (s *MongoStore) IsCapped(ctx context.Context) (bool, error) {
+	info, err := s.GetCappedInfo(ctx)
+	if err != nil {
+		return false, err
+	}
+	return info.Capped, nil
+}
+
+// GetCappedInfo returns detailed information about the collection's capped status.
+// The result is cached after the first call.
+func (s *MongoStore) GetCappedInfo(ctx context.Context) (*CappedInfo, error) {
+	if s.cappedInfo != nil {
+		return s.cappedInfo, nil
+	}
+
+	info, err := s.fetchCappedInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	s.cappedInfo = info
+	return info, nil
+}
+
+// RefreshCappedInfo forces a refresh of the cached capped collection info.
+func (s *MongoStore) RefreshCappedInfo(ctx context.Context) (*CappedInfo, error) {
+	s.cappedInfo = nil
+	return s.GetCappedInfo(ctx)
+}
+
+// fetchCappedInfo queries MongoDB for collection stats to determine if capped.
+func (s *MongoStore) fetchCappedInfo(ctx context.Context) (*CappedInfo, error) {
+	var result bson.M
+	err := s.collection.Database().RunCommand(ctx, bson.D{
+		{Key: "collStats", Value: s.collection.Name()},
+	}).Decode(&result)
+
+	if err != nil {
+		// Collection might not exist yet - treat as non-capped
+		// MongoDB returns "ns not found" or similar for missing collections
+		if isNamespaceNotFoundError(err) {
+			return &CappedInfo{Capped: false}, nil
+		}
+		return nil, fmt.Errorf("collStats: %w", err)
+	}
+
+	info := &CappedInfo{}
+
+	if capped, ok := result["capped"].(bool); ok {
+		info.Capped = capped
+	}
+	if size, ok := result["maxSize"].(int64); ok {
+		info.Size = size
+	} else if size, ok := result["maxSize"].(int32); ok {
+		info.Size = int64(size)
+	}
+	if maxDocs, ok := result["max"].(int64); ok {
+		info.MaxDocs = maxDocs
+	} else if maxDocs, ok := result["max"].(int32); ok {
+		info.MaxDocs = int64(maxDocs)
+	}
+	if storSize, ok := result["storageSize"].(int64); ok {
+		info.StorSize = storSize
+	} else if storSize, ok := result["storageSize"].(int32); ok {
+		info.StorSize = int64(storSize)
+	}
+	if count, ok := result["count"].(int64); ok {
+		info.Count = count
+	} else if count, ok := result["count"].(int32); ok {
+		info.Count = int64(count)
+	}
+
+	return info, nil
+}
+
+// CreateCapped creates the collection as a capped collection.
+// This must be called before any documents are inserted.
+// Returns an error if the collection already exists.
+//
+// Parameters:
+//   - sizeBytes: Maximum size of the collection in bytes (required, minimum 4096)
+//   - maxDocs: Maximum number of documents (0 = no limit, only size matters)
+//
+// Example:
+//
+//	// Create 100MB capped collection
+//	err := store.CreateCapped(ctx, 100*1024*1024, 0)
+//
+//	// Create capped collection with max 10000 documents
+//	err := store.CreateCapped(ctx, 100*1024*1024, 10000)
+func (s *MongoStore) CreateCapped(ctx context.Context, sizeBytes int64, maxDocs int64) error {
+	opts := options.CreateCollection().SetCapped(true).SetSizeInBytes(sizeBytes)
+	if maxDocs > 0 {
+		opts.SetMaxDocuments(maxDocs)
+	}
+
+	err := s.collection.Database().CreateCollection(ctx, s.collection.Name(), opts)
+	if err != nil {
+		return fmt.Errorf("create capped collection: %w", err)
+	}
+
+	// Refresh cached info
+	s.cappedInfo = nil
+
+	return nil
 }
 
 // InsertInSession adds a message to the outbox within a MongoDB session/transaction
@@ -144,50 +286,89 @@ func (s *MongoStore) Insert(ctx context.Context, msg *MongoMessage) error {
 	return err
 }
 
-// GetPending retrieves pending messages for publishing
+// GetPending retrieves pending messages for publishing with atomic claiming.
+// Uses FindOneAndUpdate to atomically claim messages, preventing duplicate
+// processing by multiple relay instances in HA deployments.
 func (s *MongoStore) GetPending(ctx context.Context, limit int) ([]*Message, error) {
-	filter := bson.M{"status": StatusPending}
-	opts := options.Find().
-		SetSort(bson.D{{Key: "created_at", Value: 1}}).
-		SetLimit(int64(limit))
-
-	cursor, err := s.collection.Find(ctx, filter, opts)
-	if err != nil {
-		return nil, fmt.Errorf("find pending: %w", err)
-	}
-	defer cursor.Close(ctx)
-
 	var messages []*Message
-	for cursor.Next(ctx) {
-		var mongoMsg MongoMessage
-		if err := cursor.Decode(&mongoMsg); err != nil {
-			return nil, fmt.Errorf("decode message: %w", err)
+
+	for i := 0; i < limit; i++ {
+		msg, err := s.claimNextPending(ctx)
+		if err != nil {
+			if err == mongo.ErrNoDocuments {
+				break // No more pending messages
+			}
+			return messages, fmt.Errorf("claim pending: %w", err)
 		}
-		messages = append(messages, mongoMsg.ToMessage())
-	}
-
-	return messages, cursor.Err()
-}
-
-// GetPendingMongo retrieves pending messages as MongoMessage for internal use
-func (s *MongoStore) GetPendingMongo(ctx context.Context, limit int) ([]*MongoMessage, error) {
-	filter := bson.M{"status": StatusPending}
-	opts := options.Find().
-		SetSort(bson.D{{Key: "created_at", Value: 1}}).
-		SetLimit(int64(limit))
-
-	cursor, err := s.collection.Find(ctx, filter, opts)
-	if err != nil {
-		return nil, fmt.Errorf("find pending: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var messages []*MongoMessage
-	if err := cursor.All(ctx, &messages); err != nil {
-		return nil, fmt.Errorf("decode messages: %w", err)
+		messages = append(messages, msg)
 	}
 
 	return messages, nil
+}
+
+// claimNextPending atomically claims a single pending message for processing.
+// Uses FindOneAndUpdate to prevent race conditions in HA deployments.
+func (s *MongoStore) claimNextPending(ctx context.Context) (*Message, error) {
+	filter := bson.M{"status": StatusPending}
+	update := bson.M{
+		"$set": bson.M{
+			"status":     StatusProcessing,
+			"claimed_at": time.Now(),
+		},
+	}
+	opts := options.FindOneAndUpdate().
+		SetSort(bson.D{{Key: "created_at", Value: 1}}).
+		SetReturnDocument(options.After)
+
+	var mongoMsg MongoMessage
+	err := s.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&mongoMsg)
+	if err != nil {
+		return nil, err
+	}
+
+	return mongoMsg.ToMessage(), nil
+}
+
+// GetPendingMongo retrieves pending messages as MongoMessage with atomic claiming.
+// Uses FindOneAndUpdate to atomically claim messages, preventing duplicate
+// processing by multiple relay instances in HA deployments.
+func (s *MongoStore) GetPendingMongo(ctx context.Context, limit int) ([]*MongoMessage, error) {
+	var messages []*MongoMessage
+
+	for i := 0; i < limit; i++ {
+		msg, err := s.claimNextPendingMongo(ctx)
+		if err != nil {
+			if err == mongo.ErrNoDocuments {
+				break // No more pending messages
+			}
+			return messages, fmt.Errorf("claim pending: %w", err)
+		}
+		messages = append(messages, msg)
+	}
+
+	return messages, nil
+}
+
+// claimNextPendingMongo atomically claims a single pending message for processing.
+func (s *MongoStore) claimNextPendingMongo(ctx context.Context) (*MongoMessage, error) {
+	filter := bson.M{"status": StatusPending}
+	update := bson.M{
+		"$set": bson.M{
+			"status":     StatusProcessing,
+			"claimed_at": time.Now(),
+		},
+	}
+	opts := options.FindOneAndUpdate().
+		SetSort(bson.D{{Key: "created_at", Value: 1}}).
+		SetReturnDocument(options.After)
+
+	var mongoMsg MongoMessage
+	err := s.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&mongoMsg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &mongoMsg, nil
 }
 
 // MarkPublished marks a message as successfully published
@@ -284,8 +465,20 @@ func (s *MongoStore) MarkFailedByEventID(ctx context.Context, eventID string, er
 	return nil
 }
 
-// Delete removes old published messages
+// Delete removes old published messages.
+// For capped collections, this is a no-op since MongoDB handles cleanup automatically.
+// Returns 0 for capped collections without error.
 func (s *MongoStore) Delete(ctx context.Context, olderThan time.Duration) (int64, error) {
+	// Check if capped - deletion not allowed on capped collections
+	capped, err := s.IsCapped(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("check capped: %w", err)
+	}
+	if capped {
+		// Capped collections auto-cleanup, deletion not needed
+		return 0, nil
+	}
+
 	cutoff := time.Now().Add(-olderThan)
 	filter := bson.M{
 		"status":       StatusPublished,
@@ -324,6 +517,38 @@ func (s *MongoStore) RetryFailed(ctx context.Context, maxRetries int) (int64, er
 func (s *MongoStore) Count(ctx context.Context, status Status) (int64, error) {
 	filter := bson.M{"status": status}
 	return s.collection.CountDocuments(ctx, filter)
+}
+
+// RecoverStuck moves messages stuck in "processing" status back to pending.
+// This handles relay crashes where a message was claimed but never published.
+// Should be called periodically (e.g., every minute) or at relay startup.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - stuckDuration: How long a message must be in processing to be considered stuck
+//
+// Returns the number of recovered messages.
+func (s *MongoStore) RecoverStuck(ctx context.Context, stuckDuration time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-stuckDuration)
+	filter := bson.M{
+		"status":     StatusProcessing,
+		"claimed_at": bson.M{"$lt": cutoff},
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"status": StatusPending,
+		},
+		"$unset": bson.M{
+			"claimed_at": "",
+		},
+	}
+
+	result, err := s.collection.UpdateMany(ctx, filter, update)
+	if err != nil {
+		return 0, fmt.Errorf("recover stuck: %w", err)
+	}
+
+	return result.ModifiedCount, nil
 }
 
 // MongoPublisher provides methods for publishing messages through the MongoDB outbox

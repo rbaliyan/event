@@ -313,10 +313,12 @@ func (t *Transport) sendToSubscriber(ctx context.Context, sub *subscription, msg
 }
 
 // Subscribe creates a subscription to receive messages for an event
-func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.DeliveryMode) (transport.Subscription, error) {
+func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transport.SubscribeOption) (transport.Subscription, error) {
 	if !t.isOpen() {
 		return nil, transport.ErrTransportClosed
 	}
+
+	subOpts := transport.ApplySubscribeOptions(opts...)
 
 	val, ok := t.events.Load(name)
 	if !ok {
@@ -328,18 +330,23 @@ func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.D
 		return nil, transport.ErrEventNotRegistered
 	}
 
+	bufSize := ec.bufferSize
+	if subOpts.BufferSize > 0 {
+		bufSize = uint(subOpts.BufferSize)
+	}
+
 	sub := &subscription{
 		id:       transport.NewID(),
-		ch:       make(chan transport.Message, ec.bufferSize),
+		ch:       make(chan transport.Message, bufSize),
 		ev:       ec,
-		mode:     mode,
+		mode:     subOpts.DeliveryMode,
 		closedCh: make(chan struct{}),
 	}
 
 	ec.subscribers.Store(sub.id, sub)
 	atomic.AddInt64(&ec.subCount, 1)
 
-	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "mode", mode)
+	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "mode", subOpts.DeliveryMode)
 	return sub, nil
 }
 

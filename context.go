@@ -3,6 +3,9 @@ package event
 import (
 	"context"
 	"log/slog"
+	"time"
+
+	"github.com/rbaliyan/event/v3/transport"
 )
 
 const (
@@ -10,13 +13,15 @@ const (
 )
 
 type eventContextData struct {
-	name     string
-	source   string
-	eventID  string
-	subID    string
-	metadata map[string]string
-	logger   *slog.Logger
-	bus      *Bus
+	name         string
+	source       string
+	eventID      string
+	subID        string
+	metadata     map[string]string
+	messageTime  time.Time
+	logger       *slog.Logger
+	bus          *Bus
+	deliveryMode transport.DeliveryMode
 }
 
 // contextKey
@@ -85,6 +90,26 @@ func ContextSubscriptionID(ctx context.Context) string {
 	return ""
 }
 
+// ContextDeliveryMode get delivery mode stored in context.
+// Returns transport.Broadcast (0) if not set.
+func ContextDeliveryMode(ctx context.Context) transport.DeliveryMode {
+	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
+	if ok {
+		return s.deliveryMode
+	}
+	return transport.Broadcast
+}
+
+// ContextMessageTime get message timestamp stored in context.
+// Returns zero time if not set.
+func ContextMessageTime(ctx context.Context) time.Time {
+	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
+	if ok {
+		return s.messageTime
+	}
+	return time.Time{}
+}
+
 // ContextWithMetadata generate a context with event metadata
 func ContextWithMetadata(ctx context.Context, m map[string]string) context.Context {
 	if m == nil {
@@ -94,13 +119,15 @@ func ContextWithMetadata(ctx context.Context, m map[string]string) context.Conte
 	if ok {
 		// Create a new struct to avoid race conditions
 		newData := &eventContextData{
-			name:     s.name,
-			source:   s.source,
-			eventID:  s.eventID,
-			subID:    s.subID,
-			metadata: m,
-			logger:   s.logger,
-			bus:      s.bus,
+			name:         s.name,
+			source:       s.source,
+			eventID:      s.eventID,
+			subID:        s.subID,
+			metadata:     m,
+			messageTime:  s.messageTime,
+			logger:       s.logger,
+			bus:          s.bus,
+			deliveryMode: s.deliveryMode,
 		}
 		return context.WithValue(ctx, eventcontextKey, newData)
 	}
@@ -116,13 +143,15 @@ func ContextWithEventID(ctx context.Context, id string) context.Context {
 	if ok {
 		// Create a new struct to avoid race conditions
 		newData := &eventContextData{
-			name:     s.name,
-			source:   s.source,
-			eventID:  id,
-			subID:    s.subID,
-			metadata: s.metadata,
-			logger:   s.logger,
-			bus:      s.bus,
+			name:         s.name,
+			source:       s.source,
+			eventID:      id,
+			subID:        s.subID,
+			metadata:     s.metadata,
+			messageTime:  s.messageTime,
+			logger:       s.logger,
+			bus:          s.bus,
+			deliveryMode: s.deliveryMode,
 		}
 		return context.WithValue(ctx, eventcontextKey, newData)
 	}
@@ -138,28 +167,32 @@ func ContextWithLogger(ctx context.Context, l *slog.Logger) context.Context {
 	if ok {
 		// Create a new struct to avoid race conditions
 		newData := &eventContextData{
-			name:     s.name,
-			source:   s.source,
-			eventID:  s.eventID,
-			subID:    s.subID,
-			metadata: s.metadata,
-			logger:   l,
-			bus:      s.bus,
+			name:         s.name,
+			source:       s.source,
+			eventID:      s.eventID,
+			subID:        s.subID,
+			metadata:     s.metadata,
+			messageTime:  s.messageTime,
+			logger:       l,
+			bus:          s.bus,
+			deliveryMode: s.deliveryMode,
 		}
 		return context.WithValue(ctx, eventcontextKey, newData)
 	}
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{logger: l})
 }
 
-func contextWithInfo(ctx context.Context, id, name, source, subID string, metadata map[string]string, l *slog.Logger, b *Bus) context.Context {
+func contextWithInfo(ctx context.Context, id, name, source, subID string, metadata map[string]string, msgTime time.Time, l *slog.Logger, b *Bus, mode transport.DeliveryMode) context.Context {
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{
-		eventID:  id,
-		name:     name,
-		subID:    subID,
-		source:   source,
-		metadata: metadata,
-		logger:   l,
-		bus:      b,
+		eventID:      id,
+		name:         name,
+		subID:        subID,
+		source:       source,
+		metadata:     metadata,
+		messageTime:  msgTime,
+		logger:       l,
+		bus:          b,
+		deliveryMode: mode,
 	})
 }
 

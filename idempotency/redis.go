@@ -56,7 +56,7 @@ import (
 //	    return processPayment(payment)
 //	}
 type RedisStore struct {
-	client *redis.Client
+	client redis.Cmdable
 	ttl    time.Duration
 	prefix string
 }
@@ -67,7 +67,7 @@ type RedisStore struct {
 // detection, which is both efficient and race-condition free.
 //
 // Parameters:
-//   - client: A connected Redis client (supports single node, Sentinel, and Cluster)
+//   - client: A connected Redis client (supports single node, Sentinel, Cluster, and UniversalClient)
 //   - ttl: How long to remember processed message IDs
 //
 // The default key prefix is "idemp:" which can be customized with WithPrefix().
@@ -89,8 +89,14 @@ type RedisStore struct {
 //	rdb := redis.NewClusterClient(&redis.ClusterOptions{
 //	    Addrs: []string{"node1:6379", "node2:6379", "node3:6379"},
 //	})
-//	// Note: ClusterClient requires NewRedisClusterStore (not shown)
-func NewRedisStore(client *redis.Client, ttl time.Duration) *RedisStore {
+//	store := idempotency.NewRedisStore(rdb, time.Hour)
+//
+//	// With UniversalClient (auto-detects mode)
+//	rdb := redis.NewUniversalClient(&redis.UniversalOptions{
+//	    Addrs: []string{"localhost:6379"},
+//	})
+//	store := idempotency.NewRedisStore(rdb, time.Hour)
+func NewRedisStore(client redis.Cmdable, ttl time.Duration) *RedisStore {
 	return &RedisStore{
 		client: client,
 		ttl:    ttl,

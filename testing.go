@@ -20,10 +20,10 @@ import (
 //	bus := event.TestBus(channel.New())
 func TestBus(t transport.Transport) *Bus {
 	bus, err := NewBus("test-bus",
-		WithBusTransport(t),
-		WithBusRecovery(false),
-		WithBusTracing(false),
-		WithBusMetrics(false),
+		WithTransport(t),
+		WithRecovery(false),
+		WithTracing(false),
+		WithMetrics(false),
 	)
 	if err != nil {
 		panic("event.TestBus: " + err.Error())

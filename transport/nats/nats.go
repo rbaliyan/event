@@ -252,10 +252,12 @@ func (t *JetStreamTransport) Publish(ctx context.Context, name string, msg trans
 }
 
 // Subscribe creates a subscription to receive messages for an event
-func (t *JetStreamTransport) Subscribe(ctx context.Context, name string, mode transport.DeliveryMode) (transport.Subscription, error) {
+func (t *JetStreamTransport) Subscribe(ctx context.Context, name string, opts ...transport.SubscribeOption) (transport.Subscription, error) {
 	if !t.isOpen() {
 		return nil, transport.ErrTransportClosed
 	}
+
+	subOpts := transport.ApplySubscribeOptions(opts...)
 
 	val, ok := t.events.Load(name)
 	if !ok {
@@ -263,22 +265,39 @@ func (t *JetStreamTransport) Subscribe(ctx context.Context, name string, mode tr
 	}
 	ev := val.(*natsEvent)
 
+	// Map StartFrom to NATS DeliverPolicy
+	deliverPolicy := jetstream.DeliverAllPolicy
+	var optStartTime *time.Time
+	switch subOpts.StartFrom {
+	case transport.StartFromLatest:
+		deliverPolicy = jetstream.DeliverNewPolicy
+	case transport.StartFromTimestamp:
+		if !subOpts.StartTime.IsZero() {
+			deliverPolicy = jetstream.DeliverByStartTimePolicy
+			optStartTime = &subOpts.StartTime
+		}
+	}
+
 	// Create consumer configuration based on delivery mode
 	var consumerConfig jetstream.ConsumerConfig
 
-	if mode == transport.WorkerPool {
+	if subOpts.DeliveryMode == transport.WorkerPool {
 		// WorkerPool: shared durable consumer per event (load balancing)
 		consumerConfig = jetstream.ConsumerConfig{
 			Durable:       "workers-" + name,
 			AckPolicy:     jetstream.AckExplicitPolicy,
-			DeliverPolicy: jetstream.DeliverAllPolicy,
+			DeliverPolicy: deliverPolicy,
 		}
 	} else {
 		// Broadcast: ephemeral consumer per subscriber (fan-out)
 		consumerConfig = jetstream.ConsumerConfig{
 			AckPolicy:     jetstream.AckExplicitPolicy,
-			DeliverPolicy: jetstream.DeliverNewPolicy,
+			DeliverPolicy: deliverPolicy,
 		}
+	}
+
+	if optStartTime != nil {
+		consumerConfig.OptStartTime = optStartTime
 	}
 
 	// Apply native feature options
@@ -297,9 +316,14 @@ func (t *JetStreamTransport) Subscribe(ctx context.Context, name string, mode tr
 
 	subCtx, cancel := context.WithCancel(ctx)
 
+	bufSize := 100
+	if subOpts.BufferSize > 0 {
+		bufSize = subOpts.BufferSize
+	}
+
 	sub := &jsSubscription{
 		id:          transport.NewID(),
-		ch:          make(chan transport.Message, 100),
+		ch:          make(chan transport.Message, bufSize),
 		closedCh:    make(chan struct{}),
 		consumer:    consumer,
 		codec:       t.codec,
@@ -314,7 +338,7 @@ func (t *JetStreamTransport) Subscribe(ctx context.Context, name string, mode tr
 		sub.consumeLoop(subCtx, t.logger)
 	}()
 
-	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "mode", mode)
+	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "mode", subOpts.DeliveryMode, "startFrom", subOpts.StartFrom)
 	return sub, nil
 }
 

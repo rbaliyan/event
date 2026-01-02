@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package monitor.v1;
+
+option go_package = "github.com/rbaliyan/event/v3/monitor/proto;monitorpb";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// MonitorService provides event monitoring and observability.
+service MonitorService {
+  // List returns entries matching the filter with cursor-based pagination.
+  rpc List(ListRequest) returns (ListResponse);
+
+  // Get retrieves a single entry by event ID and subscription ID.
+  rpc Get(GetRequest) returns (GetResponse);
+
+  // GetByEventID returns all entries for an event ID.
+  rpc GetByEventID(GetByEventIDRequest) returns (GetByEventIDResponse);
+
+  // Count returns the number of entries matching the filter.
+  rpc Count(CountRequest) returns (CountResponse);
+
+  // DeleteOlderThan removes entries older than the specified age.
+  rpc DeleteOlderThan(DeleteOlderThanRequest) returns (DeleteOlderThanResponse);
+
+  // Stream returns a real-time stream of entries matching the filter.
+  rpc Stream(StreamRequest) returns (stream Entry);
+}
+
+// DeliveryMode determines how messages are distributed to subscribers.
+enum DeliveryMode {
+  DELIVERY_MODE_UNSPECIFIED = 0;
+  DELIVERY_MODE_BROADCAST = 1;
+  DELIVERY_MODE_WORKER_POOL = 2;
+}
+
+// Status represents the processing status of a monitor entry.
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_PENDING = 1;
+  STATUS_COMPLETED = 2;
+  STATUS_FAILED = 3;
+  STATUS_RETRYING = 4;
+}
+
+// Entry represents a single monitor record for event processing.
+message Entry {
+  string event_id = 1;
+  string subscription_id = 2;
+  string event_name = 3;
+  string bus_id = 4;
+  DeliveryMode delivery_mode = 5;
+  map<string, string> metadata = 6;
+  Status status = 7;
+  string error = 8;
+  int32 retry_count = 9;
+  google.protobuf.Timestamp started_at = 10;
+  google.protobuf.Timestamp completed_at = 11;
+  google.protobuf.Duration duration = 12;
+  string trace_id = 13;
+  string span_id = 14;
+}
+
+// Filter specifies criteria for listing monitor entries.
+message Filter {
+  string event_id = 1;
+  string subscription_id = 2;
+  string event_name = 3;
+  string bus_id = 4;
+  optional DeliveryMode delivery_mode = 5;
+  repeated Status status = 6;
+  optional bool has_error = 7;
+  google.protobuf.Timestamp start_time = 8;
+  google.protobuf.Timestamp end_time = 9;
+  google.protobuf.Duration min_duration = 10;
+  int32 min_retries = 11;
+  string cursor = 12;
+  int32 limit = 13;
+  bool order_desc = 14;
+}
+
+// ListRequest is the request for List RPC.
+message ListRequest {
+  Filter filter = 1;
+}
+
+// ListResponse is the response for List RPC.
+message ListResponse {
+  repeated Entry entries = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+}
+
+// GetRequest is the request for Get RPC.
+message GetRequest {
+  string event_id = 1;
+  string subscription_id = 2;
+}
+
+// GetResponse is the response for Get RPC.
+message GetResponse {
+  Entry entry = 1;
+}
+
+// GetByEventIDRequest is the request for GetByEventID RPC.
+message GetByEventIDRequest {
+  string event_id = 1;
+}
+
+// GetByEventIDResponse is the response for GetByEventID RPC.
+message GetByEventIDResponse {
+  repeated Entry entries = 1;
+}
+
+// CountRequest is the request for Count RPC.
+message CountRequest {
+  Filter filter = 1;
+}
+
+// CountResponse is the response for Count RPC.
+message CountResponse {
+  int64 count = 1;
+}
+
+// DeleteOlderThanRequest is the request for DeleteOlderThan RPC.
+message DeleteOlderThanRequest {
+  google.protobuf.Duration age = 1;
+}
+
+// DeleteOlderThanResponse is the response for DeleteOlderThan RPC.
+message DeleteOlderThanResponse {
+  int64 deleted = 1;
+}
+
+// StreamRequest is the request for Stream RPC.
+message StreamRequest {
+  Filter filter = 1;
+}

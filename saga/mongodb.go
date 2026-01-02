@@ -105,9 +105,15 @@ func (s *MongoStore) Collection() *mongo.Collection {
 	return s.collection
 }
 
-// EnsureIndexes creates the required indexes for the saga collection
-func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
-	indexes := []mongo.IndexModel{
+// Indexes returns the required indexes for the saga collection.
+// Users can use this to create indexes manually or merge with their own indexes.
+//
+// Example:
+//
+//	indexes := store.Indexes()
+//	_, err := collection.Indexes().CreateMany(ctx, indexes)
+func (s *MongoStore) Indexes() []mongo.IndexModel {
+	return []mongo.IndexModel{
 		{
 			Keys: bson.D{{Key: "name", Value: 1}},
 		},
@@ -124,8 +130,11 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 			},
 		},
 	}
+}
 
-	_, err := s.collection.Indexes().CreateMany(ctx, indexes)
+// EnsureIndexes creates the required indexes for the saga collection
+func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
+	_, err := s.collection.Indexes().CreateMany(ctx, s.Indexes())
 	return err
 }
 

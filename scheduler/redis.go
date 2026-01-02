@@ -22,10 +22,15 @@ import (
 //
 // Redis Data Structure:
 //   - Sorted Set: {prefix}messages - score=scheduled_time, member=JSON message
+//   - Sorted Set: {prefix}processing - messages being processed (for crash recovery)
 //
-// The scheduler polls Redis at PollInterval, retrieves messages with
-// score <= current_time, publishes them to the transport, and removes them
-// from the sorted set.
+// The scheduler uses a 2-phase approach for HA safety:
+//  1. Atomically move message from "messages" to "processing" set
+//  2. Publish to transport
+//  3. Remove from "processing" set
+//
+// If a scheduler crashes after step 1, recoverStuck() will move messages
+// back to the main set after stuckDuration.
 //
 // Example:
 //
@@ -44,12 +49,13 @@ import (
 //	// Stop gracefully
 //	scheduler.Stop(ctx)
 type RedisScheduler struct {
-	client    redis.Cmdable
-	transport transport.Transport
-	opts      *Options
-	logger    *slog.Logger
-	stopCh    chan struct{}
-	stoppedCh chan struct{}
+	client        redis.Cmdable
+	transport     transport.Transport
+	opts          *Options
+	logger        *slog.Logger
+	stopCh        chan struct{}
+	stoppedCh     chan struct{}
+	stuckDuration time.Duration // How long before a processing message is considered stuck
 }
 
 // NewRedisScheduler creates a new Redis-based scheduler.
@@ -70,13 +76,23 @@ func NewRedisScheduler(client redis.Cmdable, t transport.Transport, opts ...Opti
 	}
 
 	return &RedisScheduler{
-		client:    client,
-		transport: t,
-		opts:      o,
-		logger:    slog.Default().With("component", "scheduler.redis"),
-		stopCh:    make(chan struct{}),
-		stoppedCh: make(chan struct{}),
+		client:        client,
+		transport:     t,
+		opts:          o,
+		logger:        slog.Default().With("component", "scheduler.redis"),
+		stopCh:        make(chan struct{}),
+		stoppedCh:     make(chan struct{}),
+		stuckDuration: 5 * time.Minute, // Recover stuck messages after 5 min
 	}
+}
+
+// WithStuckDuration sets how long a message can be in "processing" before recovery.
+// Messages stuck in processing longer than this duration are moved back to pending.
+// This handles scheduler crashes where messages were claimed but never published.
+// Default: 5 minutes
+func (s *RedisScheduler) WithStuckDuration(d time.Duration) *RedisScheduler {
+	s.stuckDuration = d
+	return s
 }
 
 // WithLogger sets a custom logger for the scheduler.
@@ -255,6 +271,8 @@ func (s *RedisScheduler) List(ctx context.Context, filter Filter) ([]*Message, e
 //
 // This method blocks until the context is cancelled or Stop is called.
 // It polls Redis at PollInterval for due messages and publishes them.
+// Also periodically recovers messages stuck in "processing" state
+// (from crashed scheduler instances).
 //
 // Example:
 //
@@ -263,9 +281,16 @@ func (s *RedisScheduler) Start(ctx context.Context) error {
 	ticker := time.NewTicker(s.opts.PollInterval)
 	defer ticker.Stop()
 
+	// Recovery ticker for stuck messages (check every minute)
+	recoveryTicker := time.NewTicker(time.Minute)
+	defer recoveryTicker.Stop()
+
 	s.logger.Info("scheduler started",
 		"poll_interval", s.opts.PollInterval,
 		"batch_size", s.opts.BatchSize)
+
+	// Recover any stuck messages at startup
+	s.recoverStuck(ctx)
 
 	for {
 		select {
@@ -277,6 +302,8 @@ func (s *RedisScheduler) Start(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			s.processDue(ctx)
+		case <-recoveryTicker.C:
+			s.recoverStuck(ctx)
 		}
 	}
 }
@@ -297,55 +324,139 @@ func (s *RedisScheduler) Stop(ctx context.Context) error {
 }
 
 // processDue processes messages that are due for delivery.
-//
-// Retrieves messages with score <= now from the sorted set,
-// publishes them to the transport, and removes them on success.
+// Uses a 2-phase approach for crash safety:
+// 1. Atomically move message from "messages" to "processing" set
+// 2. Publish to transport
+// 3. Remove from "processing" set
+// If the scheduler crashes after step 1, recoverStuck will move it back.
 func (s *RedisScheduler) processDue(ctx context.Context) {
-	now := float64(time.Now().Unix())
+	now := time.Now().Unix()
 
-	// Get messages due for delivery
-	results, err := s.client.ZRangeByScoreWithScores(ctx, s.key(), &redis.ZRangeBy{
+	for i := 0; i < s.opts.BatchSize; i++ {
+		// Atomically move message from pending to processing
+		msg, member, err := s.claimDueMessage(ctx, now)
+		if err != nil {
+			if err == redis.Nil {
+				break // No more due messages
+			}
+			s.logger.Error("failed to claim due message", "error", err)
+			break
+		}
+
+		// Publish to transport
+		if err := s.publishMessage(ctx, msg); err != nil {
+			s.logger.Error("failed to publish scheduled message",
+				"id", msg.ID,
+				"event", msg.EventName,
+				"error", err)
+			// Move back to pending for retry
+			s.client.ZRem(ctx, s.processingKey(), member)
+			s.client.ZAdd(ctx, s.key(), redis.Z{
+				Score:  float64(msg.ScheduledAt.Unix()),
+				Member: member,
+			})
+			continue
+		}
+
+		// Remove from processing set after successful publish
+		s.client.ZRem(ctx, s.processingKey(), member)
+
+		s.logger.Debug("delivered scheduled message",
+			"id", msg.ID,
+			"event", msg.EventName)
+	}
+}
+
+// claimDueMessage atomically claims a due message using a Lua script.
+// Moves the message from the pending set to the processing set.
+// This prevents race conditions in HA deployments where multiple schedulers run.
+func (s *RedisScheduler) claimDueMessage(ctx context.Context, now int64) (*Message, string, error) {
+	// Lua script to atomically:
+	// 1. Get the first item with score <= now from pending
+	// 2. Remove it from pending set
+	// 3. Add it to processing set with current timestamp as score
+	// 4. Return the member
+	script := redis.NewScript(`
+		local items = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 1)
+		if #items == 0 then
+			return nil
+		end
+		redis.call('ZREM', KEYS[1], items[1])
+		redis.call('ZADD', KEYS[2], ARGV[2], items[1])
+		return items[1]
+	`)
+
+	claimedAt := time.Now().Unix()
+	result, err := script.Run(ctx, s.client, []string{s.key(), s.processingKey()}, now, claimedAt).Result()
+	if err != nil {
+		return nil, "", err
+	}
+
+	if result == nil {
+		return nil, "", redis.Nil
+	}
+
+	member := result.(string)
+
+	var msg Message
+	if err := json.Unmarshal([]byte(member), &msg); err != nil {
+		// Corrupt message - remove from processing
+		s.client.ZRem(ctx, s.processingKey(), member)
+		s.logger.Error("failed to unmarshal claimed message", "error", err)
+		return nil, "", redis.Nil
+	}
+
+	return &msg, member, nil
+}
+
+// recoverStuck moves messages stuck in "processing" back to "pending".
+// This handles scheduler crashes where messages were claimed but never published.
+func (s *RedisScheduler) recoverStuck(ctx context.Context) {
+	cutoff := time.Now().Add(-s.stuckDuration).Unix()
+
+	// Get messages that have been in processing too long
+	results, err := s.client.ZRangeByScoreWithScores(ctx, s.processingKey(), &redis.ZRangeBy{
 		Min:   "-inf",
-		Max:   fmt.Sprintf("%f", now),
-		Count: int64(s.opts.BatchSize),
+		Max:   fmt.Sprintf("%d", cutoff),
+		Count: 100,
 	}).Result()
 
 	if err != nil {
-		s.logger.Error("failed to get due messages", "error", err)
+		s.logger.Error("failed to get stuck messages", "error", err)
 		return
 	}
 
+	if len(results) == 0 {
+		return
+	}
+
+	var recovered int64
 	for _, z := range results {
 		member := z.Member.(string)
 
 		var msg Message
 		if err := json.Unmarshal([]byte(member), &msg); err != nil {
-			s.logger.Error("failed to unmarshal message", "error", err)
-			// Remove corrupt message
-			s.client.ZRem(ctx, s.key(), member)
+			// Corrupt message - just remove it
+			s.client.ZRem(ctx, s.processingKey(), member)
 			continue
 		}
 
-		// Publish to transport
-		if err := s.publishMessage(ctx, &msg); err != nil {
-			s.logger.Error("failed to publish scheduled message",
-				"id", msg.ID,
-				"event", msg.EventName,
-				"error", err)
-			// Don't remove - will retry on next poll
-			continue
+		// Move back to pending with original scheduled time
+		pipe := s.client.Pipeline()
+		pipe.ZRem(ctx, s.processingKey(), member)
+		pipe.ZAdd(ctx, s.key(), redis.Z{
+			Score:  float64(msg.ScheduledAt.Unix()),
+			Member: member,
+		})
+		if _, err := pipe.Exec(ctx); err == nil {
+			recovered++
 		}
+	}
 
-		// Remove from scheduled set
-		if err := s.client.ZRem(ctx, s.key(), member).Err(); err != nil {
-			s.logger.Error("failed to remove delivered message",
-				"id", msg.ID,
-				"error", err)
-		}
-
-		s.logger.Debug("delivered scheduled message",
-			"id", msg.ID,
-			"event", msg.EventName)
+	if recovered > 0 {
+		s.logger.Warn("recovered stuck scheduled messages",
+			"count", recovered,
+			"stuck_duration", s.stuckDuration)
 	}
 }
 
@@ -376,6 +487,11 @@ func (s *RedisScheduler) publishMessage(ctx context.Context, msg *Message) error
 // key returns the Redis key for the scheduled messages sorted set.
 func (s *RedisScheduler) key() string {
 	return s.opts.KeyPrefix + "messages"
+}
+
+// processingKey returns the Redis key for messages currently being processed.
+func (s *RedisScheduler) processingKey() string {
+	return s.opts.KeyPrefix + "processing"
 }
 
 // Compile-time check

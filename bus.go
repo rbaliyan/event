@@ -218,13 +218,18 @@ type busOptions struct {
 	// Subscriber middleware stores (applied automatically to all subscribers)
 	idempotencyStore IdempotencyStore
 	poisonDetector   PoisonDetector
+	monitorStore     MonitorStore
+	// Event scheduler for delayed/scheduled events
+	scheduler *EventScheduler
+	// Schema provider for dynamic event configuration
+	schemaProvider SchemaProvider
 }
 
 // BusOption option function for bus configuration
 type BusOption func(*busOptions)
 
-// WithBusTransport sets a custom transport for the bus
-func WithBusTransport(t transport.Transport) BusOption {
+// WithTransport sets a custom transport for the bus
+func WithTransport(t transport.Transport) BusOption {
 	return func(o *busOptions) {
 		if t != nil {
 			o.transport = t
@@ -232,29 +237,29 @@ func WithBusTransport(t transport.Transport) BusOption {
 	}
 }
 
-// WithBusTracing enables/disables tracing for all events on this bus
-func WithBusTracing(enabled bool) BusOption {
+// WithTracing enables/disables tracing for all events on this bus
+func WithTracing(enabled bool) BusOption {
 	return func(o *busOptions) {
 		o.tracingEnabled = enabled
 	}
 }
 
-// WithBusRecovery enables/disables panic recovery for all events on this bus
-func WithBusRecovery(enabled bool) BusOption {
+// WithRecovery enables/disables panic recovery for all events on this bus
+func WithRecovery(enabled bool) BusOption {
 	return func(o *busOptions) {
 		o.recoveryEnabled = enabled
 	}
 }
 
-// WithBusMetrics enables/disables metrics for all events on this bus
-func WithBusMetrics(enabled bool) BusOption {
+// WithMetrics enables/disables metrics for all events on this bus
+func WithMetrics(enabled bool) BusOption {
 	return func(o *busOptions) {
 		o.metricsEnabled = enabled
 	}
 }
 
-// WithBusLogger sets a custom logger for the bus
-func WithBusLogger(l *slog.Logger) BusOption {
+// WithLogger sets a custom logger for the bus
+func WithLogger(l *slog.Logger) BusOption {
 	return func(o *busOptions) {
 		if l != nil {
 			o.logger = l
@@ -262,7 +267,7 @@ func WithBusLogger(l *slog.Logger) BusOption {
 	}
 }
 
-// WithBusIdempotency configures automatic idempotency checking for all subscribers.
+// WithIdempotency configures automatic idempotency checking for all subscribers.
 // When set, all event handlers will automatically skip duplicate messages.
 // This eliminates the need to manually check idempotency in each handler.
 //
@@ -271,14 +276,14 @@ func WithBusLogger(l *slog.Logger) BusOption {
 //	store := idempotency.NewRedisStore(redisClient, time.Hour)
 //	bus, _ := event.NewBus("my-app",
 //	    event.WithBusTransport(transport),
-//	    event.WithBusIdempotency(store),
+//	    event.WithIdempotency(store),
 //	)
 //
 //	// Subscriber is simple - no manual idempotency check needed
 //	orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
 //	    return processOrder(ctx, order) // Just business logic!
 //	})
-func WithBusIdempotency(store IdempotencyStore) BusOption {
+func WithIdempotency(store IdempotencyStore) BusOption {
 	return func(o *busOptions) {
 		if store != nil {
 			o.idempotencyStore = store
@@ -286,7 +291,7 @@ func WithBusIdempotency(store IdempotencyStore) BusOption {
 	}
 }
 
-// WithBusPoisonDetection configures automatic poison message detection for all subscribers.
+// WithPoisonDetection configures automatic poison message detection for all subscribers.
 // When set, all event handlers will automatically skip quarantined messages and track failures.
 // Messages that fail repeatedly will be quarantined and skipped until released.
 //
@@ -298,17 +303,97 @@ func WithBusIdempotency(store IdempotencyStore) BusOption {
 //	)
 //	bus, _ := event.NewBus("my-app",
 //	    event.WithBusTransport(transport),
-//	    event.WithBusPoisonDetection(detector),
+//	    event.WithPoisonDetection(detector),
 //	)
 //
 //	// Subscriber is simple - no manual poison detection needed
 //	orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
 //	    return processOrder(ctx, order) // Just business logic!
 //	})
-func WithBusPoisonDetection(detector PoisonDetector) BusOption {
+func WithPoisonDetection(detector PoisonDetector) BusOption {
 	return func(o *busOptions) {
 		if detector != nil {
 			o.poisonDetector = detector
+		}
+	}
+}
+
+// WithMonitor configures automatic event processing monitoring for all subscribers.
+// When set, all event handlers will automatically record processing metrics including
+// start time, duration, status, and any errors.
+//
+// Example:
+//
+//	store := monitor.NewPostgresStore(db)
+//	bus, _ := event.NewBus("my-app",
+//	    event.WithTransport(transport),
+//	    event.WithMonitor(store),
+//	)
+//
+//	// Subscriber is simple - monitoring happens automatically
+//	orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+//	    return processOrder(ctx, order) // Just business logic!
+//	})
+func WithMonitor(store MonitorStore) BusOption {
+	return func(o *busOptions) {
+		if store != nil {
+			o.monitorStore = store
+		}
+	}
+}
+
+// WithBusScheduler configures an event scheduler for delayed/scheduled event delivery.
+// When set, you can use ScheduleAt and ScheduleAfter to schedule events for future delivery.
+//
+// The scheduler must be started separately (usually in a goroutine) for events to be delivered.
+//
+// Example:
+//
+//	// Create scheduler with Redis backend
+//	redisScheduler := scheduler.NewRedisScheduler(redisClient, transport)
+//	eventScheduler := event.NewEventScheduler(redisScheduler)
+//
+//	bus, _ := event.NewBus("my-app",
+//	    event.WithBusTransport(transport),
+//	    event.WithBusScheduler(eventScheduler),
+//	)
+//
+//	// Start scheduler in background
+//	go eventScheduler.Start(ctx)
+//
+//	// Schedule events using the bus
+//	id, err := bus.ScheduleAt(orderEvent, order, time.Now().Add(time.Hour), nil)
+func WithBusScheduler(scheduler *EventScheduler) BusOption {
+	return func(o *busOptions) {
+		if scheduler != nil {
+			o.scheduler = scheduler
+		}
+	}
+}
+
+// WithSchemaProvider configures a schema provider for dynamic event configuration.
+// When set, events will automatically load their configuration from the schema registry
+// when registered, ensuring all subscribers have consistent settings.
+//
+// The schema provider also enables real-time configuration updates via the Watch mechanism.
+//
+// Example:
+//
+//	// Using in-memory provider for testing
+//	provider := schema.NewMemoryProvider()
+//	bus, _ := event.NewBus("my-app",
+//	    event.WithTransport(transport),
+//	    event.WithSchemaProvider(provider),
+//	)
+//
+//	// Using PostgreSQL provider with notification callback
+//	provider := schema.NewPostgresProvider(db, func(ctx context.Context, change schema.SchemaChangeEvent) error {
+//	    return bus.publishSchemaChange(ctx, change)
+//	})
+func WithSchemaProvider(provider SchemaProvider) BusOption {
+	return func(o *busOptions) {
+		if provider != nil {
+			o.schemaProvider = provider
 		}
 	}
 }
@@ -344,6 +429,11 @@ type Bus struct {
 	// Subscriber middleware (applied automatically to all subscribers)
 	idempotencyStore IdempotencyStore
 	poisonDetector   PoisonDetector
+	monitorStore     MonitorStore
+	// Event scheduler for delayed/scheduled events
+	scheduler *EventScheduler
+	// Schema provider for dynamic event configuration
+	schemaProvider SchemaProvider
 }
 
 // NewBus creates a new event bus and registers it in the global registry.
@@ -387,6 +477,9 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		eventTypes:       make(map[string]reflect.Type),
 		idempotencyStore: o.idempotencyStore,
 		poisonDetector:   o.poisonDetector,
+		monitorStore:     o.monitorStore,
+		scheduler:        o.scheduler,
+		schemaProvider:   o.schemaProvider,
 	}
 
 	// Register in global registry (use LoadOrStore to handle race condition)
@@ -440,6 +533,30 @@ func (b *Bus) IdempotencyStore() IdempotencyStore {
 // PoisonDetector returns the bus-level poison detector (may be nil)
 func (b *Bus) PoisonDetector() PoisonDetector {
 	return b.poisonDetector
+}
+
+// MonitorStore returns the bus-level monitor store (may be nil)
+func (b *Bus) MonitorStore() MonitorStore {
+	return b.monitorStore
+}
+
+// Scheduler returns the bus-level event scheduler (may be nil).
+// Use this to schedule events for future delivery.
+//
+// Example:
+//
+//	scheduler := bus.Scheduler()
+//	if scheduler != nil {
+//	    id, err := event.ScheduleAt(ctx, scheduler, orderEvent, order, futureTime, nil)
+//	}
+func (b *Bus) Scheduler() *EventScheduler {
+	return b.scheduler
+}
+
+// SchemaProvider returns the bus-level schema provider (may be nil).
+// When configured, events automatically load their configuration from the registry.
+func (b *Bus) SchemaProvider() SchemaProvider {
+	return b.schemaProvider
 }
 
 // Get returns an event by name
@@ -700,12 +817,12 @@ func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payloa
 // Parameters:
 //   - ctx: context for the operation
 //   - eventName: name of the event to subscribe to
-//   - mode: delivery mode (Broadcast or WorkerPool)
+//   - opts: subscription options (delivery mode, start position, etc.)
 //
 // Returns:
 //   - Subscription for receiving messages
 //   - error if the bus is closed or transport fails
-func (b *Bus) Recv(ctx context.Context, eventName string, mode transport.DeliveryMode) (transport.Subscription, error) {
+func (b *Bus) Recv(ctx context.Context, eventName string, opts ...transport.SubscribeOption) (transport.Subscription, error) {
 	if !b.Running() {
 		return nil, ErrBusClosed
 	}
@@ -718,8 +835,8 @@ func (b *Bus) Recv(ctx context.Context, eventName string, mode transport.Deliver
 		subscribed.Add(ctx, 1, metric.WithAttributes(attribute.String("event", eventName)))
 	}
 
-	// Subscribe via transport (convert bus DeliveryMode to transport DeliveryMode)
-	return b.transport.Subscribe(ctx, eventName, transport.DeliveryMode(mode))
+	// Subscribe via transport
+	return b.transport.Subscribe(ctx, eventName, opts...)
 }
 
 // Register binds an existing event to the bus.
@@ -728,14 +845,17 @@ func (b *Bus) Recv(ctx context.Context, eventName string, mode transport.Deliver
 // - Event with same name exists with different type
 // - Event is already bound to another bus
 // - Transport fails to register the event
-func Register[T any](ctx context.Context, bus *Bus, event Event[T]) (Event[T], error) {
+//
+// If a schema provider is configured, the event's schema is loaded and applied.
+// This ensures all subscribers have consistent settings defined by the publisher.
+func Register[T any](ctx context.Context, bus *Bus, event Event[T]) error {
 	if !bus.Running() {
-		return nil, ErrBusClosed
+		return ErrBusClosed
 	}
 
 	impl, ok := event.(*eventImpl[T])
 	if !ok {
-		return nil, errors.New("invalid event type: must be created with event.New()")
+		return errors.New("invalid event type: must be created with event.New()")
 	}
 
 	// Get the type for T
@@ -744,45 +864,43 @@ func Register[T any](ctx context.Context, bus *Bus, event Event[T]) (Event[T], e
 
 	// Check if event already exists with same name
 	if existing, err := bus.getTyped(impl.name, eventType); err != nil {
-		return nil, err
+		return err
 	} else if existing != nil {
-		// Return existing event with correct type
-		if typed, ok := existing.(Event[T]); ok {
-			return typed, nil
-		}
-		return nil, fmt.Errorf("%w: cannot cast existing event", ErrTypeMismatch)
+		return fmt.Errorf("%w: %q", ErrEventExists, impl.name)
 	}
 
 	// Register event with transport
 	if err := bus.transport.RegisterEvent(ctx, impl.name); err != nil {
 		// If event already exists in transport (race condition), that's ok
 		if !errors.Is(err, transport.ErrEventAlreadyExists) {
-			return nil, fmt.Errorf("transport register failed: %w", err)
+			return fmt.Errorf("transport register failed: %w", err)
 		}
 	}
 
 	// Bind event to bus
 	if err := impl.Bind(bus); err != nil {
-		return nil, err
+		return err
+	}
+
+	// Load schema from provider if configured
+	if bus.schemaProvider != nil {
+		schema, err := bus.schemaProvider.Get(ctx, impl.name)
+		if err != nil {
+			bus.logger.Warn("failed to load schema", "event", impl.name, "error", err)
+			// Continue without schema - use event defaults
+		} else if schema != nil {
+			impl.applySchema(schema)
+			bus.logger.Debug("applied schema", "event", impl.name, "version", schema.Version)
+		}
 	}
 
 	// Register with bus
 	if err := bus.register(impl.name, impl, eventType); err != nil {
-		if errors.Is(err, ErrEventExists) {
-			// Race condition: another goroutine registered first
-			if existing, err := bus.getTyped(impl.name, eventType); err != nil {
-				return nil, err
-			} else if existing != nil {
-				if typed, ok := existing.(Event[T]); ok {
-					return typed, nil
-				}
-			}
-		}
-		return nil, err
+		return err
 	}
 
 	bus.logger.Debug("registered event", "event", impl.name)
-	return event, nil
+	return nil
 }
 
 // Unregister removes an event from the bus and unregisters it from the transport.

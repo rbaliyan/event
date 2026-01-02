@@ -385,6 +385,154 @@ func IdempotencyMiddleware[T any](store IdempotencyStore) Middleware[T] {
 	}
 }
 
+// MonitorStore is an interface for event processing monitoring.
+// Implementations can use in-memory, PostgreSQL, MongoDB, or other storage backends.
+// This interface is designed to be compatible with monitor.Store from the monitor package.
+//
+// The stores in the monitor package implement this interface directly.
+type MonitorStore interface {
+	// RecordStart records when event processing begins.
+	// workerPool indicates the delivery mode (true = WorkerPool, false = Broadcast)
+	RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string,
+		workerPool bool, metadata map[string]string, traceID, spanID string) error
+
+	// RecordComplete updates the entry with the final result.
+	// status: "completed" (success), "failed" (rejected), "retrying" (will retry)
+	RecordComplete(ctx context.Context, eventID, subscriptionID, status string,
+		handlerErr error, duration time.Duration) error
+}
+
+// SchemaProvider is an interface for event schema storage and notification.
+// Implementations can use transport KV (NATS, Kafka) or database (PostgreSQL, MongoDB, Redis).
+// This interface is compatible with schema.SchemaProvider from the schema package.
+//
+// Publishers use Set to register event schemas, subscribers auto-load via Get.
+// Watch enables real-time schema updates across distributed systems.
+type SchemaProvider interface {
+	// Get retrieves a schema by event name.
+	// Returns nil, nil if not found.
+	Get(ctx context.Context, eventName string) (*EventSchema, error)
+
+	// Set stores a schema and notifies subscribers.
+	// Version must be >= existing version (no downgrades).
+	Set(ctx context.Context, schema *EventSchema) error
+
+	// Delete removes a schema.
+	Delete(ctx context.Context, eventName string) error
+
+	// Watch returns a channel that receives schema change notifications.
+	// The channel is closed when the context is cancelled.
+	Watch(ctx context.Context) (<-chan SchemaChangeEvent, error)
+
+	// List returns all schemas (for startup sync).
+	List(ctx context.Context) ([]*EventSchema, error)
+
+	// Close releases resources.
+	Close() error
+}
+
+// EventSchema defines processing configuration for an event.
+// Publishers register schemas; subscribers auto-load them.
+// This ensures all workers processing the same event have consistent settings.
+type EventSchema struct {
+	// Identity
+	Name        string
+	Version     int
+	Description string
+
+	// Processing behavior
+	SubTimeout   time.Duration
+	MaxRetries   int
+	RetryBackoff time.Duration
+
+	// Feature flags
+	EnableMonitor     bool
+	EnableIdempotency bool
+	EnablePoison      bool
+
+	// Metadata
+	Metadata  map[string]string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// SchemaChangeEvent is published when a schema is updated.
+type SchemaChangeEvent struct {
+	EventName string
+	Version   int
+	UpdatedAt time.Time
+}
+
+// MonitorMiddleware creates a middleware that records event processing metrics.
+// Records start time, duration, status, and any errors for each event processed.
+//
+// Example usage:
+//
+//	store := monitor.NewPostgresStore(db)
+//	ev.Subscribe(ctx, handler, event.WithMiddleware(event.MonitorMiddleware[Order](store)))
+func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
+	return func(next Handler[T]) Handler[T] {
+		return func(ctx context.Context, ev Event[T], data T) error {
+			eventID := ContextEventID(ctx)
+			subscriptionID := ContextSubscriptionID(ctx)
+			eventName := ContextName(ctx)
+			busID := ContextSource(ctx)
+			metadata := ContextMetadata(ctx)
+			workerPool := ContextDeliveryMode(ctx) == 1 // transport.WorkerPool
+
+			// For WorkerPool mode, subscription ID is not part of the key
+			subIDForEntry := subscriptionID
+			if workerPool {
+				subIDForEntry = ""
+			}
+
+			// Extract trace context
+			var traceID, spanID string
+			// Note: trace extraction happens in monitor package middleware for full OTEL support
+
+			// Record start (best effort)
+			if err := store.RecordStart(ctx, eventID, subIDForEntry, eventName, busID,
+				workerPool, metadata, traceID, spanID); err != nil {
+				logger := ContextLogger(ctx)
+				if logger != nil {
+					logger.Warn("monitor record start failed", "error", err)
+				}
+			}
+
+			// Execute handler
+			start := time.Now()
+			handlerErr := next(ctx, ev, data)
+			duration := time.Since(start)
+
+			// Determine status
+			status := "completed"
+			if handlerErr != nil {
+				result := ClassifyError(handlerErr)
+				switch result {
+				case ResultNack, ResultDefer:
+					status = "retrying"
+				case ResultReject:
+					status = "failed"
+				case ResultAck:
+					status = "completed"
+				default:
+					status = "retrying"
+				}
+			}
+
+			// Record complete (best effort)
+			if err := store.RecordComplete(ctx, eventID, subIDForEntry, status, handlerErr, duration); err != nil {
+				logger := ContextLogger(ctx)
+				if logger != nil {
+					logger.Warn("monitor record complete failed", "error", err)
+				}
+			}
+
+			return handlerErr
+		}
+	}
+}
+
 // PoisonMiddleware creates a middleware that detects and quarantines poison messages.
 // Poison messages are messages that repeatedly fail processing.
 //

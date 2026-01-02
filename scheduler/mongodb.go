@@ -27,13 +27,27 @@ Document structure:
     "payload": Binary,
     "metadata": object,
     "scheduled_at": ISODate,
-    "created_at": ISODate
+    "created_at": ISODate,
+    "status": string (pending/processing),
+    "claimed_at": ISODate (optional, set when processing)
 }
 
 Indexes:
 db.scheduled_messages.createIndex({ "scheduled_at": 1 })
 db.scheduled_messages.createIndex({ "event_name": 1 })
+db.scheduled_messages.createIndex({ "status": 1, "scheduled_at": 1 })
 */
+
+// SchedulerStatus represents the state of a scheduled message
+type SchedulerStatus string
+
+const (
+	// SchedulerStatusPending indicates the message is waiting to be delivered
+	SchedulerStatusPending SchedulerStatus = "pending"
+
+	// SchedulerStatusProcessing indicates the message is claimed by a scheduler
+	SchedulerStatusProcessing SchedulerStatus = "processing"
+)
 
 // MongoMessage represents a scheduled message document in MongoDB
 type MongoMessage struct {
@@ -43,6 +57,8 @@ type MongoMessage struct {
 	Metadata    map[string]string `bson:"metadata,omitempty"`
 	ScheduledAt time.Time         `bson:"scheduled_at"`
 	CreatedAt   time.Time         `bson:"created_at"`
+	Status      SchedulerStatus   `bson:"status,omitempty"`
+	ClaimedAt   *time.Time        `bson:"claimed_at,omitempty"`
 }
 
 // ToMessage converts MongoMessage to Message
@@ -71,12 +87,13 @@ func FromSchedulerMessage(m *Message) *MongoMessage {
 
 // MongoScheduler uses MongoDB for scheduling
 type MongoScheduler struct {
-	collection *mongo.Collection
-	transport  transport.Transport
-	opts       *Options
-	logger     *slog.Logger
-	stopCh     chan struct{}
-	stoppedCh  chan struct{}
+	collection    *mongo.Collection
+	transport     transport.Transport
+	opts          *Options
+	logger        *slog.Logger
+	stopCh        chan struct{}
+	stoppedCh     chan struct{}
+	stuckDuration time.Duration // How long before a processing message is considered stuck
 }
 
 // NewMongoScheduler creates a new MongoDB-based scheduler
@@ -87,12 +104,13 @@ func NewMongoScheduler(db *mongo.Database, t transport.Transport, opts ...Option
 	}
 
 	return &MongoScheduler{
-		collection: db.Collection("scheduled_messages"),
-		transport:  t,
-		opts:       o,
-		logger:     slog.Default().With("component", "scheduler.mongodb"),
-		stopCh:     make(chan struct{}),
-		stoppedCh:  make(chan struct{}),
+		collection:    db.Collection("scheduled_messages"),
+		transport:     t,
+		opts:          o,
+		logger:        slog.Default().With("component", "scheduler.mongodb"),
+		stopCh:        make(chan struct{}),
+		stoppedCh:     make(chan struct{}),
+		stuckDuration: 5 * time.Minute, // Recover messages stuck in processing after 5 min
 	}
 }
 
@@ -108,23 +126,47 @@ func (s *MongoScheduler) WithLogger(l *slog.Logger) *MongoScheduler {
 	return s
 }
 
+// WithStuckDuration sets how long a message can be in "processing" before recovery.
+// Messages stuck in processing longer than this duration are moved back to pending.
+// This handles scheduler crashes where messages were claimed but never published.
+// Default: 5 minutes
+func (s *MongoScheduler) WithStuckDuration(d time.Duration) *MongoScheduler {
+	s.stuckDuration = d
+	return s
+}
+
 // Collection returns the underlying MongoDB collection
 func (s *MongoScheduler) Collection() *mongo.Collection {
 	return s.collection
 }
 
-// EnsureIndexes creates the required indexes for the scheduler collection
-func (s *MongoScheduler) EnsureIndexes(ctx context.Context) error {
-	indexes := []mongo.IndexModel{
+// Indexes returns the required indexes for the scheduler collection.
+// Users can use this to create indexes manually or merge with their own indexes.
+//
+// Example:
+//
+//	indexes := scheduler.Indexes()
+//	_, err := collection.Indexes().CreateMany(ctx, indexes)
+func (s *MongoScheduler) Indexes() []mongo.IndexModel {
+	return []mongo.IndexModel{
 		{
 			Keys: bson.D{{Key: "scheduled_at", Value: 1}},
 		},
 		{
 			Keys: bson.D{{Key: "event_name", Value: 1}},
 		},
+		{
+			Keys: bson.D{
+				{Key: "status", Value: 1},
+				{Key: "scheduled_at", Value: 1},
+			},
+		},
 	}
+}
 
-	_, err := s.collection.Indexes().CreateMany(ctx, indexes)
+// EnsureIndexes creates the required indexes for the scheduler collection
+func (s *MongoScheduler) EnsureIndexes(ctx context.Context) error {
+	_, err := s.collection.Indexes().CreateMany(ctx, s.Indexes())
 	return err
 }
 
@@ -138,6 +180,7 @@ func (s *MongoScheduler) Schedule(ctx context.Context, msg Message) error {
 	}
 
 	mongoMsg := FromSchedulerMessage(&msg)
+	mongoMsg.Status = SchedulerStatusPending
 
 	_, err := s.collection.InsertOne(ctx, mongoMsg)
 	if err != nil {
@@ -256,14 +299,23 @@ func (s *MongoScheduler) List(ctx context.Context, filter Filter) ([]*Message, e
 	return messages, cursor.Err()
 }
 
-// Start begins the scheduler polling loop
+// Start begins the scheduler polling loop.
+// Also periodically recovers messages stuck in "processing" state
+// (from crashed scheduler instances).
 func (s *MongoScheduler) Start(ctx context.Context) error {
 	ticker := time.NewTicker(s.opts.PollInterval)
 	defer ticker.Stop()
 
+	// Recovery ticker for stuck messages (check every minute)
+	recoveryTicker := time.NewTicker(time.Minute)
+	defer recoveryTicker.Stop()
+
 	s.logger.Info("scheduler started",
 		"poll_interval", s.opts.PollInterval,
 		"batch_size", s.opts.BatchSize)
+
+	// Recover any stuck messages at startup
+	s.recoverStuck(ctx)
 
 	for {
 		select {
@@ -275,6 +327,8 @@ func (s *MongoScheduler) Start(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			s.processDue(ctx)
+		case <-recoveryTicker.C:
+			s.recoverStuck(ctx)
 		}
 	}
 }
@@ -291,33 +345,24 @@ func (s *MongoScheduler) Stop(ctx context.Context) error {
 	}
 }
 
-// processDue processes messages that are due for delivery
+// processDue processes messages that are due for delivery.
+// Uses a 2-phase approach for crash safety:
+// 1. Atomically claim message (status: pending -> processing)
+// 2. Publish to transport
+// 3. Delete the message
+// If the scheduler crashes after claiming, recoverStuck will move it back to pending.
 func (s *MongoScheduler) processDue(ctx context.Context) {
 	now := time.Now()
 
-	// Find due messages
-	filter := bson.M{
-		"scheduled_at": bson.M{"$lte": now},
-	}
-	opts := options.Find().
-		SetSort(bson.D{{Key: "scheduled_at", Value: 1}}).
-		SetLimit(int64(s.opts.BatchSize))
-
-	cursor, err := s.collection.Find(ctx, filter, opts)
-	if err != nil {
-		s.logger.Error("failed to find due messages", "error", err)
-		return
-	}
-	defer cursor.Close(ctx)
-
-	for cursor.Next(ctx) {
-		var mongoMsg MongoMessage
-		if err := cursor.Decode(&mongoMsg); err != nil {
-			s.logger.Error("failed to decode message", "error", err)
-			continue
+	for i := 0; i < s.opts.BatchSize; i++ {
+		msg, err := s.claimDue(ctx, now)
+		if err != nil {
+			if err == mongo.ErrNoDocuments {
+				break // No more due messages
+			}
+			s.logger.Error("failed to claim due message", "error", err)
+			break
 		}
-
-		msg := mongoMsg.ToMessage()
 
 		// Publish to transport
 		if err := s.publishMessage(ctx, msg); err != nil {
@@ -325,13 +370,13 @@ func (s *MongoScheduler) processDue(ctx context.Context) {
 				"id", msg.ID,
 				"event", msg.EventName,
 				"error", err)
+			// Message stays in processing, will be recovered by recoverStuck
 			continue
 		}
 
-		// Delete the published message
-		deleteFilter := bson.M{"_id": msg.ID}
-		if _, err := s.collection.DeleteOne(ctx, deleteFilter); err != nil {
-			s.logger.Error("failed to delete delivered message",
+		// Delete the message after successful publish
+		if err := s.deleteClaimed(ctx, msg.ID); err != nil {
+			s.logger.Error("failed to delete published message",
 				"id", msg.ID,
 				"error", err)
 		}
@@ -339,6 +384,72 @@ func (s *MongoScheduler) processDue(ctx context.Context) {
 		s.logger.Debug("delivered scheduled message",
 			"id", msg.ID,
 			"event", msg.EventName)
+	}
+}
+
+// claimDue atomically claims a due message for processing.
+// Uses FindOneAndUpdate to prevent race conditions in HA deployments.
+func (s *MongoScheduler) claimDue(ctx context.Context, now time.Time) (*Message, error) {
+	filter := bson.M{
+		"scheduled_at": bson.M{"$lte": now},
+		"$or": []bson.M{
+			{"status": SchedulerStatusPending},
+			{"status": bson.M{"$exists": false}}, // Backward compat: no status = pending
+		},
+	}
+	claimedAt := time.Now()
+	update := bson.M{
+		"$set": bson.M{
+			"status":     SchedulerStatusProcessing,
+			"claimed_at": claimedAt,
+		},
+	}
+	opts := options.FindOneAndUpdate().
+		SetSort(bson.D{{Key: "scheduled_at", Value: 1}}).
+		SetReturnDocument(options.After)
+
+	var mongoMsg MongoMessage
+	err := s.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&mongoMsg)
+	if err != nil {
+		return nil, err
+	}
+
+	return mongoMsg.ToMessage(), nil
+}
+
+// deleteClaimed deletes a message that was successfully published
+func (s *MongoScheduler) deleteClaimed(ctx context.Context, id string) error {
+	_, err := s.collection.DeleteOne(ctx, bson.M{"_id": id})
+	return err
+}
+
+// recoverStuck moves messages stuck in "processing" back to "pending".
+// This handles scheduler crashes where messages were claimed but never published.
+func (s *MongoScheduler) recoverStuck(ctx context.Context) {
+	cutoff := time.Now().Add(-s.stuckDuration)
+	filter := bson.M{
+		"status":     SchedulerStatusProcessing,
+		"claimed_at": bson.M{"$lt": cutoff},
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"status": SchedulerStatusPending,
+		},
+		"$unset": bson.M{
+			"claimed_at": "",
+		},
+	}
+
+	result, err := s.collection.UpdateMany(ctx, filter, update)
+	if err != nil {
+		s.logger.Error("failed to recover stuck messages", "error", err)
+		return
+	}
+
+	if result.ModifiedCount > 0 {
+		s.logger.Warn("recovered stuck scheduled messages",
+			"count", result.ModifiedCount,
+			"stuck_duration", s.stuckDuration)
 	}
 }
 

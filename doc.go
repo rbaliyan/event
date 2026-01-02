@@ -22,8 +22,8 @@
 //	defer bus.Close(ctx)
 //
 //	// Create and register event
-//	userEvent, err := event.Register(ctx, bus, event.New[User]("user.created"))
-//	if err != nil {
+//	userEvent := event.New[User]("user.created")
+//	if err := event.Register(ctx, bus, userEvent); err != nil {
 //	    log.Fatal(err)
 //	}
 //

@@ -114,6 +114,160 @@ const (
 	WorkerPool
 )
 
+// StartPosition determines where to start reading messages from
+type StartPosition int
+
+const (
+	// StartFromBeginning processes all available historical messages.
+	// Use this for event sourcing or when you need complete history.
+	StartFromBeginning StartPosition = iota
+
+	// StartFromLatest only receives messages published after subscription.
+	// Use this for real-time dashboards or notifications that don't need history.
+	StartFromLatest
+
+	// StartFromTimestamp starts reading from a specific point in time.
+	// Use with SubscribeOptions.StartTime to specify the timestamp.
+	StartFromTimestamp
+)
+
+// SubscribeOptions configures subscription behavior
+type SubscribeOptions struct {
+	// DeliveryMode determines how messages are distributed.
+	// Default: Broadcast (all subscribers receive every message)
+	DeliveryMode DeliveryMode
+
+	// StartFrom determines where to start reading messages.
+	// Default: StartFromBeginning (process all historical messages)
+	StartFrom StartPosition
+
+	// StartTime is used with StartFromTimestamp to specify the start point.
+	// Messages before this time will be skipped.
+	StartTime time.Time
+
+	// MaxAge filters out messages older than this duration.
+	// Messages with a timestamp older than (now - MaxAge) are skipped.
+	// Zero means no age filtering.
+	// This is useful for scenarios where stale messages are not relevant.
+	MaxAge time.Duration
+
+	// LatestOnly enables "sampling" mode where only the most recent message
+	// is delivered. If multiple messages arrive while processing, only the
+	// latest is kept and intermediate messages are dropped.
+	// Useful for real-time state updates where only current value matters.
+	LatestOnly bool
+
+	// BufferSize overrides the default message channel buffer size.
+	// Zero uses the transport's default buffer size.
+	BufferSize int
+}
+
+// SubscribeOption is a functional option for configuring subscriptions
+type SubscribeOption func(*SubscribeOptions)
+
+// WithStartFrom sets where to start reading messages.
+//
+// Example:
+//
+//	// Only receive new messages
+//	sub, err := transport.Subscribe(ctx, "events", Broadcast,
+//	    transport.WithStartFrom(transport.StartFromLatest))
+func WithStartFrom(pos StartPosition) SubscribeOption {
+	return func(o *SubscribeOptions) {
+		o.StartFrom = pos
+	}
+}
+
+// WithStartTime sets the start timestamp for StartFromTimestamp mode.
+//
+// Example:
+//
+//	// Resume from last checkpoint
+//	sub, err := transport.Subscribe(ctx, "events", Broadcast,
+//	    transport.WithStartFrom(transport.StartFromTimestamp),
+//	    transport.WithStartTime(lastProcessedTime))
+func WithStartTime(t time.Time) SubscribeOption {
+	return func(o *SubscribeOptions) {
+		o.StartFrom = StartFromTimestamp
+		o.StartTime = t
+	}
+}
+
+// WithMaxAge filters out messages older than the specified duration.
+// Messages older than (now - maxAge) are silently skipped.
+//
+// Example:
+//
+//	// Only process messages from the last 5 minutes
+//	sub, err := transport.Subscribe(ctx, "events", Broadcast,
+//	    transport.WithMaxAge(5*time.Minute))
+func WithMaxAge(maxAge time.Duration) SubscribeOption {
+	return func(o *SubscribeOptions) {
+		o.MaxAge = maxAge
+	}
+}
+
+// WithLatestOnly enables sampling mode where only the most recent message
+// is kept. Intermediate messages are dropped if they arrive faster than
+// they can be processed.
+//
+// Example:
+//
+//	// Real-time price updates - only care about current price
+//	sub, err := transport.Subscribe(ctx, "prices", Broadcast,
+//	    transport.WithLatestOnly())
+func WithLatestOnly() SubscribeOption {
+	return func(o *SubscribeOptions) {
+		o.LatestOnly = true
+	}
+}
+
+// WithBufferSize sets the message channel buffer size.
+//
+// Example:
+//
+//	sub, err := transport.Subscribe(ctx, "events",
+//	    transport.WithBufferSize(1000))
+func WithBufferSize(size int) SubscribeOption {
+	return func(o *SubscribeOptions) {
+		o.BufferSize = size
+	}
+}
+
+// WithDeliveryMode sets the message delivery mode.
+//
+// Modes:
+//   - Broadcast (default): all subscribers receive every message
+//   - WorkerPool: each message is delivered to only ONE subscriber (load balancing)
+//
+// Example:
+//
+//	// Load balance across multiple workers
+//	sub, err := transport.Subscribe(ctx, "tasks",
+//	    transport.WithDeliveryMode(transport.WorkerPool))
+func WithDeliveryMode(mode DeliveryMode) SubscribeOption {
+	return func(o *SubscribeOptions) {
+		o.DeliveryMode = mode
+	}
+}
+
+// DefaultSubscribeOptions returns the default subscription options
+func DefaultSubscribeOptions() *SubscribeOptions {
+	return &SubscribeOptions{
+		DeliveryMode: Broadcast,
+		StartFrom:    StartFromBeginning,
+	}
+}
+
+// ApplyOptions applies functional options to SubscribeOptions
+func ApplySubscribeOptions(opts ...SubscribeOption) *SubscribeOptions {
+	o := DefaultSubscribeOptions()
+	for _, opt := range opts {
+		opt(o)
+	}
+	return o
+}
+
 // Transport manages message delivery for events
 type Transport interface {
 	// RegisterEvent creates resources for an event (topic, stream, etc.)
@@ -128,12 +282,27 @@ type Transport interface {
 	// Returns nil if no subscribers (message is dropped)
 	Publish(ctx context.Context, name string, msg Message) error
 
-	// Subscribe creates a subscription to receive messages for an event
-	// mode determines delivery semantics:
-	//   - Broadcast: all subscribers receive every message
-	//   - WorkerPool: only one subscriber receives each message
+	// Subscribe creates a subscription to receive messages for an event.
+	// Default is Broadcast mode (all subscribers receive every message).
+	//
+	// Options:
+	//   - WithDeliveryMode: set delivery mode (Broadcast or WorkerPool)
+	//   - WithStartFrom: where to start reading (beginning, latest, timestamp)
+	//   - WithMaxAge: filter out messages older than a duration
+	//   - WithLatestOnly: only deliver most recent message (sampling mode)
+	//
+	// Example:
+	//
+	//   // Default: broadcast to all subscribers
+	//   sub, err := transport.Subscribe(ctx, "events")
+	//
+	//   // Worker pool with latest messages only
+	//   sub, err := transport.Subscribe(ctx, "tasks",
+	//       transport.WithDeliveryMode(transport.WorkerPool),
+	//       transport.WithStartFrom(transport.StartFromLatest))
+	//
 	// Returns ErrEventNotRegistered if event not registered
-	Subscribe(ctx context.Context, name string, mode DeliveryMode) (Subscription, error)
+	Subscribe(ctx context.Context, name string, opts ...SubscribeOption) (Subscription, error)
 
 	// Close shuts down the transport and all events
 	Close(ctx context.Context) error

@@ -269,18 +269,25 @@ func (t *CoreTransport) Publish(ctx context.Context, name string, msg transport.
 }
 
 // Subscribe creates a subscription to receive messages for an event
-func (t *CoreTransport) Subscribe(ctx context.Context, name string, mode transport.DeliveryMode) (transport.Subscription, error) {
+func (t *CoreTransport) Subscribe(ctx context.Context, name string, opts ...transport.SubscribeOption) (transport.Subscription, error) {
 	if !t.isOpen() {
 		return nil, transport.ErrTransportClosed
 	}
+
+	subOpts := transport.ApplySubscribeOptions(opts...)
 
 	if _, ok := t.events.Load(name); !ok {
 		return nil, transport.ErrEventNotRegistered
 	}
 
+	bufSize := 100
+	if subOpts.BufferSize > 0 {
+		bufSize = subOpts.BufferSize
+	}
+
 	sub := &coreSubscription{
 		id:               transport.NewID(),
-		ch:               make(chan transport.Message, 100),
+		ch:               make(chan transport.Message, bufSize),
 		closedCh:         make(chan struct{}),
 		codec:            t.codec,
 		idempotencyStore: t.idempotencyStore,
@@ -291,7 +298,7 @@ func (t *CoreTransport) Subscribe(ctx context.Context, name string, mode transpo
 	var natsSub *nats.Subscription
 	var err error
 
-	if mode == transport.WorkerPool {
+	if subOpts.DeliveryMode == transport.WorkerPool {
 		// Queue group for load balancing
 		natsSub, err = t.conn.QueueSubscribe(name, "workers", sub.handleMessage)
 	} else {
@@ -304,7 +311,7 @@ func (t *CoreTransport) Subscribe(ctx context.Context, name string, mode transpo
 	}
 
 	sub.sub = natsSub
-	t.logger.Debug("subscribed", "event", name, "subscriber", sub.id, "mode", mode)
+	t.logger.Debug("subscribed", "event", name, "subscriber", sub.id, "mode", subOpts.DeliveryMode)
 
 	return sub, nil
 }

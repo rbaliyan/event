@@ -133,6 +133,11 @@ type Middleware[T any] func(Handler[T]) Handler[T]
 // subscribeOptions holds configuration for subscriptions
 type subscribeOptions[T any] struct {
 	mode       transport.DeliveryMode
+	startFrom  transport.StartPosition
+	startTime  time.Time
+	maxAge     time.Duration
+	latestOnly bool
+	bufferSize int
 	middleware []Middleware[T]
 }
 
@@ -142,12 +147,42 @@ type SubscribeOption[T any] func(*subscribeOptions[T])
 // newSubscribeOptions creates options with defaults and applies provided options
 func newSubscribeOptions[T any](opts ...SubscribeOption[T]) *subscribeOptions[T] {
 	o := &subscribeOptions[T]{
-		mode: transport.Broadcast, // Default to broadcast (all receive)
+		mode:      transport.Broadcast,        // Default to broadcast (all receive)
+		startFrom: transport.StartFromBeginning, // Default to processing all historical messages
 	}
 	for _, opt := range opts {
 		opt(o)
 	}
 	return o
+}
+
+// transportOptions converts event subscribe options to transport subscribe options
+func (o *subscribeOptions[T]) transportOptions() []transport.SubscribeOption {
+	opts := []transport.SubscribeOption{
+		transport.WithDeliveryMode(o.mode),
+	}
+
+	if o.startFrom != transport.StartFromBeginning {
+		opts = append(opts, transport.WithStartFrom(o.startFrom))
+	}
+
+	if !o.startTime.IsZero() {
+		opts = append(opts, transport.WithStartTime(o.startTime))
+	}
+
+	if o.maxAge > 0 {
+		opts = append(opts, transport.WithMaxAge(o.maxAge))
+	}
+
+	if o.latestOnly {
+		opts = append(opts, transport.WithLatestOnly())
+	}
+
+	if o.bufferSize > 0 {
+		opts = append(opts, transport.WithBufferSize(o.bufferSize))
+	}
+
+	return opts
 }
 
 // AsWorker configures the subscription to use worker pool mode.
@@ -164,6 +199,74 @@ func AsWorker[T any]() SubscribeOption[T] {
 func AsBroadcast[T any]() SubscribeOption[T] {
 	return func(o *subscribeOptions[T]) {
 		o.mode = transport.Broadcast
+	}
+}
+
+// FromLatest configures the subscription to only receive new messages.
+// Historical messages that existed before the subscription are skipped.
+// Use this for real-time dashboards or notifications that don't need history.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler, event.FromLatest[Order]())
+func FromLatest[T any]() SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.startFrom = transport.StartFromLatest
+	}
+}
+
+// FromTimestamp configures the subscription to start from a specific time.
+// Messages before this time are skipped.
+// Use this to resume processing from a known checkpoint.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler, event.FromTimestamp[Order](lastProcessedTime))
+func FromTimestamp[T any](t time.Time) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.startFrom = transport.StartFromTimestamp
+		o.startTime = t
+	}
+}
+
+// WithMaxAge filters out messages older than the specified duration.
+// Messages older than (now - maxAge) are silently skipped.
+// Use this to avoid processing stale events after a service restart.
+//
+// Example:
+//
+//	// Only process messages from the last 5 minutes
+//	orderEvent.Subscribe(ctx, handler, event.WithMaxAge[Order](5*time.Minute))
+func WithMaxAge[T any](maxAge time.Duration) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.maxAge = maxAge
+	}
+}
+
+// WithLatestOnly enables sampling mode where only the most recent message
+// is delivered. If multiple messages arrive while processing, intermediate
+// messages are dropped and only the latest is kept.
+// Use this for real-time state updates where only the current value matters.
+//
+// Example:
+//
+//	// Real-time price updates - only care about current price
+//	priceEvent.Subscribe(ctx, handler, event.WithLatestOnly[Price]())
+func WithLatestOnly[T any]() SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.latestOnly = true
+	}
+}
+
+// WithBufferSize sets the message channel buffer size.
+// Use this to control backpressure behavior.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler, event.WithBufferSize[Order](1000))
+func WithBufferSize[T any](size int) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.bufferSize = size
 	}
 }
 

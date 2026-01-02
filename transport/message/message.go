@@ -6,6 +6,7 @@ package message
 
 import (
 	"context"
+	"time"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -20,6 +21,8 @@ type Message interface {
 	Payload() any
 	// Metadata returns optional key-value metadata
 	Metadata() map[string]string
+	// Timestamp returns when the message was created/published
+	Timestamp() time.Time
 	// RetryCount returns the number of times this message has been retried
 	RetryCount() int
 	// Context returns a context with trace information (if available)
@@ -34,16 +37,18 @@ type message struct {
 	source     string
 	payload    any
 	metadata   map[string]string
+	timestamp  time.Time
 	span       trace.SpanContext
 	retryCount int
 	ackFn      func(error) error
 }
 
-func (m *message) ID() string              { return m.id }
-func (m *message) Source() string          { return m.source }
-func (m *message) Payload() any            { return m.payload }
+func (m *message) ID() string                  { return m.id }
+func (m *message) Source() string              { return m.source }
+func (m *message) Payload() any                { return m.payload }
 func (m *message) Metadata() map[string]string { return m.metadata }
-func (m *message) RetryCount() int         { return m.retryCount }
+func (m *message) Timestamp() time.Time        { return m.timestamp }
+func (m *message) RetryCount() int             { return m.retryCount }
 func (m *message) Context() context.Context {
 	return trace.ContextWithRemoteSpanContext(context.Background(), m.span)
 }
@@ -54,14 +59,15 @@ func (m *message) Ack(err error) error {
 	return nil
 }
 
-// New creates a new message
+// New creates a new message with current timestamp
 func New(id, source string, payload any, metadata map[string]string, spanCtx trace.SpanContext) Message {
 	return &message{
-		id:       id,
-		source:   source,
-		payload:  payload,
-		metadata: metadata,
-		span:     spanCtx,
+		id:        id,
+		source:    source,
+		payload:   payload,
+		metadata:  metadata,
+		timestamp: time.Now(),
+		span:      spanCtx,
 	}
 }
 
@@ -72,8 +78,22 @@ func NewWithRetry(id, source string, payload any, metadata map[string]string, sp
 		source:     source,
 		payload:    payload,
 		metadata:   metadata,
+		timestamp:  time.Now(),
 		span:       spanCtx,
 		retryCount: retryCount,
+	}
+}
+
+// NewWithTimestamp creates a new message with a specific timestamp.
+// Use this when reconstructing messages from storage where the original timestamp is known.
+func NewWithTimestamp(id, source string, payload any, metadata map[string]string, spanCtx trace.SpanContext, timestamp time.Time) Message {
+	return &message{
+		id:        id,
+		source:    source,
+		payload:   payload,
+		metadata:  metadata,
+		timestamp: timestamp,
+		span:      spanCtx,
 	}
 }
 
@@ -85,6 +105,21 @@ func NewWithAck(id, source string, payload any, metadata map[string]string, retr
 		source:     source,
 		payload:    payload,
 		metadata:   metadata,
+		timestamp:  time.Now(),
+		retryCount: retryCount,
+		ackFn:      ackFn,
+	}
+}
+
+// NewFull creates a new message with all fields specified.
+// This is the most flexible constructor for advanced use cases.
+func NewFull(id, source string, payload any, metadata map[string]string, timestamp time.Time, retryCount int, ackFn func(error) error) Message {
+	return &message{
+		id:         id,
+		source:     source,
+		payload:    payload,
+		metadata:   metadata,
+		timestamp:  timestamp,
 		retryCount: retryCount,
 		ackFn:      ackFn,
 	}

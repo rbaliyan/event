@@ -3,6 +3,7 @@ package dlq
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -10,6 +11,18 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// isNamespaceNotFoundError checks if the error is a MongoDB namespace not found error.
+// This occurs when querying collection stats for a non-existent collection.
+func isNamespaceNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "ns not found") ||
+		strings.Contains(errStr, "NamespaceNotFound") ||
+		strings.Contains(errStr, "Collection") && strings.Contains(errStr, "not found")
+}
 
 /*
 MongoDB Schema:
@@ -83,9 +96,19 @@ func FromMessage(m *Message) *MongoMessage {
 	}
 }
 
+// CappedInfo contains information about a capped collection
+type CappedInfo struct {
+	Capped   bool  // Whether the collection is capped
+	Size     int64 // Maximum size in bytes
+	MaxDocs  int64 // Maximum number of documents (0 = unlimited)
+	StorSize int64 // Current storage size in bytes
+	Count    int64 // Current document count
+}
+
 // MongoStore is a MongoDB-based DLQ store
 type MongoStore struct {
 	collection *mongo.Collection
+	cappedInfo *CappedInfo // Cached capped info (nil = not checked yet)
 }
 
 // NewMongoStore creates a new MongoDB DLQ store
@@ -106,9 +129,15 @@ func (s *MongoStore) Collection() *mongo.Collection {
 	return s.collection
 }
 
-// EnsureIndexes creates the required indexes for the DLQ collection
-func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
-	indexes := []mongo.IndexModel{
+// Indexes returns the required indexes for the DLQ collection.
+// Users can use this to create indexes manually or merge with their own indexes.
+//
+// Example:
+//
+//	indexes := store.Indexes()
+//	_, err := collection.Indexes().CreateMany(ctx, indexes)
+func (s *MongoStore) Indexes() []mongo.IndexModel {
+	return []mongo.IndexModel{
 		{
 			Keys: bson.D{{Key: "event_name", Value: 1}},
 		},
@@ -126,9 +155,121 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 			},
 		},
 	}
+}
 
-	_, err := s.collection.Indexes().CreateMany(ctx, indexes)
+// EnsureIndexes creates the required indexes for the DLQ collection
+func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
+	_, err := s.collection.Indexes().CreateMany(ctx, s.Indexes())
 	return err
+}
+
+// IsCapped returns whether the collection is a capped collection.
+// The result is cached after the first call.
+func (s *MongoStore) IsCapped(ctx context.Context) (bool, error) {
+	info, err := s.GetCappedInfo(ctx)
+	if err != nil {
+		return false, err
+	}
+	return info.Capped, nil
+}
+
+// GetCappedInfo returns detailed information about the collection's capped status.
+// The result is cached after the first call.
+func (s *MongoStore) GetCappedInfo(ctx context.Context) (*CappedInfo, error) {
+	if s.cappedInfo != nil {
+		return s.cappedInfo, nil
+	}
+
+	info, err := s.fetchCappedInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	s.cappedInfo = info
+	return info, nil
+}
+
+// RefreshCappedInfo forces a refresh of the cached capped collection info.
+func (s *MongoStore) RefreshCappedInfo(ctx context.Context) (*CappedInfo, error) {
+	s.cappedInfo = nil
+	return s.GetCappedInfo(ctx)
+}
+
+// fetchCappedInfo queries MongoDB for collection stats to determine if capped.
+func (s *MongoStore) fetchCappedInfo(ctx context.Context) (*CappedInfo, error) {
+	var result bson.M
+	err := s.collection.Database().RunCommand(ctx, bson.D{
+		{Key: "collStats", Value: s.collection.Name()},
+	}).Decode(&result)
+
+	if err != nil {
+		// Collection might not exist yet - treat as non-capped
+		// MongoDB returns "ns not found" or similar for missing collections
+		if isNamespaceNotFoundError(err) {
+			return &CappedInfo{Capped: false}, nil
+		}
+		return nil, fmt.Errorf("collStats: %w", err)
+	}
+
+	info := &CappedInfo{}
+
+	if capped, ok := result["capped"].(bool); ok {
+		info.Capped = capped
+	}
+	if size, ok := result["maxSize"].(int64); ok {
+		info.Size = size
+	} else if size, ok := result["maxSize"].(int32); ok {
+		info.Size = int64(size)
+	}
+	if maxDocs, ok := result["max"].(int64); ok {
+		info.MaxDocs = maxDocs
+	} else if maxDocs, ok := result["max"].(int32); ok {
+		info.MaxDocs = int64(maxDocs)
+	}
+	if storSize, ok := result["storageSize"].(int64); ok {
+		info.StorSize = storSize
+	} else if storSize, ok := result["storageSize"].(int32); ok {
+		info.StorSize = int64(storSize)
+	}
+	if count, ok := result["count"].(int64); ok {
+		info.Count = count
+	} else if count, ok := result["count"].(int32); ok {
+		info.Count = int64(count)
+	}
+
+	return info, nil
+}
+
+// CreateCapped creates the collection as a capped collection.
+// This must be called before any documents are inserted.
+// Returns an error if the collection already exists.
+//
+// Parameters:
+//   - sizeBytes: Maximum size of the collection in bytes (required, minimum 4096)
+//   - maxDocs: Maximum number of documents (0 = no limit, only size matters)
+//
+// Example:
+//
+//	// Create 100MB capped collection for DLQ
+//	err := store.CreateCapped(ctx, 100*1024*1024, 0)
+//
+//	// Create capped collection with max 50000 DLQ messages
+//	err := store.CreateCapped(ctx, 100*1024*1024, 50000)
+func (s *MongoStore) CreateCapped(ctx context.Context, sizeBytes int64, maxDocs int64) error {
+	opts := options.CreateCollection().SetCapped(true).SetSizeInBytes(sizeBytes)
+	if maxDocs > 0 {
+		opts.SetMaxDocuments(maxDocs)
+	}
+
+	err := s.collection.Database().CreateCollection(ctx, s.collection.Name(), opts)
+	if err != nil {
+		return fmt.Errorf("create capped collection: %w", err)
+	}
+
+	// Refresh cached info
+	s.cappedInfo = nil
+
+	return nil
 }
 
 // Store adds a message to the DLQ
@@ -261,8 +402,18 @@ func (s *MongoStore) MarkRetried(ctx context.Context, id string) error {
 	return nil
 }
 
-// Delete removes a message from the DLQ
+// Delete removes a message from the DLQ.
+// For capped collections, this returns an error since deletion is not supported.
 func (s *MongoStore) Delete(ctx context.Context, id string) error {
+	// Check if capped - deletion not allowed on capped collections
+	capped, err := s.IsCapped(ctx)
+	if err != nil {
+		return fmt.Errorf("check capped: %w", err)
+	}
+	if capped {
+		return fmt.Errorf("delete not supported on capped collection")
+	}
+
 	filter := bson.M{"_id": id}
 
 	result, err := s.collection.DeleteOne(ctx, filter)
@@ -277,8 +428,19 @@ func (s *MongoStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// DeleteOlderThan removes messages older than the specified age
+// DeleteOlderThan removes messages older than the specified age.
+// For capped collections, this is a no-op since MongoDB handles cleanup automatically.
 func (s *MongoStore) DeleteOlderThan(ctx context.Context, age time.Duration) (int64, error) {
+	// Check if capped - deletion not allowed on capped collections
+	capped, err := s.IsCapped(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("check capped: %w", err)
+	}
+	if capped {
+		// Capped collections auto-cleanup, deletion not needed
+		return 0, nil
+	}
+
 	cutoff := time.Now().Add(-age)
 	filter := bson.M{
 		"created_at": bson.M{"$lt": cutoff},
@@ -292,8 +454,19 @@ func (s *MongoStore) DeleteOlderThan(ctx context.Context, age time.Duration) (in
 	return result.DeletedCount, nil
 }
 
-// DeleteByFilter removes messages matching the filter
+// DeleteByFilter removes messages matching the filter.
+// For capped collections, this is a no-op since MongoDB handles cleanup automatically.
 func (s *MongoStore) DeleteByFilter(ctx context.Context, filter Filter) (int64, error) {
+	// Check if capped - deletion not allowed on capped collections
+	capped, err := s.IsCapped(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("check capped: %w", err)
+	}
+	if capped {
+		// Capped collections auto-cleanup, deletion not needed
+		return 0, nil
+	}
+
 	mongoFilter := s.buildFilter(filter)
 
 	result, err := s.collection.DeleteMany(ctx, mongoFilter)

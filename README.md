@@ -28,12 +28,13 @@ A **production-grade event pub-sub library** for Go with support for distributed
 - **Batch Processing**: High-throughput batch handlers
 - **Rate Limiting**: Distributed rate limiting (Redis)
 - **Circuit Breaker**: Failure isolation pattern
-- **Schema Registry**: Payload validation and versioning
+- **Schema Registry**: Publisher-defined event configuration with subscriber auto-sync
 
 ### Observability
 - **OpenTelemetry Tracing**: Distributed tracing across services
 - **Prometheus Metrics**: Out-of-the-box monitoring
 - **Health Checks**: Transport health and consumer lag monitoring
+- **Event Monitoring**: Track event processing status, duration, and errors
 
 ## Installation
 
@@ -73,8 +74,8 @@ func main() {
     defer bus.Close(ctx)
 
     // Create and register a type-safe event
-    orderEvent, err := event.Register(ctx, bus, event.New[Order]("order.created"))
-    if err != nil {
+    orderEvent := event.New[Order]("order.created")
+    if err := event.Register(ctx, bus, orderEvent); err != nil {
         log.Fatal(err)
     }
 
@@ -527,7 +528,8 @@ func main() {
     )
     defer bus.Close(ctx)
 
-    orderEvent, _ := event.Register(ctx, bus, event.New[Order]("order.created"))
+    orderEvent := event.New[Order]("order.created")
+    event.Register(ctx, bus, orderEvent)
 
     // Subscriber is simple - no manual idempotency check needed!
     orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
@@ -651,7 +653,8 @@ func main() {
     )
     defer bus.Close(ctx)
 
-    orderEvent, _ := event.Register(ctx, bus, event.New[Order]("order.created"))
+    orderEvent := event.New[Order]("order.created")
+    event.Register(ctx, bus, orderEvent)
 
     // Subscriber is simple - no manual poison check needed!
     orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
@@ -705,6 +708,507 @@ CREATE TABLE poison_quarantine (
     reason TEXT
 );
 ```
+
+## Resumable Subscriptions (Checkpoints)
+
+Enable "start from latest, resume on reconnect" semantics for subscribers. Perfect for real-time consumers that don't need historical backlog but shouldn't miss messages during restarts.
+
+### How It Works
+
+1. **First connection** (no checkpoint): Starts from latest messages only - no historical backlog
+2. **Processing**: Checkpoint saved after each successful message
+3. **Disconnect/Restart**: Resumes from last saved checkpoint - no missed messages
+
+### Basic Usage
+
+```go
+import "github.com/rbaliyan/event/v3/checkpoint"
+
+func main() {
+    ctx := context.Background()
+
+    // Create checkpoint store (Redis or MongoDB)
+    store := checkpoint.NewRedisStore(redisClient, "myapp:checkpoints")
+
+    // Subscribe with automatic checkpointing
+    orderEvent.Subscribe(ctx, handler,
+        event.WithCheckpoint[Order](store, "order-processor-1"),
+    )
+}
+```
+
+### Redis Checkpoint Store
+
+```go
+import "github.com/rbaliyan/event/v3/checkpoint"
+
+// Basic setup
+store := checkpoint.NewRedisStore(redisClient, "myapp:checkpoints")
+
+// With TTL (checkpoints expire after 7 days of inactivity)
+store := checkpoint.NewRedisStore(redisClient, "myapp:checkpoints",
+    checkpoint.WithTTL(7*24*time.Hour),
+)
+
+// Use with event
+orderEvent.Subscribe(ctx, handler,
+    event.WithCheckpoint[Order](store, "order-processor-1"),
+)
+```
+
+### MongoDB Checkpoint Store
+
+```go
+import "github.com/rbaliyan/event/v3/checkpoint"
+
+// Create store
+collection := mongoClient.Database("myapp").Collection("checkpoints")
+store := checkpoint.NewMongoStore(collection)
+
+// With TTL
+store := checkpoint.NewMongoStore(collection,
+    checkpoint.WithMongoTTL(7*24*time.Hour),
+)
+
+// Create indexes (call once at startup)
+store.EnsureIndexes(ctx)
+
+// Use with event
+orderEvent.Subscribe(ctx, handler,
+    event.WithCheckpoint[Order](store, "order-processor-1"),
+)
+```
+
+### Advanced: Separate Options
+
+For more control, use the resume and middleware options separately:
+
+```go
+// Resume from checkpoint (or start from latest if none exists)
+orderEvent.Subscribe(ctx, handler,
+    event.WithCheckpointResume[Order](store, "order-processor-1"),
+    event.WithMiddleware(event.CheckpointMiddleware[Order](store, "order-processor-1")),
+)
+
+// Override: Always start from latest (ignore existing checkpoint)
+orderEvent.Subscribe(ctx, handler,
+    event.FromLatest[Order](),
+    event.WithMiddleware(event.CheckpointMiddleware[Order](store, "order-processor-1")),
+)
+```
+
+### Checkpoint Store Methods
+
+| Method | Description |
+|--------|-------------|
+| `Save(ctx, id, position)` | Save checkpoint position |
+| `Load(ctx, id)` | Load last checkpoint (zero time if none) |
+| `Delete(ctx, id)` | Remove a checkpoint |
+| `DeleteAll(ctx)` | Remove all checkpoints |
+| `List(ctx)` | Get all subscriber IDs |
+| `GetAll(ctx)` | Get all checkpoints as map |
+| `GetCheckpointInfo(ctx, id)` | Get detailed info including updated_at |
+| `Indexes()` | Get index models (MongoDB only) |
+| `EnsureIndexes(ctx)` | Create indexes (MongoDB only) |
+
+### When to Use Checkpoints vs Consumer Groups
+
+| Scenario | Solution |
+|----------|----------|
+| Load balancing across workers | WorkerPool mode (consumer groups) |
+| Each instance processes all messages | Broadcast + Checkpoints |
+| Resume after restart | Checkpoints or Consumer Groups |
+| Real-time dashboard (no history) | `FromLatest()` + Checkpoints |
+| Event sourcing (need all history) | `FromBeginning()` (no checkpoint) |
+
+## Event Monitoring
+
+Track event processing status, duration, and errors for observability and debugging.
+
+### Bus-Level (Recommended)
+
+Configure once at bus creation - all subscribers automatically get monitoring:
+
+```go
+import "github.com/rbaliyan/event/v3/monitor"
+
+func main() {
+    ctx := context.Background()
+
+    // Create monitor store (PostgreSQL, MongoDB, or in-memory)
+    store := monitor.NewPostgresStore(db)
+
+    // Configure at bus level - all events get automatic monitoring
+    bus, _ := event.NewBus("order-service",
+        event.WithTransport(transport),
+        event.WithMonitor(store),
+    )
+    defer bus.Close(ctx)
+
+    orderEvent := event.New[Order]("order.created")
+    event.Register(ctx, bus, orderEvent)
+
+    // Subscriber is simple - monitoring happens automatically!
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+        return processOrder(ctx, order) // Just business logic
+    })
+
+    // Query monitoring data
+    page, _ := store.List(ctx, monitor.Filter{
+        Status:    []monitor.Status{monitor.StatusFailed},
+        StartTime: time.Now().Add(-time.Hour),
+        Limit:     100,
+    })
+
+    for _, entry := range page.Entries {
+        fmt.Printf("Event %s: %s (duration: %v)\n",
+            entry.EventID, entry.Status, entry.Duration)
+    }
+}
+```
+
+### Monitor HTTP API
+
+Expose monitoring data via REST API:
+
+```go
+import (
+    "net/http"
+    "github.com/rbaliyan/event/v3/monitor"
+    monitorhttp "github.com/rbaliyan/event/v3/monitor/http"
+)
+
+func main() {
+    store := monitor.NewMemoryStore()
+
+    // Create HTTP handler
+    handler := monitorhttp.New(store)
+
+    // Mount on your server with your own middleware
+    mux := http.NewServeMux()
+    mux.Handle("/", handler)
+
+    server := &http.Server{
+        Addr:    ":8080",
+        Handler: yourAuthMiddleware(mux),
+    }
+    server.ListenAndServe()
+}
+```
+
+**REST Endpoints:**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/v1/monitor/entries` | List entries with query filters |
+| GET | `/v1/monitor/entries/{event_id}` | Get all entries for an event |
+| GET | `/v1/monitor/entries/{event_id}/{subscription_id}` | Get specific entry |
+| GET | `/v1/monitor/entries/count` | Count entries with filters |
+| DELETE | `/v1/monitor/entries?older_than=1h` | Delete old entries |
+
+**Query Parameters:**
+- `event_id`, `subscription_id`, `event_name`, `bus_id` - Filter by identity
+- `status` - Filter by status (can be repeated: `?status=failed&status=pending`)
+- `has_error` - Filter by error presence (`true`/`false`)
+- `delivery_mode` - Filter by mode (`broadcast`/`worker_pool`)
+- `start_time`, `end_time` - Time range (RFC3339 format)
+- `min_duration` - Minimum duration (e.g., `100ms`, `1s`)
+- `cursor`, `limit`, `order_desc` - Pagination
+
+**Delete Safety:**
+- Default: deletes entries older than 24 hours
+- To delete newer entries: `?older_than=1h&force=true`
+
+### Monitor gRPC API
+
+Expose monitoring data via gRPC:
+
+```go
+import (
+    "github.com/rbaliyan/event/v3/monitor"
+    monitorgrpc "github.com/rbaliyan/event/v3/monitor/grpc"
+    "google.golang.org/grpc"
+)
+
+func main() {
+    store := monitor.NewMemoryStore()
+
+    // Create gRPC service
+    service := monitorgrpc.New(store)
+
+    // Register with your gRPC server
+    server := grpc.NewServer(
+        grpc.UnaryInterceptor(yourAuthInterceptor),
+    )
+    service.Register(server)
+
+    lis, _ := net.Listen("tcp", ":9090")
+    server.Serve(lis)
+}
+```
+
+### Manual Approach
+
+For fine-grained control, use the middleware directly:
+
+```go
+store := monitor.NewPostgresStore(db)
+
+orderEvent.Subscribe(ctx, handler,
+    event.WithMiddleware(monitor.Middleware[Order](store)),
+)
+```
+
+### Delivery Mode Tracking
+
+Monitor automatically detects and tracks delivery mode:
+
+- **Broadcast (Pub/Sub)**: Tracks per `(EventID, SubscriptionID)` - each subscriber's processing is separate
+- **WorkerPool (Queue)**: Tracks per `EventID` only - one worker processes each event
+
+```go
+// Get all entries for an event
+entries, _ := store.GetByEventID(ctx, "evt-123")
+
+// Broadcast mode: multiple entries (one per subscriber)
+// WorkerPool mode: single entry
+for _, e := range entries {
+    fmt.Printf("Subscriber %s: %s\n", e.SubscriptionID, e.Status)
+}
+```
+
+**PostgreSQL Schema for Monitoring:**
+```sql
+CREATE TABLE monitor_entries (
+    event_id TEXT NOT NULL,
+    subscription_id TEXT NOT NULL DEFAULT '',
+    event_name TEXT NOT NULL,
+    bus_id TEXT NOT NULL,
+    delivery_mode TEXT NOT NULL,
+    metadata JSONB,
+    status TEXT NOT NULL,
+    error TEXT,
+    retry_count INT DEFAULT 0,
+    started_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+    duration_ms BIGINT,
+    trace_id TEXT,
+    span_id TEXT,
+    PRIMARY KEY (event_id, subscription_id)
+);
+CREATE INDEX idx_monitor_event_name ON monitor_entries(event_name);
+CREATE INDEX idx_monitor_status ON monitor_entries(status);
+CREATE INDEX idx_monitor_started_at ON monitor_entries(started_at);
+CREATE INDEX idx_monitor_delivery_mode ON monitor_entries(delivery_mode);
+```
+
+## Schema Registry
+
+Define event processing configuration centrally and ensure all subscribers use consistent settings.
+
+### Overview
+
+The Schema Registry enables **publishers** to define event configuration (timeouts, retries, feature flags) that **subscribers** automatically load when events are registered. This ensures all workers processing the same event have consistent settings across distributed systems.
+
+### Bus-Level Configuration (Recommended)
+
+```go
+import "github.com/rbaliyan/event/v3/schema"
+
+func main() {
+    ctx := context.Background()
+
+    // Create schema provider (in-memory, PostgreSQL, MongoDB, or Redis)
+    provider := schema.NewMemoryProvider()
+    defer provider.Close()
+
+    // Configure bus with schema provider and middleware stores
+    bus, _ := event.NewBus("order-service",
+        event.WithTransport(transport),
+        event.WithSchemaProvider(provider),
+        event.WithIdempotency(idempStore),     // Required if schema enables idempotency
+        event.WithPoisonDetection(detector),   // Required if schema enables poison detection
+        event.WithMonitor(monitorStore),       // Required if schema enables monitoring
+    )
+    defer bus.Close(ctx)
+
+    // Publisher: Register schema before events are created
+    provider.Set(ctx, &schema.EventSchema{
+        Name:              "order.created",
+        Version:           1,
+        Description:       "Order creation event",
+        SubTimeout:        30 * time.Second,
+        MaxRetries:        3,
+        EnableMonitor:     true,
+        EnableIdempotency: true,
+        EnablePoison:      false,
+    })
+
+    // Subscriber: Schema is auto-loaded on Register()
+    orderEvent := event.New[Order]("order.created")
+    event.Register(ctx, bus, orderEvent) // Loads schema automatically
+
+    // Subscribe - middleware is controlled by schema flags
+    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+        return processOrder(ctx, order) // Just business logic!
+    })
+}
+```
+
+### Schema Providers
+
+#### In-Memory (Testing)
+
+```go
+provider := schema.NewMemoryProvider()
+defer provider.Close()
+```
+
+#### PostgreSQL
+
+```go
+import "github.com/rbaliyan/event/v3/schema"
+
+// Create provider with notification callback
+provider := schema.NewPostgresProvider(db, func(ctx context.Context, change schema.SchemaChangeEvent) error {
+    // Optionally notify other services about schema changes
+    return nil
+})
+defer provider.Close()
+
+// Create table (for development/testing)
+provider.CreateTable(ctx)
+
+// Or use custom table name
+provider := schema.NewPostgresProvider(db, callback,
+    schema.WithTableName("custom_schemas"),
+)
+```
+
+**PostgreSQL Schema:**
+```sql
+CREATE TABLE event_schemas (
+    name TEXT PRIMARY KEY,
+    version INT NOT NULL DEFAULT 1,
+    description TEXT,
+    sub_timeout_ms BIGINT,
+    max_retries INT,
+    retry_backoff_ms BIGINT,
+    enable_monitor BOOLEAN DEFAULT false,
+    enable_idempotency BOOLEAN DEFAULT false,
+    enable_poison BOOLEAN DEFAULT false,
+    metadata JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_event_schemas_updated ON event_schemas(updated_at);
+```
+
+#### MongoDB
+
+```go
+import "github.com/rbaliyan/event/v3/schema"
+
+db := mongoClient.Database("myapp")
+provider := schema.NewMongoProvider(db, callback)
+defer provider.Close()
+
+// Create indexes
+provider.EnsureIndexes(ctx)
+
+// Or use custom collection
+provider.WithCollection("custom_schemas")
+```
+
+#### Redis
+
+```go
+import "github.com/rbaliyan/event/v3/schema"
+
+provider := schema.NewRedisProvider(redisClient, callback)
+defer provider.Close()
+
+// Or use custom hash key (default: "event:schemas")
+provider := schema.NewRedisProvider(redisClient, callback,
+    schema.WithKey("myapp:schemas"),
+)
+```
+
+### How Schema Flags Work
+
+When a schema is loaded, its flags control which middleware is applied:
+
+| Schema Flag | Effect |
+|-------------|--------|
+| `EnableMonitor: true` | Monitor middleware records processing metrics |
+| `EnableIdempotency: true` | Idempotency middleware prevents duplicate processing |
+| `EnablePoison: true` | Poison middleware quarantines failing messages |
+
+**Important:** The corresponding store must be configured on the bus for the flag to have effect:
+- `EnableMonitor` requires `WithMonitor(store)`
+- `EnableIdempotency` requires `WithIdempotency(store)`
+- `EnablePoison` requires `WithPoisonDetection(detector)`
+
+### Fallback Behavior
+
+When no schema exists for an event, the bus falls back to its default behavior:
+- All configured middleware stores are applied (monitor, idempotency, poison)
+- Event-level options (timeout, max retries) are used
+
+### Schema Versioning
+
+Schemas support versioning with automatic validation:
+
+```go
+// Version 1
+provider.Set(ctx, &schema.EventSchema{
+    Name:    "order.created",
+    Version: 1,
+    // ...
+})
+
+// Version 2 (must be >= previous version)
+provider.Set(ctx, &schema.EventSchema{
+    Name:    "order.created",
+    Version: 2,
+    // Updated configuration
+})
+
+// Downgrade attempt returns error
+err := provider.Set(ctx, &schema.EventSchema{
+    Name:    "order.created",
+    Version: 1, // Error: cannot downgrade
+})
+// err == schema.ErrVersionDowngrade
+```
+
+### Schema Watch (Real-time Updates)
+
+Providers support watching for schema changes:
+
+```go
+// Watch for changes
+changes, _ := provider.Watch(ctx)
+
+go func() {
+    for change := range changes {
+        fmt.Printf("Schema %s updated to version %d\n",
+            change.EventName, change.Version)
+        // Reload event configuration if needed
+    }
+}()
+```
+
+### Publisher vs Subscriber Control
+
+| Configuration | Owner | Rationale |
+|---------------|-------|-----------|
+| Monitor enable | Publisher | Consistent observability |
+| Idempotency enable | Publisher | Consistent dedup behavior |
+| Poison detection enable | Publisher | Consistent error handling |
+| Max retries | Publisher | Consistent retry policy |
+| Handler timeout | Publisher | Consistent SLA |
+| **Delivery mode** | **Subscriber** | Subscriber's architectural choice |
 
 ## Rate Limiting
 
@@ -799,7 +1303,9 @@ orderEvent.Subscribe(ctx, handler,
 | Outbox Relay | Idempotency | Codec |
 | Scheduler | Deduplication | Schema |
 | | Poison Detection | Transport |
-| | Rate Limiting | Transport Config |
+| | Checkpoint | Transport Config |
+| | Monitor | |
+| | Rate Limiting | |
 | | Batch Processing | |
 | | Circuit Breaker | |
 
@@ -813,6 +1319,9 @@ orderEvent.Subscribe(ctx, handler,
 | Scheduler | ✅ | ✅ | ✅ | - |
 | Idempotency | ✅ | - | ✅ | ✅ |
 | Poison | ✅ | - | ✅ | - |
+| Checkpoint | - | ✅ | ✅ | ✅ |
+| Monitor | ✅ | ✅ | - | ✅ |
+| Schema Registry | ✅ | ✅ | ✅ | ✅ |
 | Transaction | ✅ | ✅ | - | - |
 | Rate Limit | - | - | ✅ | - |
 

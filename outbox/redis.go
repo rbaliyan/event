@@ -63,24 +63,43 @@ func (m *RedisMessage) ToMessage() *Message {
 	}
 }
 
-// RedisStore implements outbox storage using Redis Streams
+// RedisStore implements outbox storage using Redis Streams with Consumer Groups.
+// Consumer Groups provide exactly-once delivery semantics for HA deployments.
 type RedisStore struct {
 	client        redis.Cmdable
 	pendingKey    string
 	publishedKey  string
 	failedPrefix  string
-	maxLen        int64 // Max stream length (0 = unlimited)
+	groupName     string // Consumer group name
+	consumerName  string // This instance's consumer name
+	maxLen        int64  // Max stream length (0 = unlimited)
 }
 
-// NewRedisStore creates a new Redis outbox store
+// NewRedisStore creates a new Redis outbox store with consumer group support.
+// Each relay instance should have a unique consumerName for proper HA operation.
 func NewRedisStore(client redis.Cmdable) *RedisStore {
 	return &RedisStore{
 		client:       client,
 		pendingKey:   "outbox:pending",
 		publishedKey: "outbox:published",
 		failedPrefix: "outbox:failed:",
+		groupName:    "outbox-relay",
+		consumerName: uuid.New().String(), // Unique per instance
 		maxLen:       0,
 	}
+}
+
+// WithConsumerName sets a custom consumer name for this relay instance.
+// Use a stable name (e.g., hostname or pod name) to properly track pending messages.
+func (s *RedisStore) WithConsumerName(name string) *RedisStore {
+	s.consumerName = name
+	return s
+}
+
+// WithGroupName sets a custom consumer group name.
+func (s *RedisStore) WithGroupName(name string) *RedisStore {
+	s.groupName = name
+	return s
 }
 
 // WithKeyPrefix sets a custom key prefix
@@ -134,19 +153,112 @@ func (s *RedisStore) Insert(ctx context.Context, msg *RedisMessage) (string, err
 	return streamID, nil
 }
 
-// GetPending retrieves pending messages for publishing
-func (s *RedisStore) GetPending(ctx context.Context, count int64) ([]*RedisMessage, error) {
-	results, err := s.client.XRange(ctx, s.pendingKey, "-", "+").Result()
+// EnsureGroup creates the consumer group if it doesn't exist.
+// Should be called at relay startup.
+func (s *RedisStore) EnsureGroup(ctx context.Context) error {
+	// Create group starting from the beginning of the stream
+	// MKSTREAM creates the stream if it doesn't exist
+	err := s.client.XGroupCreateMkStream(ctx, s.pendingKey, s.groupName, "0").Err()
 	if err != nil {
-		return nil, fmt.Errorf("xrange: %w", err)
+		// Ignore "BUSYGROUP" error - group already exists
+		if err.Error() != "BUSYGROUP Consumer Group name already exists" {
+			return fmt.Errorf("create group: %w", err)
+		}
+	}
+	return nil
+}
+
+// GetPending retrieves pending messages for publishing using consumer groups.
+// Uses XREADGROUP for exactly-once delivery in HA deployments.
+// Messages are automatically claimed by this consumer and must be acknowledged.
+func (s *RedisStore) GetPending(ctx context.Context, count int64) ([]*RedisMessage, error) {
+	// First, check for any pending messages this consumer owns but hasn't acked
+	// This handles relay restart scenarios
+	pendingMsgs, err := s.claimPendingMessages(ctx, count)
+	if err != nil {
+		return nil, fmt.Errorf("claim pending: %w", err)
+	}
+
+	// If we have enough from pending, return them
+	if int64(len(pendingMsgs)) >= count {
+		return pendingMsgs, nil
+	}
+
+	// Read new messages from the stream
+	remaining := count - int64(len(pendingMsgs))
+	streams, err := s.client.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    s.groupName,
+		Consumer: s.consumerName,
+		Streams:  []string{s.pendingKey, ">"},
+		Count:    remaining,
+		Block:    0, // Non-blocking
+	}).Result()
+
+	if err != nil {
+		if err == redis.Nil {
+			return pendingMsgs, nil // No new messages
+		}
+		return pendingMsgs, fmt.Errorf("xreadgroup: %w", err)
+	}
+
+	for _, stream := range streams {
+		for _, result := range stream.Messages {
+			msg, err := s.parseStreamMessage(result)
+			if err != nil {
+				continue
+			}
+			msg.StreamID = result.ID
+			pendingMsgs = append(pendingMsgs, msg)
+		}
+	}
+
+	return pendingMsgs, nil
+}
+
+// claimPendingMessages claims messages that are pending for this consumer.
+// This handles messages that were read but not acknowledged (e.g., relay crash).
+func (s *RedisStore) claimPendingMessages(ctx context.Context, count int64) ([]*RedisMessage, error) {
+	// Check pending entries for this consumer
+	pending, err := s.client.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream:   s.pendingKey,
+		Group:    s.groupName,
+		Consumer: s.consumerName,
+		Start:    "-",
+		End:      "+",
+		Count:    count,
+	}).Result()
+
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if len(pending) == 0 {
+		return nil, nil
+	}
+
+	// Claim these messages
+	var ids []string
+	for _, p := range pending {
+		ids = append(ids, p.ID)
+	}
+
+	claimed, err := s.client.XClaim(ctx, &redis.XClaimArgs{
+		Stream:   s.pendingKey,
+		Group:    s.groupName,
+		Consumer: s.consumerName,
+		MinIdle:  0,
+		Messages: ids,
+	}).Result()
+
+	if err != nil {
+		return nil, fmt.Errorf("xclaim: %w", err)
 	}
 
 	var messages []*RedisMessage
-	for i, result := range results {
-		if int64(i) >= count {
-			break
-		}
-
+	for _, result := range claimed {
 		msg, err := s.parseStreamMessage(result)
 		if err != nil {
 			continue
@@ -186,17 +298,21 @@ func (s *RedisStore) parseStreamMessage(msg redis.XMessage) (*RedisMessage, erro
 	return m, nil
 }
 
-// MarkPublished moves a message from pending to published
+// MarkPublished acknowledges a message as successfully published.
+// Uses XACK to remove from the consumer group's pending list.
 func (s *RedisStore) MarkPublished(ctx context.Context, streamID string) error {
-	// Delete from pending stream
-	if err := s.client.XDel(ctx, s.pendingKey, streamID).Err(); err != nil {
-		return fmt.Errorf("xdel: %w", err)
+	// Acknowledge the message in the consumer group
+	if err := s.client.XAck(ctx, s.pendingKey, s.groupName, streamID).Err(); err != nil {
+		return fmt.Errorf("xack: %w", err)
 	}
+
+	// Optionally delete from stream to save memory (message is already acked)
+	s.client.XDel(ctx, s.pendingKey, streamID)
 
 	return nil
 }
 
-// MarkFailed records a failed message
+// MarkFailed records a failed message and acknowledges it
 func (s *RedisStore) MarkFailed(ctx context.Context, streamID string, msg *RedisMessage, err error) error {
 	key := s.failedPrefix + msg.ID
 
@@ -214,10 +330,56 @@ func (s *RedisStore) MarkFailed(ctx context.Context, streamID string, msg *Redis
 		return fmt.Errorf("hset: %w", err)
 	}
 
-	// Delete from pending
+	// Acknowledge and delete from stream
+	s.client.XAck(ctx, s.pendingKey, s.groupName, streamID)
 	s.client.XDel(ctx, s.pendingKey, streamID)
 
 	return nil
+}
+
+// RecoverStuck claims messages from other consumers that have been pending too long.
+// This handles crashed relay instances. Should be called periodically.
+func (s *RedisStore) RecoverStuck(ctx context.Context, stuckDuration time.Duration) (int64, error) {
+	// Get all pending messages across all consumers
+	pending, err := s.client.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: s.pendingKey,
+		Group:  s.groupName,
+		Start:  "-",
+		End:    "+",
+		Count:  100,
+	}).Result()
+
+	if err != nil {
+		if err == redis.Nil {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("xpending: %w", err)
+	}
+
+	var recovered int64
+	minIdleMs := stuckDuration.Milliseconds()
+
+	for _, p := range pending {
+		// Only claim if idle longer than threshold
+		if p.Idle.Milliseconds() < minIdleMs {
+			continue
+		}
+
+		// Claim the message for this consumer
+		_, err := s.client.XClaim(ctx, &redis.XClaimArgs{
+			Stream:   s.pendingKey,
+			Group:    s.groupName,
+			Consumer: s.consumerName,
+			MinIdle:  stuckDuration,
+			Messages: []string{p.ID},
+		}).Result()
+
+		if err == nil {
+			recovered++
+		}
+	}
+
+	return recovered, nil
 }
 
 // RetryFailed moves failed messages back to pending
@@ -332,21 +494,23 @@ func (p *RedisPublisher) Publish(ctx context.Context, eventName string, payload 
 
 // RedisRelay polls the Redis outbox and publishes messages to the transport
 type RedisRelay struct {
-	store      *RedisStore
-	transport  transport.Transport
-	pollDelay  time.Duration
-	batchSize  int64
-	logger     *slog.Logger
+	store         *RedisStore
+	transport     transport.Transport
+	pollDelay     time.Duration
+	batchSize     int64
+	logger        *slog.Logger
+	stuckDuration time.Duration // How long before claiming messages from other consumers
 }
 
 // NewRedisRelay creates a new Redis outbox relay
 func NewRedisRelay(store *RedisStore, t transport.Transport) *RedisRelay {
 	return &RedisRelay{
-		store:     store,
-		transport: t,
-		pollDelay: 100 * time.Millisecond,
-		batchSize: 100,
-		logger:    slog.Default().With("component", "outbox.redis_relay"),
+		store:         store,
+		transport:     t,
+		pollDelay:     100 * time.Millisecond,
+		batchSize:     100,
+		logger:        slog.Default().With("component", "outbox.redis_relay"),
+		stuckDuration: 5 * time.Minute, // Claim messages from crashed consumers after 5 min
 	}
 }
 
@@ -368,10 +532,37 @@ func (r *RedisRelay) WithLogger(l *slog.Logger) *RedisRelay {
 	return r
 }
 
-// Start begins polling the outbox
+// WithStuckDuration sets how long a message can be pending before claiming from other consumers.
+// Messages that have been pending longer than this duration in another consumer's queue
+// will be claimed by this relay. This handles crashed relay instances.
+// Default: 5 minutes
+func (r *RedisRelay) WithStuckDuration(d time.Duration) *RedisRelay {
+	r.stuckDuration = d
+	return r
+}
+
+// Start begins polling the outbox.
+// Creates the consumer group if it doesn't exist and starts the polling loop.
+// Also periodically recovers messages stuck in other consumers (from crashed relays).
 func (r *RedisRelay) Start(ctx context.Context) error {
+	// Ensure consumer group exists
+	if err := r.store.EnsureGroup(ctx); err != nil {
+		return fmt.Errorf("ensure group: %w", err)
+	}
+
+	r.logger.Info("started redis outbox relay",
+		"consumer", r.store.consumerName,
+		"group", r.store.groupName)
+
 	ticker := time.NewTicker(r.pollDelay)
 	defer ticker.Stop()
+
+	// Recovery ticker for stuck messages (check every minute)
+	recoveryTicker := time.NewTicker(time.Minute)
+	defer recoveryTicker.Stop()
+
+	// Recover any stuck messages at startup
+	r.recoverStuck(ctx)
 
 	for {
 		select {
@@ -379,6 +570,8 @@ func (r *RedisRelay) Start(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			r.publishPending(ctx)
+		case <-recoveryTicker.C:
+			r.recoverStuck(ctx)
 		}
 	}
 }
@@ -429,6 +622,22 @@ func (r *RedisRelay) publishMessage(ctx context.Context, msg *RedisMessage) erro
 	)
 
 	return r.transport.Publish(ctx, msg.EventName, transportMsg)
+}
+
+// recoverStuck claims messages from other consumers that have been pending too long.
+// This handles crashed relay instances.
+func (r *RedisRelay) recoverStuck(ctx context.Context) {
+	recovered, err := r.store.RecoverStuck(ctx, r.stuckDuration)
+	if err != nil {
+		r.logger.Error("failed to recover stuck messages", "error", err)
+		return
+	}
+
+	if recovered > 0 {
+		r.logger.Warn("recovered stuck messages from other consumers",
+			"count", recovered,
+			"stuck_duration", r.stuckDuration)
+	}
 }
 
 // PublishOnce processes pending messages once

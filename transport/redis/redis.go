@@ -26,7 +26,7 @@ import (
 )
 
 // Client defines the interface for Redis client operations.
-// Supports both *redis.Client and *redis.ClusterClient.
+// Supports *redis.Client, *redis.ClusterClient, and redis.UniversalClient.
 type Client interface {
 	XAdd(ctx context.Context, a *redis.XAddArgs) *redis.StringCmd
 	XGroupCreateMkStream(ctx context.Context, stream, group, start string) *redis.StatusCmd
@@ -242,10 +242,12 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 }
 
 // Subscribe creates a subscription to receive messages for an event
-func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.DeliveryMode) (transport.Subscription, error) {
+func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transport.SubscribeOption) (transport.Subscription, error) {
 	if !t.isOpen() {
 		return nil, transport.ErrTransportClosed
 	}
+
+	subOpts := transport.ApplySubscribeOptions(opts...)
 
 	if _, ok := t.events.Load(name); !ok {
 		return nil, transport.ErrEventNotRegistered
@@ -254,16 +256,26 @@ func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.D
 	streamName := t.streamName(name)
 	subID := transport.NewID()
 
+	// Determine start position for Redis stream
+	// "0" = from beginning, "$" = from latest (new messages only)
+	startID := "0"
+	if subOpts.StartFrom == transport.StartFromLatest {
+		startID = "$"
+	} else if subOpts.StartFrom == transport.StartFromTimestamp && !subOpts.StartTime.IsZero() {
+		// Redis stream IDs are millisecond timestamps
+		startID = fmt.Sprintf("%d-0", subOpts.StartTime.UnixMilli())
+	}
+
 	var groupID string
-	if mode == transport.WorkerPool {
+	if subOpts.DeliveryMode == transport.WorkerPool {
 		// WorkerPool: same consumer group (load balancing)
 		groupID = t.groupID
 	} else {
 		// Broadcast: unique consumer group per subscriber (fan-out)
 		groupID = t.groupID + "-" + subID
 
-		// Create new consumer group for this subscriber, starting from now
-		err := t.client.XGroupCreateMkStream(ctx, streamName, groupID, "$").Err()
+		// Create new consumer group for this subscriber
+		err := t.client.XGroupCreateMkStream(ctx, streamName, groupID, startID).Err()
 		if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 			return nil, err
 		}
@@ -271,9 +283,14 @@ func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.D
 
 	subCtx, cancel := context.WithCancel(ctx)
 
+	bufSize := 100
+	if subOpts.BufferSize > 0 {
+		bufSize = subOpts.BufferSize
+	}
+
 	sub := &subscription{
 		id:            subID,
-		ch:            make(chan transport.Message, 100),
+		ch:            make(chan transport.Message, bufSize),
 		closedCh:      make(chan struct{}),
 		client:        t.client,
 		stream:        streamName,
@@ -284,7 +301,7 @@ func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.D
 		sendTimeout:   t.sendTimeout,
 		claimInterval: t.claimInterval,
 		claimMinIdle:  t.claimMinIdle,
-		isBroadcast:   mode == transport.Broadcast,
+		isBroadcast:   subOpts.DeliveryMode == transport.Broadcast,
 		// Reliability stores
 		idempotencyStore: t.idempotencyStore,
 		dlqHandler:       t.dlqHandler,
@@ -309,7 +326,7 @@ func (t *Transport) Subscribe(ctx context.Context, name string, mode transport.D
 		}()
 	}
 
-	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "group", groupID, "mode", mode)
+	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "group", groupID, "mode", subOpts.DeliveryMode, "start", startID)
 	return sub, nil
 }
 

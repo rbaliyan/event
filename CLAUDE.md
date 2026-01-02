@@ -109,7 +109,21 @@ func New(opts ...Option) *Client {
 
 **Context (context.go)** - Event metadata propagation through context, storing Event ID, Subscription ID, Source Bus ID, Metadata, Logger, and Bus reference.
 
-**Middleware (middleware.go)** - Built-in middleware for deduplication, circuit breaker, and custom handlers. Applied via `WithMiddleware()` subscribe option.
+**Middleware (middleware.go)** - Built-in middleware for deduplication, circuit breaker, monitoring, and custom handlers. Applied via `WithMiddleware()` subscribe option.
+
+**Monitor (monitor/)** - Event processing monitoring with mode-aware tracking:
+- Broadcast mode: tracks per `(EventID, SubscriptionID)`
+- WorkerPool mode: tracks per `EventID` only
+- Stores: PostgreSQL, MongoDB, in-memory
+- HTTP API: `monitor/http` - REST handler using protoJSON
+- gRPC API: `monitor/grpc` - gRPC service implementation
+- Shared protobuf definitions in `monitor/proto`
+
+**Schema Registry (schema/)** - Publisher-defined event configuration with subscriber auto-sync:
+- Publishers define event configuration (timeouts, retries, feature flags)
+- Subscribers auto-load schema on `Register()`
+- Schema flags control which middleware is applied
+- Providers: PostgreSQL, MongoDB, Redis, in-memory
 
 ### V3 Design
 
@@ -130,7 +144,14 @@ When a handler is subscribed, it's wrapped in this chain (innermost to outermost
 Recovery (panic handling)
   → Timeout (context deadline)
     → Custom middleware (via WithMiddleware)
+      → Idempotency (bus-level, controlled by schema if loaded)
+        → Poison detection (bus-level, controlled by schema if loaded)
+          → Monitor (bus-level, controlled by schema if loaded)
 ```
+
+**Schema-Controlled Middleware:**
+- When schema is loaded: middleware is only applied if `Enable*` flag is true AND store is configured
+- When no schema: falls back to bus-level middleware (if stores are configured)
 
 ### Key Design Patterns
 
@@ -148,3 +169,24 @@ Recovery (panic handling)
 - Metrics: enabled (OpenTelemetry)
 - Subscriber timeout: 0 (no timeout)
 - Delivery mode: Broadcast (all subscribers receive)
+
+### Monitor HTTP/gRPC API
+
+Handler-only approach - no server management, middleware, or auth. Integrating systems mount handlers with their own servers:
+
+**HTTP Handler (`monitor/http`):**
+- Implements `http.Handler` interface
+- Uses protoJSON for serialization
+- REST endpoints under `/v1/monitor/entries`
+- Query parameters for filtering
+- DELETE defaults to 24h, requires `force=true` for newer entries
+
+**gRPC Service (`monitor/grpc`):**
+- `New(store)` creates service
+- `Register(server *grpc.Server)` registers with gRPC server
+- Uses shared protobuf definitions from `monitor/proto`
+
+**Protobuf (`monitor/proto`):**
+- `monitor.proto` - service and message definitions
+- `convert.go` - type conversions between domain and protobuf types
+- Generate with: `protoc --go_out=. --go-grpc_out=. monitor.proto`

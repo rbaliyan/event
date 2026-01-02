@@ -104,6 +104,7 @@ import (
 //
 // Messages progress through these states:
 //   - StatusPending: Stored in outbox, waiting to be published
+//   - StatusProcessing: Claimed by a relay instance, being published (HA-safe)
 //   - StatusPublished: Successfully published to transport
 //   - StatusFailed: Failed to publish (will be retried or moved to DLQ)
 type Status string
@@ -111,6 +112,10 @@ type Status string
 const (
 	// StatusPending indicates the message is waiting to be published.
 	StatusPending Status = "pending"
+
+	// StatusProcessing indicates the message is claimed by a relay and being published.
+	// Used in HA deployments to prevent duplicate processing.
+	StatusProcessing Status = "processing"
 
 	// StatusPublished indicates the message was successfully published.
 	StatusPublished Status = "published"

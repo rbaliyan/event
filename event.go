@@ -70,6 +70,18 @@ func New[T any](name string, opts ...EventOption) Event[T] {
 	}
 }
 
+// schemaFlags stores which middleware features are enabled from schema.
+// These override bus-level settings when set.
+type schemaFlags struct {
+	loaded            bool // true if schema was loaded from provider
+	enableMonitor     bool
+	enableIdempotency bool
+	enablePoison      bool
+	subTimeout        time.Duration
+	maxRetries        int
+	retryBackoff      time.Duration
+}
+
 // eventImpl generic event implementation
 type eventImpl[T any] struct {
 	status     int32
@@ -77,9 +89,10 @@ type eventImpl[T any] struct {
 	size       int64
 	bus        *Bus
 	subTimeout time.Duration
-	onError    func(*Bus, string, error)                              // for panic recovery only
-	maxRetries int                                                    // max retry attempts (0 = unlimited)
-	dlqHandler func(ctx context.Context, msg message.Message, err error) error // dead letter queue handler (returns error if storage fails)
+	onError    func(*Bus, string, error)                                        // for panic recovery only
+	maxRetries int                                                              // max retry attempts (0 = unlimited)
+	dlqHandler func(ctx context.Context, msg message.Message, err error) error  // dead letter queue handler (returns error if storage fails)
+	schema     schemaFlags                                                      // schema-based configuration
 }
 
 func (e *eventImpl[T]) String() string {
@@ -115,6 +128,34 @@ func (e *eventImpl[T]) Unbind() bool {
 	}
 	e.bus = nil
 	return true
+}
+
+// applySchema applies schema settings to the event.
+// This is called during registration when a schema provider is configured.
+func (e *eventImpl[T]) applySchema(schema *EventSchema) {
+	if schema == nil {
+		return
+	}
+
+	e.schema = schemaFlags{
+		loaded:            true,
+		enableMonitor:     schema.EnableMonitor,
+		enableIdempotency: schema.EnableIdempotency,
+		enablePoison:      schema.EnablePoison,
+		subTimeout:        schema.SubTimeout,
+		maxRetries:        schema.MaxRetries,
+		retryBackoff:      schema.RetryBackoff,
+	}
+
+	// Apply schema timeout if event doesn't have one
+	if e.subTimeout == 0 && schema.SubTimeout > 0 {
+		e.subTimeout = schema.SubTimeout
+	}
+
+	// Apply schema max retries if event doesn't have one
+	if e.maxRetries == 0 && schema.MaxRetries > 0 {
+		e.maxRetries = schema.MaxRetries
+	}
 }
 
 // WithTimeout enable timeout for handlers
@@ -221,8 +262,11 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 
 	logger := e.bus.logger.With("event", e.name)
 
+	// Convert event-level options to transport options
+	transportOpts := subOpts.transportOptions()
+
 	// Subscribe via bus.Recv which handles metrics
-	sub, err := e.bus.Recv(ctx, e.name, subOpts.mode)
+	sub, err := e.bus.Recv(ctx, e.name, transportOpts...)
 	if err != nil {
 		return err
 	}
@@ -244,11 +288,30 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 	}
 
 	// Apply bus-level middleware (outermost - runs first)
-	if e.bus.idempotencyStore != nil {
-		wrappedHandler = IdempotencyMiddleware[T](e.bus.idempotencyStore)(wrappedHandler)
-	}
-	if e.bus.poisonDetector != nil {
-		wrappedHandler = PoisonMiddleware[T](e.bus.poisonDetector)(wrappedHandler)
+	// When schema is loaded, use schema flags to control middleware.
+	// Otherwise, fall back to bus-level stores (if configured).
+	if e.schema.loaded {
+		// Schema-controlled middleware: only apply if schema enables it AND store is configured
+		if e.schema.enableIdempotency && e.bus.idempotencyStore != nil {
+			wrappedHandler = IdempotencyMiddleware[T](e.bus.idempotencyStore)(wrappedHandler)
+		}
+		if e.schema.enablePoison && e.bus.poisonDetector != nil {
+			wrappedHandler = PoisonMiddleware[T](e.bus.poisonDetector)(wrappedHandler)
+		}
+		if e.schema.enableMonitor && e.bus.monitorStore != nil {
+			wrappedHandler = MonitorMiddleware[T](e.bus.monitorStore)(wrappedHandler)
+		}
+	} else {
+		// No schema: fall back to bus-level middleware (if stores are configured)
+		if e.bus.idempotencyStore != nil {
+			wrappedHandler = IdempotencyMiddleware[T](e.bus.idempotencyStore)(wrappedHandler)
+		}
+		if e.bus.poisonDetector != nil {
+			wrappedHandler = PoisonMiddleware[T](e.bus.poisonDetector)(wrappedHandler)
+		}
+		if e.bus.monitorStore != nil {
+			wrappedHandler = MonitorMiddleware[T](e.bus.monitorStore)(wrappedHandler)
+		}
 	}
 
 	go func() {
@@ -282,7 +345,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 
 					if e.dlqHandler != nil {
 						// Create a context for the DLQ handler
-						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), logger, e.bus)
+						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
 						if dlqErr := e.dlqHandler(dlqCtx, msg, decodeErr); dlqErr != nil {
 							// DLQ storage failed - DON'T ACK, let message be redelivered
 							logger.Error("DLQ handler failed for decode error, message will be retried",
@@ -306,7 +369,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 				}
 
 				// Update context values and call handler
-				handlerCtx := contextWithInfo(msg.Context(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), logger, e.bus)
+				handlerCtx := contextWithInfo(msg.Context(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
 				err := wrappedHandler(handlerCtx, e, typedData)
 
 				// Classify result and determine action
