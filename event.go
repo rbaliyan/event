@@ -18,6 +18,8 @@ import (
 var (
 	// ErrEventNotBound returned when operating on unbound event
 	ErrEventNotBound = errors.New("event not bound to bus")
+	// ErrInvalidSubscribeOptions returned when subscribe options are incompatible
+	ErrInvalidSubscribeOptions = errors.New("invalid subscribe options: WorkerGroup requires WorkerPool mode")
 )
 
 // Handler generic event handler.
@@ -291,6 +293,11 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 
 	// Apply subscribe options
 	subOpts := newSubscribeOptions(opts...)
+
+	// Validate options: WorkerGroup requires WorkerPool mode
+	if subOpts.workerGroup != "" && subOpts.mode == Broadcast {
+		return ErrInvalidSubscribeOptions
+	}
 
 	logger := e.bus.logger.With("event", e.name)
 

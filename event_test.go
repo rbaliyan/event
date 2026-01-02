@@ -458,7 +458,7 @@ func TestWorkerPoolDeliveryMode(t *testing.T) {
 	var counter3 int32
 	ch1 := make(chan struct{}, 1)
 
-	// Use AsWorker() to subscribe in worker pool mode
+	// Use WithDeliveryMode(WorkerPool) to subscribe in worker pool mode
 	if err := e.Subscribe(context.Background(), func(ctx context.Context, event Event[int32], data int32) error {
 		atomic.AddInt32(&counter1, 1)
 		if atomic.AddInt32(&counter, 1) >= total {
@@ -468,7 +468,7 @@ func TestWorkerPoolDeliveryMode(t *testing.T) {
 			}
 		}
 		return nil
-	}, AsWorker[int32]()); err != nil {
+	}, WithDeliveryMode[int32](WorkerPool)); err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
 	if err := e.Subscribe(context.Background(), func(ctx context.Context, event Event[int32], data int32) error {
@@ -480,7 +480,7 @@ func TestWorkerPoolDeliveryMode(t *testing.T) {
 			}
 		}
 		return nil
-	}, AsWorker[int32]()); err != nil {
+	}, WithDeliveryMode[int32](WorkerPool)); err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
 	if err := e.Subscribe(context.Background(), func(ctx context.Context, event Event[int32], data int32) error {
@@ -492,7 +492,7 @@ func TestWorkerPoolDeliveryMode(t *testing.T) {
 			}
 		}
 		return nil
-	}, AsWorker[int32]()); err != nil {
+	}, WithDeliveryMode[int32](WorkerPool)); err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
 	var i int32
@@ -555,7 +555,7 @@ func TestWorkerGroupDeliveryMode(t *testing.T) {
 			}
 		}
 		return nil
-	}, AsWorker[int32](), WithWorkerGroup[int32]("group-a"))
+	}, WithWorkerGroup[int32]("group-a"))
 
 	e.Subscribe(context.Background(), func(ctx context.Context, event Event[int32], data int32) error {
 		atomic.AddInt32(&groupAWorker2, 1)
@@ -566,7 +566,7 @@ func TestWorkerGroupDeliveryMode(t *testing.T) {
 			}
 		}
 		return nil
-	}, AsWorker[int32](), WithWorkerGroup[int32]("group-a"))
+	}, WithWorkerGroup[int32]("group-a"))
 
 	// Group B: 2 workers
 	e.Subscribe(context.Background(), func(ctx context.Context, event Event[int32], data int32) error {
@@ -578,7 +578,7 @@ func TestWorkerGroupDeliveryMode(t *testing.T) {
 			}
 		}
 		return nil
-	}, AsWorker[int32](), WithWorkerGroup[int32]("group-b"))
+	}, WithWorkerGroup[int32]("group-b"))
 
 	e.Subscribe(context.Background(), func(ctx context.Context, event Event[int32], data int32) error {
 		atomic.AddInt32(&groupBWorker2, 1)
@@ -589,7 +589,7 @@ func TestWorkerGroupDeliveryMode(t *testing.T) {
 			}
 		}
 		return nil
-	}, AsWorker[int32](), WithWorkerGroup[int32]("group-b"))
+	}, WithWorkerGroup[int32]("group-b"))
 
 	// Publish messages
 	for i := int32(0); i < total; i++ {
@@ -656,38 +656,38 @@ func TestWorkerGroupWithBroadcast(t *testing.T) {
 		}
 	}
 
-	// Broadcast subscribers (receive all messages)
+	// Broadcast subscribers (receive all messages) - default mode, no options needed
 	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
 		incrementAndCheck(&broadcast1)
 		return nil
-	}, AsBroadcast[string]())
+	})
 
 	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
 		incrementAndCheck(&broadcast2)
 		return nil
-	}, AsBroadcast[string]())
+	})
 
-	// Worker group A (compete within group)
+	// Worker group A (compete within group) - WithWorkerGroup auto-enables WorkerPool
 	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
 		incrementAndCheck(&workerA1)
 		return nil
-	}, AsWorker[string](), WithWorkerGroup[string]("group-a"))
+	}, WithWorkerGroup[string]("group-a"))
 
 	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
 		incrementAndCheck(&workerA2)
 		return nil
-	}, AsWorker[string](), WithWorkerGroup[string]("group-a"))
+	}, WithWorkerGroup[string]("group-a"))
 
 	// Default worker pool (no group - compete among themselves)
 	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
 		incrementAndCheck(&workerDefault1)
 		return nil
-	}, AsWorker[string]())
+	}, WithDeliveryMode[string](WorkerPool))
 
 	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
 		incrementAndCheck(&workerDefault2)
 		return nil
-	}, AsWorker[string]())
+	}, WithDeliveryMode[string](WorkerPool))
 
 	// Publish messages
 	for i := int32(0); i < total; i++ {

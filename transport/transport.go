@@ -276,24 +276,9 @@ func WithDeliveryMode(mode DeliveryMode) SubscribeOption {
 }
 
 // WithWorkerGroup sets the worker group name for WorkerPool mode.
-// Workers with the same group name compete for messages (load balancing).
-// Different groups each receive all messages (like broadcast between groups).
 //
-// This enables patterns like:
-//   - Multiple processing pipelines on the same event
-//   - Separate scaling for different workloads
-//
-// Example:
-//
-//	// Order processors compete within their group
-//	sub1, err := transport.Subscribe(ctx, "orders",
-//	    transport.WithDeliveryMode(transport.WorkerPool),
-//	    transport.WithWorkerGroup("order-processors"))
-//
-//	// Inventory updaters compete within their group (separate from order processors)
-//	sub2, err := transport.Subscribe(ctx, "orders",
-//	    transport.WithDeliveryMode(transport.WorkerPool),
-//	    transport.WithWorkerGroup("inventory-updaters"))
+// NOTE: This is primarily for internal use by the event layer.
+// Users should use event.WithWorkerGroup or event.AsWorker instead.
 func WithWorkerGroup(group string) SubscribeOption {
 	return func(o *SubscribeOptions) {
 		o.WorkerGroup = group

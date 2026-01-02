@@ -12,6 +12,16 @@ import (
 // MetadataContentType is the metadata key for payload encoding.
 const MetadataContentType = "Content-Type"
 
+// DeliveryMode determines how messages are distributed to subscribers
+type DeliveryMode int
+
+const (
+	// Broadcast delivers message to ALL subscribers (pub/sub fan-out)
+	Broadcast DeliveryMode = iota
+	// WorkerPool delivers message to ONE subscriber (load balancing across workers)
+	WorkerPool
+)
+
 // Default event configuration values
 var (
 	// DefaultSubscriberTimeout default subscriber timeout (0 = no timeout)
@@ -161,7 +171,7 @@ type Middleware[T any] func(Handler[T]) Handler[T]
 
 // subscribeOptions holds configuration for subscriptions
 type subscribeOptions[T any] struct {
-	mode        transport.DeliveryMode
+	mode        DeliveryMode
 	workerGroup string
 	startFrom   transport.StartPosition
 	startTime   time.Time
@@ -177,7 +187,7 @@ type SubscribeOption[T any] func(*subscribeOptions[T])
 // newSubscribeOptions creates options with defaults and applies provided options
 func newSubscribeOptions[T any](opts ...SubscribeOption[T]) *subscribeOptions[T] {
 	o := &subscribeOptions[T]{
-		mode:      transport.Broadcast,        // Default to broadcast (all receive)
+		mode:      Broadcast,                    // Default to broadcast (all receive)
 		startFrom: transport.StartFromBeginning, // Default to processing all historical messages
 	}
 	for _, opt := range opts {
@@ -188,8 +198,17 @@ func newSubscribeOptions[T any](opts ...SubscribeOption[T]) *subscribeOptions[T]
 
 // transportOptions converts event subscribe options to transport subscribe options
 func (o *subscribeOptions[T]) transportOptions() []transport.SubscribeOption {
+	// Convert event-level DeliveryMode to transport-level
+	var transportMode transport.DeliveryMode
+	switch o.mode {
+	case WorkerPool:
+		transportMode = transport.WorkerPool
+	default:
+		transportMode = transport.Broadcast
+	}
+
 	opts := []transport.SubscribeOption{
-		transport.WithDeliveryMode(o.mode),
+		transport.WithDeliveryMode(transportMode),
 	}
 
 	if o.workerGroup != "" {
@@ -219,47 +238,64 @@ func (o *subscribeOptions[T]) transportOptions() []transport.SubscribeOption {
 	return opts
 }
 
-// AsWorker configures the subscription to use worker pool mode.
-// In this mode, only one subscriber receives each message (load balancing).
-// Multiple workers compete for messages - each message is processed by exactly one worker.
-func AsWorker[T any]() SubscribeOption[T] {
-	return func(o *subscribeOptions[T]) {
-		o.mode = transport.WorkerPool
-	}
-}
-
-// AsBroadcast configures the subscription to use broadcast mode (default).
-// In this mode, all subscribers receive every message (fan-out).
-func AsBroadcast[T any]() SubscribeOption[T] {
-	return func(o *subscribeOptions[T]) {
-		o.mode = transport.Broadcast
-	}
-}
-
-// WithWorkerGroup sets the worker group name for WorkerPool mode.
-// Workers with the same group name compete for messages (load balancing).
-// Different groups each receive all messages (like broadcast between groups).
+// WithDeliveryMode sets the message delivery mode.
 //
-// This enables patterns like:
-//   - Multiple processing pipelines on the same event
-//   - Separate scaling for different workloads
+// Modes:
+//   - Broadcast (default): all subscribers receive every message
+//   - WorkerPool: each message is delivered to only ONE subscriber (load balancing)
+//
+// When using WorkerPool mode, use WithWorkerGroup to create named worker groups.
+// Workers in the same group compete for messages; different groups each receive all messages.
+//
+// Example:
+//
+//	// Broadcast mode (default)
+//	event.Subscribe(ctx, handler)
+//
+//	// Worker pool with default group
+//	event.Subscribe(ctx, handler, event.WithDeliveryMode[Order](event.WorkerPool))
+//
+//	// Worker pool with named group
+//	event.Subscribe(ctx, handler,
+//	    event.WithDeliveryMode[Order](event.WorkerPool),
+//	    event.WithWorkerGroup[Order]("processors"))
+func WithDeliveryMode[T any](mode DeliveryMode) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.mode = mode
+	}
+}
+
+// WithWorkerGroup sets the worker group name and automatically enables WorkerPool mode.
+// Workers with the same group name compete for messages (load balancing).
+// Different groups each receive all messages (broadcast between groups).
+//
+// Message flow:
+//
+//	Event
+//	  ├── Broadcast subscribers (no group) ──► ALL receive every message
+//	  ├── WorkerGroup "A" ──► ONE worker receives each message
+//	  │     ├── worker-a1
+//	  │     └── worker-a2
+//	  └── WorkerGroup "B" ──► ONE worker receives each message
+//	        ├── worker-b1
+//	        └── worker-b2
 //
 // Example:
 //
 //	// Order processors compete within their group
 //	orderEvent.Subscribe(ctx, processOrder,
-//	    event.AsWorker[Order](),
 //	    event.WithWorkerGroup[Order]("order-processors"))
 //
-//	// Inventory updaters compete within their group (separate from processors)
+//	// Inventory updaters in separate group (also receive all messages)
 //	orderEvent.Subscribe(ctx, updateInventory,
-//	    event.AsWorker[Order](),
 //	    event.WithWorkerGroup[Order]("inventory-updaters"))
 //
-//	// Both groups receive every message, but workers within each group compete
+//	// Broadcast subscriber (no group) - receives all messages
+//	orderEvent.Subscribe(ctx, logOrder)
 func WithWorkerGroup[T any](group string) SubscribeOption[T] {
 	return func(o *subscribeOptions[T]) {
 		o.workerGroup = group
+		o.mode = WorkerPool // Automatically enable worker pool mode
 	}
 }
 

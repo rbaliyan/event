@@ -4,8 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"time"
-
-	"github.com/rbaliyan/event/v3/transport"
 )
 
 const (
@@ -21,7 +19,7 @@ type eventContextData struct {
 	messageTime  time.Time
 	logger       *slog.Logger
 	bus          *Bus
-	deliveryMode transport.DeliveryMode
+	deliveryMode DeliveryMode
 }
 
 // contextKey
@@ -91,13 +89,13 @@ func ContextSubscriptionID(ctx context.Context) string {
 }
 
 // ContextDeliveryMode get delivery mode stored in context.
-// Returns transport.Broadcast (0) if not set.
-func ContextDeliveryMode(ctx context.Context) transport.DeliveryMode {
+// Returns Broadcast (0) if not set.
+func ContextDeliveryMode(ctx context.Context) DeliveryMode {
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
 		return s.deliveryMode
 	}
-	return transport.Broadcast
+	return Broadcast
 }
 
 // ContextMessageTime get message timestamp stored in context.
@@ -182,7 +180,7 @@ func ContextWithLogger(ctx context.Context, l *slog.Logger) context.Context {
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{logger: l})
 }
 
-func contextWithInfo(ctx context.Context, id, name, source, subID string, metadata map[string]string, msgTime time.Time, l *slog.Logger, b *Bus, mode transport.DeliveryMode) context.Context {
+func contextWithInfo(ctx context.Context, id, name, source, subID string, metadata map[string]string, msgTime time.Time, l *slog.Logger, b *Bus, mode DeliveryMode) context.Context {
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{
 		eventID:      id,
 		name:         name,

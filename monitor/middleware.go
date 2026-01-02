@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/rbaliyan/event/v3"
-	"github.com/rbaliyan/event/v3/transport"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -129,8 +128,8 @@ func detectDeliveryMode(ctx context.Context, explicitMode *DeliveryMode) Deliver
 	}
 
 	// Auto-detect from context
-	transportMode := event.ContextDeliveryMode(ctx)
-	if transportMode == transport.WorkerPool {
+	eventMode := event.ContextDeliveryMode(ctx)
+	if eventMode == event.WorkerPool {
 		return WorkerPool
 	}
 	return Broadcast
