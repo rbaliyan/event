@@ -1,0 +1,80 @@
+name: Development Release
+
+on:
+  push:
+    branches: [development]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create v3 Release Tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Run tests
+        run: go test -race ./...
+
+      - name: Get current version and increment patch
+        id: get_version
+        run: |
+          # Get the latest v3.x.x tag from git (exclude beta tags)
+          LATEST_TAG=$(git tag -l "v3.*" --sort=-v:refname | grep -v beta | head -n1)
+
+          if [ -z "$LATEST_TAG" ]; then
+            # No v3 tags exist, start at v3.0.0
+            NEW_VERSION="v3.0.0"
+            echo "No existing v3 tags found, starting at v3.0.0"
+          else
+            echo "Latest tag: $LATEST_TAG"
+
+            # Extract version numbers (v3.x.x format)
+            VERSION=${LATEST_TAG#v}
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f2)
+            PATCH=$(echo $VERSION | cut -d. -f3)
+
+            # Increment patch version
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+          fi
+
+          echo "New version: $NEW_VERSION"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if tag exists
+        id: check_tag
+        run: |
+          if git rev-parse "${{ steps.get_version.outputs.new_version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create and push version tag
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a ${{ steps.get_version.outputs.new_version }} -m "Release ${{ steps.get_version.outputs.new_version }}"
+          git push origin ${{ steps.get_version.outputs.new_version }}
+
+      - name: Create GitHub Release
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.new_version }}
+          name: ${{ steps.get_version.outputs.new_version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false

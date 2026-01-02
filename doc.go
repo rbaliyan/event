@@ -1,13 +1,11 @@
 // Package event provides mechanism for publishing and subscribing events using abstract transport.
-// Default available transport is a channel map with fan-out strategy.
+// Default available transport is a channel-based in-memory transport.
 //
-// V2 Architecture:
+// V3 Architecture:
 // - Generic events with compile-time type safety: Event[T] ensures publishers and subscribers use the same type
-// - Publish() and Subscribe() are fire-and-forget (void returns)
-// - Transport owns async behavior, error handling, and graceful shutdown
-// - Events are facts that happened - no error handling burden on callers
-//
-// To handle remote events other transports such as Redis or Nats can also be used.
+// - Bus owns infrastructure (transport, tracing, metrics, recovery)
+// - Events must be registered with a Bus before use
+// - Multiple transports: channel (in-memory), Redis Streams, NATS, Kafka
 //
 // Basic example with type safety:
 //
@@ -16,58 +14,62 @@
 //	    Name string
 //	}
 //
-//	e := event.New[User]("user.created")
-//	e.Subscribe(context.Background(), func(ctx context.Context, ev event.Event[User], user User) {
+//	// Create bus with transport
+//	bus, err := event.NewBus("my-app", event.WithBusTransport(channel.New()))
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer bus.Close(ctx)
+//
+//	// Create and register event
+//	userEvent := event.New[User]("user.created")
+//	if err := event.Register(ctx, bus, userEvent); err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	// Subscribe with type-safe handler
+//	userEvent.Subscribe(ctx, func(ctx context.Context, ev event.Event[User], user User) error {
 //	    fmt.Printf("User created: %s\n", user.Name)
+//	    return nil
 //	})
 //
-//	e.Publish(context.Background(), User{ID: "123", Name: "John"})
+//	// Publish
+//	userEvent.Publish(ctx, User{ID: "123", Name: "John"})
 //
-// With custom transport:
-//
-//	transport := event.NewChannelTransport(
-//	    event.WithTransportAsync(true),
-//	    event.WithTransportBufferSize(100),
-//	    event.WithTransportErrorHandler(func(err error) {
-//	        log.Printf("transport error: %v", err)
-//	    }),
-//	)
-//	e := event.New[User]("my-event", event.WithTransport(transport))
+// Bus Options:
+//   - WithBusTransport: set transport (required). Use channel.New(), redis.New(), etc.
+//   - WithBusTracing: enable/disable OpenTelemetry tracing. Default is true.
+//   - WithBusRecovery: enable/disable panic recovery in handlers. Default is true.
+//   - WithBusMetrics: enable/disable OpenTelemetry metrics. Default is true.
+//   - WithBusLogger: set logger for the bus.
 //
 // Event Options:
 //   - WithSubscriberTimeout: set handler execution timeout. Default is 0 (no timeout).
-//   - WithTracing: enable/disable OpenTelemetry tracing. Default is true.
-//   - WithRecovery: enable/disable panic recovery in handlers. Default is true.
-//   - WithMetrics: enable/disable Prometheus metrics. Default is true.
 //   - WithErrorHandler: set panic recovery error callback.
-//   - WithTransport: set custom transport. Default is NewChannelTransport().
-//   - WithLogger: set logger for event.
-//   - WithChannelBufferSize: set buffer size for default transport. Default is 100.
-//   - WithRegistry: set registry. Default is the global defaultRegistry.
+//   - WithMaxRetries: set max retry attempts before sending to DLQ. Default is 0 (unlimited).
+//   - WithDeadLetterQueue: set handler for permanently failed messages.
 //
-// Transport Options:
-//   - WithTransportAsync: enable/disable async handler execution. Default is true.
-//   - WithTransportBufferSize: set channel buffer size. Default is 100.
-//   - WithTransportTimeout: set send timeout per subscriber. Default is 0 (no timeout).
-//   - WithTransportErrorHandler: set error callback for transport errors.
-//   - WithTransportLogger: set logger for transport.
+// Subscribe Options:
+//   - AsWorker: use WorkerPool mode (load balancing - one subscriber receives each message).
+//   - AsBroadcast: use Broadcast mode (fan-out - all subscribers receive each message). Default.
+//   - WithMiddleware: add custom middleware to the handler chain.
 //
-// Registry:
-// Registry defines the scope of events. Within one registry there can be only one event
-// with a given name. Optionally registry also holds the prometheus.Registerer.
-// When Registry.Close() is called, all events registered in the registry will
-// stop publishing data and transports will gracefully shut down.
+// Bus Registry:
+// Buses are registered globally by name. Events can be accessed via full name syntax:
 //
-// Transport:
-// Transport defines the delivery layer used by events. Default is a channel-based transport.
-// Transports can be shared among events to create event aliases or send data across registries.
-// Transport.Close() blocks until all pending messages are delivered to subscriber channels.
+//	// Get event by full name
+//	ev, err := event.Get[User]("my-app://user.created")
+//
+//	// Publish by full name
+//	event.Publish(ctx, "my-app://user.created", User{ID: "1"})
+//
+// When Bus.Close() is called, all events registered with the bus will
+// stop publishing data and the transport will gracefully shut down.
 //
 // Type Safety:
 // Events are generic and ensure type safety at compile time:
 //
 //	// This compiles - correct type
-//	userEvent := event.New[User]("user.created")
 //	userEvent.Publish(ctx, User{ID: "1"})
 //
 //	// This won't compile - wrong type
@@ -76,10 +78,7 @@
 // Event Groups:
 // Events with the same type can be grouped:
 //
-//	events := event.Events[User]{
-//	    event.New[User]("user.created"),
-//	    event.New[User]("user.updated"),
-//	}
+//	events := event.Events[User]{userCreated, userUpdated}
 //	events.Subscribe(ctx, handler)  // Subscribe to all
 //	events.Publish(ctx, user)       // Publish to all
 package event

@@ -32,18 +32,20 @@ go mod tidy            # Clean up dependencies
 
 ### Constructor Pattern
 
-Use the `New(*Config, ...Option)`, `Start(ctx) error`, `Close(ctx) error` pattern:
+Use the `New(name, ...Option) (*T, error)`, `Close(ctx) error` pattern:
 
 ```go
-// New creates instance without errors, only validates/populates config
-func New(cfg *Config, opts ...Option) *Client
+// NewBus creates a bus and returns error if transport missing or duplicate name
+func NewBus(name string, opts ...BusOption) (*Bus, error)
 
-// Start initializes connections/resources (can return error)
-// Use Connect() for client-like systems, Start() for server-like systems
-func (c *Client) Start(ctx context.Context) error
+// New creates an unbound event (must be registered with a bus)
+func New[T any](name string, opts ...EventOption) Event[T]
+
+// Register binds event to bus (returns error if type mismatch or bus closed)
+func Register[T any](ctx context.Context, bus *Bus, event Event[T]) (Event[T], error)
 
 // Close gracefully shuts down
-func (c *Client) Close(ctx context.Context) error
+func (b *Bus) Close(ctx context.Context) error
 ```
 
 ### Options Pattern
@@ -86,35 +88,53 @@ func New(opts ...Option) *Client {
 ### Key Principles
 
 - Unexported config/options structs - only expose Option functions
-- `New()` never returns error - just creates instance
-- `Start()/Connect()` returns error - does actual initialization
+- `NewBus()` returns error - validates transport is provided and name is unique
+- `New[T]()` returns unbound event - must be registered with `Register()`
+- `Register()` returns error - does actual binding to bus and transport
 - Dependent field resolution happens after all options applied, before copying to client
 
 ## Architecture
 
 ### Core Components
 
-**Event (event.go)** - Central pub-sub implementation with `Publish()` and `Subscribe()` methods. Uses atomic operations for lock-free status management.
+**Bus (bus.go)** - Central event bus that manages events and their lifecycle. Owns transport, tracing, metrics, and recovery settings. Provides global bus registry with full name support (`busname://eventname`).
 
-**Registry (registry.go)** - Scopes events to a namespace with lifecycle management. Thread-safe event storage with RWMutex. Provides both instance-based and global default registry.
+**Event (event.go)** - Generic typed pub-sub implementation with `Publish()` and `Subscribe()` methods. Uses atomic operations for lock-free status management. Returns `ErrEventNotBound` if not registered.
 
-**Transport (transport.go)** - Pluggable transport layer with two implementations:
-- `channelMuxTransport`: Fan-out pattern - single input broadcasts to multiple subscriber channels (default)
-- `singleChannelTransport`: All subscribers receive from one shared channel
+**Transport (transport/)** - Pluggable transport layer with multiple implementations:
+- `channel`: In-memory channel-based transport
+- `redis`: Redis Streams transport with consumer groups
+- `nats`: NATS Core and JetStream transports
+- `kafka`: Apache Kafka transport with DLT support
 
-**Context (context.go)** - Event metadata propagation through context, storing Event ID, Subscription ID, Source Registry ID, Metadata, Logger, and Registry.
+**Context (context.go)** - Event metadata propagation through context, storing Event ID, Subscription ID, Source Bus ID, Metadata, Logger, and Bus reference.
 
-**Metrics (metric.go)** - Prometheus integration tracking published/subscribed/processed totals and current counts. Lazy initialization with dummy implementation for zero-overhead when disabled.
+**Middleware (middleware.go)** - Built-in middleware for deduplication, circuit breaker, monitoring, and custom handlers. Applied via `WithMiddleware()` subscribe option.
 
-### V2 Design
+**Monitor (monitor/)** - Event processing monitoring with mode-aware tracking:
+- Broadcast mode: tracks per `(EventID, SubscriptionID)`
+- WorkerPool mode: tracks per `EventID` only
+- Stores: PostgreSQL, MongoDB, in-memory
+- HTTP API: `monitor/http` - REST handler using protoJSON
+- gRPC API: `monitor/grpc` - gRPC service implementation
+- Shared protobuf definitions in `monitor/proto`
 
-Transport owns delivery semantics:
+**Schema Registry (schema/)** - Publisher-defined event configuration with subscriber auto-sync:
+- Publishers define event configuration (timeouts, retries, feature flags)
+- Subscribers auto-load schema on `Register()`
+- Schema flags control which middleware is applied
+- Providers: PostgreSQL, MongoDB, Redis, in-memory
+
+### V3 Design
+
+Bus owns infrastructure, Event owns routing:
 ```
-Event (routing + middleware)
-  └── Transport (delivery semantics)
-        ├── Async goroutine spawning
-        ├── Error handling via callback
-        └── Graceful shutdown
+Bus (transport, tracing, metrics, recovery)
+  └── Event (routing + type safety)
+        └── Transport (delivery semantics)
+              ├── Delivery modes (Broadcast/WorkerPool)
+              ├── Message acknowledgment
+              └── Graceful shutdown
 ```
 
 ### Middleware Chain Execution Order
@@ -122,22 +142,121 @@ Event (routing + middleware)
 When a handler is subscribed, it's wrapped in this chain (innermost to outermost):
 ```
 Recovery (panic handling)
-  → Tracing (OpenTelemetry spans)
-    → Metrics (Prometheus counters)
-      → Timeout (context deadline)
+  → Timeout (context deadline)
+    → Custom middleware (via WithMiddleware)
+      → Idempotency (bus-level, controlled by schema if loaded)
+        → Poison detection (bus-level, controlled by schema if loaded)
+          → Monitor (bus-level, controlled by schema if loaded)
 ```
+
+**Schema-Controlled Middleware:**
+- When schema is loaded: middleware is only applied if `Enable*` flag is true AND store is configured
+- When no schema: falls back to bus-level middleware (if stores are configured)
 
 ### Key Design Patterns
 
 - **Functional Options Pattern**: Configuration via `Option` functions
-- **Interface-Based Extensibility**: Transport and Metrics are interfaces for custom implementations
+- **Interface-Based Extensibility**: Transport is an interface for custom implementations
 - **Atomic Status Management**: `int32` status flags with CompareAndSwap for lock-free state checks
-- **Graceful Shutdown**: Registry shutdown broadcasts to all events via shutdown channel
-- **Fire-and-Forget**: `Publish()` and `Subscribe()` return void - events are facts that happened
+- **Graceful Shutdown**: Bus shutdown broadcasts to all events via shutdown channel
+- **Global Bus Registry**: Buses registered by name, events accessible via `busname://eventname`
+- **Type-Safe Generics**: `Event[T]` ensures compile-time type safety
 
 ### Default Configuration
 
-- Async: false (synchronous by default)
-- Buffer size: 0 (blocking) when sync, 100 when async
-- Worker pool size: 100 (when async enabled)
+- Tracing: enabled (OpenTelemetry)
+- Recovery: enabled (panic handling)
+- Metrics: enabled (OpenTelemetry)
 - Subscriber timeout: 0 (no timeout)
+- Delivery mode: Broadcast (all subscribers receive)
+
+### Delivery Modes
+
+Subscribe options control how messages are distributed:
+
+| Option | Mode | Behavior |
+|--------|------|----------|
+| `AsBroadcast[T]()` | Broadcast | All subscribers receive every message (default) |
+| `AsWorker[T]()` | WorkerPool | Only one subscriber receives each message |
+| `WithWorkerGroup[T](name)` | Named WorkerPool | Workers with same group compete; different groups each receive all messages |
+
+**Worker Groups** enable multiple processing pipelines on the same event:
+```go
+// Group A workers compete among themselves
+event.Subscribe(ctx, handler, AsWorker[T](), WithWorkerGroup[T]("group-a"))
+// Group B workers compete among themselves (separate from A)
+event.Subscribe(ctx, handler, AsWorker[T](), WithWorkerGroup[T]("group-b"))
+// Both groups receive all messages
+```
+
+**Transport Implementation:**
+- Redis: Separate consumer groups per worker group
+- Kafka: Separate consumer group IDs per worker group
+- NATS JetStream: Separate durable consumers per worker group
+- NATS Core: Separate queue groups per worker group
+- Channel: Custom fan-out to groups, round-robin within each
+
+### Transactional Outbox
+
+Bus-level outbox support for atomic database writes with event publishing:
+
+**Configuration:**
+```go
+store := outbox.NewMongoStore(db)
+bus, _ := event.NewBus("mybus",
+    event.WithTransport(transport),
+    event.WithOutbox(store),  // Enables outbox routing
+)
+```
+
+**Usage:**
+```go
+// Normal publish - goes directly to transport
+orderEvent.Publish(ctx, order)
+
+// Inside transaction - automatically routes to outbox
+err := outbox.Transaction(ctx, mongoClient, func(ctx context.Context) error {
+    _, err := ordersCol.InsertOne(ctx, order)
+    if err != nil {
+        return err
+    }
+    return orderEvent.Publish(ctx, order)  // Goes to outbox!
+})
+```
+
+**How it works:**
+1. `outbox.Transaction()` wraps the context with `event.WithOutboxTx(ctx, session)`
+2. `Bus.Send()` checks `event.InOutboxTx(ctx)` before publishing
+3. If inside transaction AND outbox configured: routes to `OutboxStore.Store()`
+4. Otherwise: publishes directly to transport
+5. Background relay polls outbox and publishes to transport
+
+**Interface:**
+```go
+type OutboxStore interface {
+    Store(ctx context.Context, eventName string, eventID string, payload []byte, metadata map[string]string) error
+}
+```
+
+**MongoDB Store** implements `event.OutboxStore` and extracts session from context via `event.OutboxTx(ctx)`.
+
+### Monitor HTTP/gRPC API
+
+Handler-only approach - no server management, middleware, or auth. Integrating systems mount handlers with their own servers:
+
+**HTTP Handler (`monitor/http`):**
+- Implements `http.Handler` interface
+- Uses protoJSON for serialization
+- REST endpoints under `/v1/monitor/entries`
+- Query parameters for filtering
+- DELETE defaults to 24h, requires `force=true` for newer entries
+
+**gRPC Service (`monitor/grpc`):**
+- `New(store)` creates service
+- `Register(server *grpc.Server)` registers with gRPC server
+- Uses shared protobuf definitions from `monitor/proto`
+
+**Protobuf (`monitor/proto`):**
+- `monitor.proto` - service and message definitions
+- `convert.go` - type conversions between domain and protobuf types
+- Generate with: `protoc --go_out=. --go-grpc_out=. monitor.proto`

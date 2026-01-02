@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package message;
+
+option go_package = "github.com/rbaliyan/event/v3/transport/message";
+
+// ProtoMessage is the wire format for event messages using Protocol Buffers.
+// Payload is stored as pre-encoded bytes.
+message ProtoMessage {
+  // Unique message identifier
+  string id = 1;
+
+  // Source of the message (usually bus ID)
+  string source = 2;
+
+  // Optional metadata key-value pairs
+  map<string, string> metadata = 3;
+
+  // Number of times this message has been retried
+  int32 retry_count = 4;
+
+  // Pre-encoded payload bytes
+  bytes payload = 5;
+}
