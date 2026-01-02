@@ -196,6 +196,50 @@ event.Subscribe(ctx, handler, AsWorker[T](), WithWorkerGroup[T]("group-b"))
 - NATS Core: Separate queue groups per worker group
 - Channel: Custom fan-out to groups, round-robin within each
 
+### Transactional Outbox
+
+Bus-level outbox support for atomic database writes with event publishing:
+
+**Configuration:**
+```go
+store := outbox.NewMongoStore(db)
+bus, _ := event.NewBus("mybus",
+    event.WithTransport(transport),
+    event.WithOutbox(store),  // Enables outbox routing
+)
+```
+
+**Usage:**
+```go
+// Normal publish - goes directly to transport
+orderEvent.Publish(ctx, order)
+
+// Inside transaction - automatically routes to outbox
+err := outbox.Transaction(ctx, mongoClient, func(ctx context.Context) error {
+    _, err := ordersCol.InsertOne(ctx, order)
+    if err != nil {
+        return err
+    }
+    return orderEvent.Publish(ctx, order)  // Goes to outbox!
+})
+```
+
+**How it works:**
+1. `outbox.Transaction()` wraps the context with `event.WithOutboxTx(ctx, session)`
+2. `Bus.Send()` checks `event.InOutboxTx(ctx)` before publishing
+3. If inside transaction AND outbox configured: routes to `OutboxStore.Store()`
+4. Otherwise: publishes directly to transport
+5. Background relay polls outbox and publishes to transport
+
+**Interface:**
+```go
+type OutboxStore interface {
+    Store(ctx context.Context, eventName string, eventID string, payload []byte, metadata map[string]string) error
+}
+```
+
+**MongoDB Store** implements `event.OutboxStore` and extracts session from context via `event.OutboxTx(ctx)`.
+
 ### Monitor HTTP/gRPC API
 
 Handler-only approach - no server management, middleware, or auth. Integrating systems mount handlers with their own servers:

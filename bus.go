@@ -223,6 +223,8 @@ type busOptions struct {
 	scheduler *EventScheduler
 	// Schema provider for dynamic event configuration
 	schemaProvider SchemaProvider
+	// Outbox store for transactional event publishing
+	outboxStore OutboxStore
 }
 
 // BusOption option function for bus configuration
@@ -398,6 +400,38 @@ func WithSchemaProvider(provider SchemaProvider) BusOption {
 	}
 }
 
+// WithOutbox configures an outbox store for transactional event publishing.
+// When set, calls to Publish() will automatically route to the outbox when
+// inside a transaction (detected via WithOutboxTx context).
+//
+// Normal publishes (outside transactions) still go directly to the transport.
+// This enables atomic "business operation + event publish" within database transactions.
+//
+// Example:
+//
+//	store := outbox.NewMongoStore(mongoClient, "events", "outbox")
+//	bus, _ := event.NewBus("my-app",
+//	    event.WithTransport(transport),
+//	    event.WithOutbox(store),
+//	)
+//
+//	// Normal publish - goes directly to transport
+//	orderEvent.Publish(ctx, order)
+//
+//	// Inside transaction - goes to outbox
+//	sess.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (any, error) {
+//	    ctx := event.WithOutboxTx(sessCtx, sessCtx)
+//	    ordersCol.UpdateOne(ctx, filter, update)
+//	    return nil, orderEvent.Publish(ctx, order) // Routed to outbox!
+//	})
+func WithOutbox(store OutboxStore) BusOption {
+	return func(o *busOptions) {
+		if store != nil {
+			o.outboxStore = store
+		}
+	}
+}
+
 // newBusOptions creates options with defaults and applies provided options
 func newBusOptions(opts ...BusOption) *busOptions {
 	o := &busOptions{
@@ -434,6 +468,8 @@ type Bus struct {
 	scheduler *EventScheduler
 	// Schema provider for dynamic event configuration
 	schemaProvider SchemaProvider
+	// Outbox store for transactional event publishing
+	outboxStore OutboxStore
 }
 
 // NewBus creates a new event bus and registers it in the global registry.
@@ -480,6 +516,7 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		monitorStore:     o.monitorStore,
 		scheduler:        o.scheduler,
 		schemaProvider:   o.schemaProvider,
+		outboxStore:      o.outboxStore,
 	}
 
 	// Register in global registry (use LoadOrStore to handle race condition)
@@ -557,6 +594,12 @@ func (b *Bus) Scheduler() *EventScheduler {
 // When configured, events automatically load their configuration from the registry.
 func (b *Bus) SchemaProvider() SchemaProvider {
 	return b.schemaProvider
+}
+
+// OutboxStore returns the bus-level outbox store (may be nil).
+// When configured, publishes inside transactions automatically route to the outbox.
+func (b *Bus) OutboxStore() OutboxStore {
+	return b.outboxStore
 }
 
 // Get returns an event by name
@@ -752,6 +795,11 @@ func (b *Bus) ConsumerLag(ctx context.Context) ([]ConsumerLag, error) {
 // Send publishes a message to the specified event with metrics and tracing.
 // This is the low-level method that events should use instead of directly calling transport.
 //
+// When an outbox store is configured (via WithOutbox) and the context contains
+// an active transaction (via WithOutboxTx), the message is routed to the outbox
+// instead of the transport. This enables atomic "business operation + event publish"
+// within database transactions.
+//
 // Parameters:
 //   - ctx: context for the operation
 //   - eventName: name of the event to publish to
@@ -759,7 +807,7 @@ func (b *Bus) ConsumerLag(ctx context.Context) ([]ConsumerLag, error) {
 //   - payload: the pre-encoded event data as bytes
 //   - metadata: optional metadata to attach to the message (must include Content-Type)
 //
-// Returns error if the bus is closed or transport fails.
+// Returns error if the bus is closed, outbox store fails, or transport fails.
 func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payload []byte, metadata map[string]string) error {
 	if !b.Running() {
 		return ErrBusClosed
@@ -768,6 +816,11 @@ func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payloa
 	// Generate event ID if not provided
 	if eventID == "" {
 		eventID = b.NewEventID()
+	}
+
+	// Check if we should route to outbox (inside transaction with outbox configured)
+	if b.outboxStore != nil && InOutboxTx(ctx) {
+		return b.outboxStore.Store(ctx, eventName, eventID, payload, metadata)
 	}
 
 	var spanCtx trace.SpanContext

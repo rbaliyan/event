@@ -261,7 +261,60 @@ func main() {
 
 ## Transactional Outbox Pattern
 
-Ensure atomic publish with database writes - never lose messages:
+Ensure atomic publish with database writes - never lose messages.
+
+### Bus-Level Integration (Recommended)
+
+Configure outbox once at bus level - same `ev.Publish()` API works transparently:
+
+```go
+import (
+    "github.com/rbaliyan/event/v3"
+    "github.com/rbaliyan/event/v3/outbox"
+    "go.mongodb.org/mongo-driver/mongo"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create outbox store
+    store := outbox.NewMongoStore(mongoClient.Database("myapp"))
+
+    // Create bus with outbox support
+    bus, _ := event.NewBus("order-service",
+        event.WithTransport(transport),
+        event.WithOutbox(store),
+    )
+    defer bus.Close(ctx)
+
+    // Create and register event
+    orderEvent := event.New[Order]("order.created")
+    event.Register(ctx, bus, orderEvent)
+
+    // Normal publish - goes directly to transport
+    orderEvent.Publish(ctx, Order{ID: "123", Amount: 99.99})
+
+    // Inside transaction - same API, automatically routes to outbox!
+    err := outbox.Transaction(ctx, mongoClient, func(ctx context.Context) error {
+        // Business logic uses the transaction context
+        _, err := ordersCol.InsertOne(ctx, order)
+        if err != nil {
+            return err
+        }
+
+        // This automatically goes to outbox (same transaction)
+        return orderEvent.Publish(ctx, order)
+    })
+
+    // Start relay to publish messages from outbox to transport
+    relay := outbox.NewMongoRelay(store, transport)
+    go relay.Start(ctx)
+}
+```
+
+### Explicit Transaction (PostgreSQL)
+
+For PostgreSQL or when you need explicit control:
 
 ```go
 import (

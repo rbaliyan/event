@@ -8,12 +8,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	event "github.com/rbaliyan/event/v3"
 	"github.com/rbaliyan/event/v3/transport/codec"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// Compile-time check that MongoStore implements event.OutboxStore
+var _ event.OutboxStore = (*MongoStore)(nil)
 
 // isNamespaceNotFoundError checks if the error is a MongoDB namespace not found error.
 // This occurs when querying collection stats for a non-existent collection.
@@ -282,6 +286,45 @@ func (s *MongoStore) Insert(ctx context.Context, msg *MongoMessage) error {
 	}
 	msg.Status = StatusPending
 
+	_, err := s.collection.InsertOne(ctx, msg)
+	return err
+}
+
+// Store implements event.OutboxStore interface.
+// It stores a message in the outbox within the active transaction.
+// The transaction session is extracted from the context using event.OutboxTx().
+//
+// If the context contains a mongo.SessionContext (via event.WithOutboxTx),
+// the message is stored within that session's transaction.
+// Otherwise, it stores without a transaction (for testing or non-transactional use).
+//
+// Example:
+//
+//	sess.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (any, error) {
+//	    ctx := event.WithOutboxTx(sessCtx, sessCtx)
+//	    // ... business logic ...
+//	    return nil, orderEvent.Publish(ctx, order)  // Routed to Store()
+//	})
+func (s *MongoStore) Store(ctx context.Context, eventName string, eventID string, payload []byte, metadata map[string]string) error {
+	msg := &MongoMessage{
+		ID:        primitive.NewObjectID(),
+		EventName: eventName,
+		EventID:   eventID,
+		Payload:   payload,
+		Metadata:  metadata,
+		CreatedAt: time.Now(),
+		Status:    StatusPending,
+	}
+
+	// Check if we're inside a transaction
+	if session := event.OutboxTx(ctx); session != nil {
+		if sessCtx, ok := session.(mongo.SessionContext); ok {
+			_, err := s.collection.InsertOne(sessCtx, msg)
+			return err
+		}
+	}
+
+	// Fallback to non-transactional insert
 	_, err := s.collection.InsertOne(ctx, msg)
 	return err
 }
@@ -672,4 +715,70 @@ func (p *MongoPublisher) Publish(
 	}
 
 	return p.store.Insert(ctx, msg)
+}
+
+// Transaction executes the given function within a MongoDB transaction.
+// The context passed to fn contains the transaction session via event.WithOutboxTx,
+// so any event.Publish() calls within fn will automatically route to the outbox.
+//
+// If fn returns an error, the transaction is rolled back.
+// If fn returns nil, the transaction is committed.
+//
+// Example:
+//
+//	store := outbox.NewMongoStore(db)
+//	bus, _ := event.NewBus("mybus", event.WithTransport(t), event.WithOutbox(store))
+//	orderEvent := event.New[Order]("order.created")
+//	event.Register(ctx, bus, orderEvent)
+//
+//	err := outbox.Transaction(ctx, mongoClient, func(ctx context.Context) error {
+//	    // Business logic - uses the transaction context
+//	    _, err := ordersCol.InsertOne(ctx, order)
+//	    if err != nil {
+//	        return err
+//	    }
+//
+//	    // This automatically goes to the outbox (same transaction)
+//	    return orderEvent.Publish(ctx, order)
+//	})
+func Transaction(ctx context.Context, client *mongo.Client, fn func(ctx context.Context) error) error {
+	sess, err := client.StartSession()
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	defer sess.EndSession(ctx)
+
+	_, err = sess.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (any, error) {
+		// Wrap the session context with outbox transaction marker
+		txCtx := event.WithOutboxTx(sessCtx, sessCtx)
+		return nil, fn(txCtx)
+	})
+
+	return err
+}
+
+// TransactionWithOptions executes the given function within a MongoDB transaction
+// with custom transaction options.
+//
+// Example:
+//
+//	opts := options.Transaction().SetReadConcern(readconcern.Snapshot())
+//	err := outbox.TransactionWithOptions(ctx, mongoClient, opts, func(ctx context.Context) error {
+//	    // Business logic...
+//	    return orderEvent.Publish(ctx, order)
+//	})
+func TransactionWithOptions(ctx context.Context, client *mongo.Client, opts *options.TransactionOptions, fn func(ctx context.Context) error) error {
+	sess, err := client.StartSession()
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	defer sess.EndSession(ctx)
+
+	_, err = sess.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (any, error) {
+		// Wrap the session context with outbox transaction marker
+		txCtx := event.WithOutboxTx(sessCtx, sessCtx)
+		return nil, fn(txCtx)
+	}, opts)
+
+	return err
 }
