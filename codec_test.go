@@ -1,6 +1,7 @@
 package event
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -13,7 +14,7 @@ func TestJSONCodecEncode(t *testing.T) {
 	// Use the default codec
 	c := codec.Default()
 
-	msg := message.New("test-id", "test-source", "hello world", map[string]string{"key": "value"}, trace.SpanContext{})
+	msg := message.New("test-id", "test-source", []byte("hello world"), map[string]string{"key": "value"}, trace.SpanContext{})
 
 	data, err := c.Encode(msg)
 	if err != nil {
@@ -46,7 +47,7 @@ func TestJSONCodecEncode(t *testing.T) {
 func TestJSONCodecDecode(t *testing.T) {
 	c := codec.Default()
 
-	jsonData := `{"id":"msg-123","source":"src-456","payload":"test data","metadata":{"foo":"bar"}}`
+	jsonData := `{"id":"msg-123","source":"src-456","payload":"dGVzdCBkYXRh","metadata":{"foo":"bar"}}`
 
 	msg, err := c.Decode([]byte(jsonData))
 	if err != nil {
@@ -79,10 +80,17 @@ func TestJSONCodecRoundTrip(t *testing.T) {
 		Count int    `json:"count"`
 	}
 
+	// Pre-encode payload to bytes (this is what the event layer does)
+	testPayload := TestPayload{Name: "test", Count: 42}
+	payloadBytes, err := json.Marshal(testPayload)
+	if err != nil {
+		t.Fatalf("failed to marshal payload: %v", err)
+	}
+
 	original := message.New(
 		"round-trip-id",
 		"round-trip-source",
-		TestPayload{Name: "test", Count: 42},
+		payloadBytes,
 		map[string]string{"env": "test", "version": "1.0"},
 		trace.SpanContext{},
 	)
@@ -116,13 +124,9 @@ func TestJSONCodecRoundTrip(t *testing.T) {
 		t.Errorf("Metadata version mismatch: got %s, want '1.0'", decoded.Metadata()["version"])
 	}
 
-	// Payload is json.RawMessage after decode, need to unmarshal
+	// Payload is []byte after decode
 	var payload TestPayload
-	rawPayload, ok := decoded.Payload().(json.RawMessage)
-	if !ok {
-		t.Fatalf("expected payload to be json.RawMessage, got %T", decoded.Payload())
-	}
-	if err := json.Unmarshal(rawPayload, &payload); err != nil {
+	if err := json.Unmarshal(decoded.Payload(), &payload); err != nil {
 		t.Fatalf("failed to unmarshal payload: %v", err)
 	}
 
@@ -143,7 +147,7 @@ func TestJSONCodecDecodeInvalidJSON(t *testing.T) {
 func TestJSONCodecEncodeNilMetadata(t *testing.T) {
 	c := codec.Default()
 
-	msg := message.New("test-id", "test-source", "data", nil, trace.SpanContext{})
+	msg := message.New("test-id", "test-source", []byte("data"), nil, trace.SpanContext{})
 
 	data, err := c.Encode(msg)
 	if err != nil {
@@ -165,7 +169,7 @@ func TestJSONCodecEncodeNilMetadata(t *testing.T) {
 func TestJSONCodecDecodeNoMetadata(t *testing.T) {
 	c := codec.Default()
 
-	jsonData := `{"id":"msg-123","source":"src-456","payload":"test"}`
+	jsonData := `{"id":"msg-123","source":"src-456","payload":"dGVzdA=="}`
 
 	msg, err := c.Decode([]byte(jsonData))
 	if err != nil {
@@ -177,3 +181,6 @@ func TestJSONCodecDecodeNoMetadata(t *testing.T) {
 		t.Errorf("expected nil or empty metadata, got %v", msg.Metadata())
 	}
 }
+
+// Silence the bytes import unused warning
+var _ = bytes.Equal

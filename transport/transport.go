@@ -46,10 +46,27 @@ func (e *DecodeError) Unwrap() error {
 	return e.Err
 }
 
-// IsDecodeError checks if a message payload is a decode error
-func IsDecodeError(payload any) (*DecodeError, bool) {
-	de, ok := payload.(*DecodeError)
-	return de, ok
+// MetadataDecodeError is the metadata key indicating a decode error occurred.
+// When this key is present in metadata, the payload contains raw bytes that failed to decode.
+const MetadataDecodeError = "X-Decode-Error"
+
+// IsDecodeError checks if message metadata indicates a decode error.
+// Returns the error message if present.
+func IsDecodeError(metadata map[string]string) (string, bool) {
+	if metadata == nil {
+		return "", false
+	}
+	errMsg, ok := metadata[MetadataDecodeError]
+	return errMsg, ok
+}
+
+// NewDecodeErrorMessage creates a message that indicates a decode error.
+// The raw bytes are passed as payload, and the error is stored in metadata.
+func NewDecodeErrorMessage(msgID string, rawData []byte, err error, ackFn func(error) error) Message {
+	metadata := map[string]string{
+		MetadataDecodeError: err.Error(),
+	}
+	return NewMessageWithAck(msgID, "", rawData, metadata, 0, ackFn)
 }
 
 // HealthStatus represents the health state of a component
@@ -364,18 +381,18 @@ func DefaultCodec() Codec {
 }
 
 // NewMessage creates a new message
-func NewMessage(id, source string, payload any, metadata map[string]string, spanCtx trace.SpanContext) Message {
+func NewMessage(id, source string, payload []byte, metadata map[string]string, spanCtx trace.SpanContext) Message {
 	return message.New(id, source, payload, metadata, spanCtx)
 }
 
 // NewMessageWithRetry creates a new message with retry count
-func NewMessageWithRetry(id, source string, payload any, metadata map[string]string, spanCtx trace.SpanContext, retryCount int) Message {
+func NewMessageWithRetry(id, source string, payload []byte, metadata map[string]string, spanCtx trace.SpanContext, retryCount int) Message {
 	return message.NewWithRetry(id, source, payload, metadata, spanCtx, retryCount)
 }
 
 // NewMessageWithAck creates a new message with retry count and ack function.
 // This is used by transports that need custom acknowledgment behavior.
-func NewMessageWithAck(id, source string, payload any, metadata map[string]string, retryCount int, ackFn func(error) error) Message {
+func NewMessageWithAck(id, source string, payload []byte, metadata map[string]string, retryCount int, ackFn func(error) error) Message {
 	return message.NewWithAck(id, source, payload, metadata, retryCount, ackFn)
 }
 

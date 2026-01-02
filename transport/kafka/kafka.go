@@ -687,13 +687,9 @@ func (h *consumerHandler) ConsumeClaim(session sarama.ConsumerGroupSession, clai
 					"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset)
 
 				// Send decode error to channel for DLQ routing
-				decodeErr := &transport.DecodeError{
-					RawData: msg.Value,
-					Err:     err,
-					MsgID:   fmt.Sprintf("%s-%d-%d", msg.Topic, msg.Partition, msg.Offset),
-				}
-				errorMsg := transport.NewMessageWithAck(
-					decodeErr.MsgID, "", decodeErr, nil, 0,
+				msgID := fmt.Sprintf("%s-%d-%d", msg.Topic, msg.Partition, msg.Offset)
+				errorMsg := transport.NewDecodeErrorMessage(
+					msgID, msg.Value, err,
 					func(ackErr error) error {
 						if ackErr == nil {
 							session.MarkMessage(msg, "")

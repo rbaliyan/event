@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"sync/atomic"
@@ -13,7 +14,7 @@ import (
 )
 
 func testMessage(id, source, payload string) transport.Message {
-	return message.New(id, source, payload, nil, trace.SpanContext{})
+	return message.New(id, source, []byte(payload), nil, trace.SpanContext{})
 }
 
 func TestNew(t *testing.T) {
@@ -180,7 +181,7 @@ func TestPublishSubscribeIntegration(t *testing.T) {
 		if received.ID() != "msg-1" {
 			t.Errorf("expected msg-1, got %s", received.ID())
 		}
-		if received.Payload() != "hello" {
+		if !bytes.Equal(received.Payload(), []byte("hello")) {
 			t.Errorf("expected hello, got %v", received.Payload())
 		}
 	case <-time.After(100 * time.Millisecond):

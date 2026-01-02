@@ -1,6 +1,7 @@
 package message
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -9,7 +10,7 @@ import (
 
 func TestMessageNew(t *testing.T) {
 	metadata := map[string]string{"key": "value"}
-	msg := New("id-1", "source-1", "payload", metadata, trace.SpanContext{})
+	msg := New("id-1", "source-1", []byte("payload"), metadata, trace.SpanContext{})
 
 	if msg.ID() != "id-1" {
 		t.Errorf("expected id-1, got %s", msg.ID())
@@ -17,7 +18,7 @@ func TestMessageNew(t *testing.T) {
 	if msg.Source() != "source-1" {
 		t.Errorf("expected source-1, got %s", msg.Source())
 	}
-	if msg.Payload() != "payload" {
+	if !bytes.Equal(msg.Payload(), []byte("payload")) {
 		t.Errorf("expected payload, got %v", msg.Payload())
 	}
 	if msg.Metadata()["key"] != "value" {
@@ -32,7 +33,7 @@ func TestMessageNew(t *testing.T) {
 }
 
 func TestMessageNewWithRetry(t *testing.T) {
-	msg := NewWithRetry("id-1", "source-1", "payload", nil, trace.SpanContext{}, 3)
+	msg := NewWithRetry("id-1", "source-1", []byte("payload"), nil, trace.SpanContext{}, 3)
 
 	if msg.RetryCount() != 3 {
 		t.Errorf("expected retry count 3, got %d", msg.RetryCount())
@@ -44,7 +45,7 @@ func TestMessageNewWithRetry(t *testing.T) {
 
 func TestMessageNewWithTimestamp(t *testing.T) {
 	ts := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
-	msg := NewWithTimestamp("id-1", "source-1", "payload", nil, trace.SpanContext{}, ts)
+	msg := NewWithTimestamp("id-1", "source-1", []byte("payload"), nil, trace.SpanContext{}, ts)
 
 	if !msg.Timestamp().Equal(ts) {
 		t.Errorf("expected %v, got %v", ts, msg.Timestamp())
@@ -58,7 +59,7 @@ func TestMessageNewWithAck(t *testing.T) {
 		return nil
 	}
 
-	msg := NewWithAck("id-1", "source-1", "payload", nil, 2, ackFn)
+	msg := NewWithAck("id-1", "source-1", []byte("payload"), nil, 2, ackFn)
 
 	if msg.RetryCount() != 2 {
 		t.Errorf("expected retry count 2, got %d", msg.RetryCount())
@@ -79,7 +80,7 @@ func TestMessageNewFull(t *testing.T) {
 		return nil
 	}
 
-	msg := NewFull("id-1", "source-1", "payload", metadata, ts, 5, ackFn)
+	msg := NewFull("id-1", "source-1", []byte("payload"), metadata, ts, 5, ackFn)
 
 	if msg.ID() != "id-1" {
 		t.Errorf("expected id-1, got %s", msg.ID())
@@ -87,7 +88,7 @@ func TestMessageNewFull(t *testing.T) {
 	if msg.Source() != "source-1" {
 		t.Errorf("expected source-1, got %s", msg.Source())
 	}
-	if msg.Payload() != "payload" {
+	if !bytes.Equal(msg.Payload(), []byte("payload")) {
 		t.Errorf("expected payload, got %v", msg.Payload())
 	}
 	if msg.Metadata()["env"] != "test" {
@@ -107,7 +108,7 @@ func TestMessageNewFull(t *testing.T) {
 }
 
 func TestMessageAckWithNilFunction(t *testing.T) {
-	msg := New("id-1", "source-1", "payload", nil, trace.SpanContext{})
+	msg := New("id-1", "source-1", []byte("payload"), nil, trace.SpanContext{})
 
 	// Should not panic
 	err := msg.Ack(nil)
@@ -117,7 +118,7 @@ func TestMessageAckWithNilFunction(t *testing.T) {
 }
 
 func TestMessageContext(t *testing.T) {
-	msg := New("id-1", "source-1", "payload", nil, trace.SpanContext{})
+	msg := New("id-1", "source-1", []byte("payload"), nil, trace.SpanContext{})
 
 	ctx := msg.Context()
 	if ctx == nil {
@@ -126,7 +127,7 @@ func TestMessageContext(t *testing.T) {
 }
 
 func TestMessageNilMetadata(t *testing.T) {
-	msg := New("id-1", "source-1", "payload", nil, trace.SpanContext{})
+	msg := New("id-1", "source-1", []byte("payload"), nil, trace.SpanContext{})
 
 	if msg.Metadata() != nil {
 		t.Error("expected nil metadata")

@@ -68,8 +68,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rbaliyan/event/v3/payload"
 	"github.com/rbaliyan/event/v3/transport"
 )
+
+// MetadataContentType is the metadata key for payload encoding.
+const MetadataContentType = "Content-Type"
 
 // Handler processes a batch of messages.
 //
@@ -322,8 +326,18 @@ func (p *Processor[T]) Process(
 				return nil
 			}
 
-			// Type assert payload
-			if typed, ok := msg.Payload().(T); ok {
+			// Decode payload from bytes
+			contentType := msg.Metadata()[MetadataContentType]
+			if contentType == "" {
+				contentType = "application/json"
+			}
+			codec, codecOk := payload.Get(contentType)
+			if !codecOk {
+				msg.Ack(nil) // Skip unknown content type
+				continue
+			}
+			var typed T
+			if err := codec.Decode(msg.Payload(), &typed); err == nil {
 				batch = append(batch, msg)
 				data = append(data, typed)
 			}

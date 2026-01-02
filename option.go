@@ -4,9 +4,13 @@ import (
 	"context"
 	"time"
 
+	"github.com/rbaliyan/event/v3/payload"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
 )
+
+// MetadataContentType is the metadata key for payload encoding.
+const MetadataContentType = "Content-Type"
 
 // Default event configuration values
 var (
@@ -19,10 +23,11 @@ var (
 // eventOptions holds configuration for events (unexported)
 // These are event-level concerns, not bus-level infrastructure
 type eventOptions struct {
-	subTimeout time.Duration
-	onError    func(*Bus, string, error)
-	maxRetries int                                                             // Max retry attempts (0 = unlimited)
-	dlqHandler func(ctx context.Context, msg message.Message, err error) error // Dead letter queue handler (returns error if storage fails)
+	subTimeout   time.Duration
+	onError      func(*Bus, string, error)
+	maxRetries   int                                                             // Max retry attempts (0 = unlimited)
+	dlqHandler   func(ctx context.Context, msg message.Message, err error) error // Dead letter queue handler (returns error if storage fails)
+	payloadCodec payload.Codec                                                   // Payload codec (nil = use JSON default)
 }
 
 // EventOption is an alias for Option (for API clarity)
@@ -111,6 +116,30 @@ func WithDeadLetterQueue(handler func(ctx context.Context, msg message.Message, 
 	return func(o *eventOptions) {
 		if handler != nil {
 			o.dlqHandler = handler
+		}
+	}
+}
+
+// WithPayloadCodec sets the codec for event payload serialization.
+// Default is JSON if not specified.
+//
+// The codec handles encoding/decoding of event data at the application level,
+// separate from transport-level message serialization.
+//
+// Example:
+//
+//	// Use protobuf for this event
+//	event := New[*pb.Order]("orders", WithPayloadCodec(payload.Proto{}))
+//
+//	// Use msgpack for this event
+//	event := New[Order]("orders", WithPayloadCodec(payload.MsgPack{}))
+//
+//	// JSON is used by default (no option needed)
+//	event := New[Order]("orders")
+func WithPayloadCodec(codec payload.Codec) Option {
+	return func(o *eventOptions) {
+		if codec != nil {
+			o.payloadCodec = codec
 		}
 	}
 }

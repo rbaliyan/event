@@ -2,7 +2,6 @@ package outbox
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -285,17 +284,11 @@ func (r *MongoRelay) publishPending(ctx context.Context) {
 
 // publishMessage publishes a single message to the transport
 func (r *MongoRelay) publishMessage(ctx context.Context, msg *MongoMessage) error {
-	// Decode the payload (it was JSON encoded when stored)
-	var payload any
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-		return err
-	}
-
-	// Create transport message
+	// msg.Payload is already []byte - pass directly to transport
 	transportMsg := message.New(
 		msg.EventID,
 		"outbox",
-		payload,
+		msg.Payload,
 		msg.Metadata,
 		trace.SpanContext{},
 	)

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rbaliyan/event/v3/payload"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
 )
@@ -60,12 +61,13 @@ func (discardEvent[T]) Publish(_ context.Context, _ T) error                    
 func New[T any](name string, opts ...EventOption) Event[T] {
 	o := newEventOptions(opts...)
 	return &eventImpl[T]{
-		status:     0, // unbound - not active yet
-		name:       name,
-		subTimeout: o.subTimeout,
-		onError:    o.onError,
-		maxRetries: o.maxRetries,
-		dlqHandler: o.dlqHandler,
+		status:       0, // unbound - not active yet
+		name:         name,
+		subTimeout:   o.subTimeout,
+		onError:      o.onError,
+		maxRetries:   o.maxRetries,
+		dlqHandler:   o.dlqHandler,
+		payloadCodec: o.payloadCodec,
 		// bus is set by bus.Register()
 	}
 }
@@ -84,15 +86,16 @@ type schemaFlags struct {
 
 // eventImpl generic event implementation
 type eventImpl[T any] struct {
-	status     int32
-	name       string
-	size       int64
-	bus        *Bus
-	subTimeout time.Duration
-	onError    func(*Bus, string, error)                                        // for panic recovery only
-	maxRetries int                                                              // max retry attempts (0 = unlimited)
-	dlqHandler func(ctx context.Context, msg message.Message, err error) error  // dead letter queue handler (returns error if storage fails)
-	schema     schemaFlags                                                      // schema-based configuration
+	status       int32
+	name         string
+	size         int64
+	bus          *Bus
+	subTimeout   time.Duration
+	onError      func(*Bus, string, error)                                        // for panic recovery only
+	maxRetries   int                                                              // max retry attempts (0 = unlimited)
+	dlqHandler   func(ctx context.Context, msg message.Message, err error) error  // dead letter queue handler (returns error if storage fails)
+	payloadCodec payload.Codec                                                    // payload codec (nil = use JSON default)
+	schema       schemaFlags                                                      // schema-based configuration
 }
 
 func (e *eventImpl[T]) String() string {
@@ -102,6 +105,14 @@ func (e *eventImpl[T]) String() string {
 // Name event name
 func (e *eventImpl[T]) Name() string {
 	return e.name
+}
+
+// codec returns the payload codec, defaulting to JSON if not set.
+func (e *eventImpl[T]) codec() payload.Codec {
+	if e.payloadCodec != nil {
+		return e.payloadCodec
+	}
+	return payload.JSON{}
 }
 
 // Subscribers events subscribers count
@@ -215,8 +226,29 @@ func (e *eventImpl[T]) Publish(ctx context.Context, eventData T) error {
 	// Get event ID from context or let bus generate one
 	id := ContextEventID(ctx)
 
+	// Encode payload using the event's codec
+	codec := e.codec()
+	payloadBytes, err := codec.Encode(eventData)
+	if err != nil {
+		return fmt.Errorf("encode payload: %w", err)
+	}
+
+	// Copy context metadata and add Content-Type
+	metadata := ContextMetadata(ctx)
+	if metadata == nil {
+		metadata = make(map[string]string)
+	} else {
+		// Make a copy to avoid modifying the original
+		copied := make(map[string]string, len(metadata)+1)
+		for k, v := range metadata {
+			copied[k] = v
+		}
+		metadata = copied
+	}
+	metadata[MetadataContentType] = codec.ContentType()
+
 	// Delegate to bus.Send which handles metrics and tracing
-	return e.bus.Send(ctx, e.name, id, eventData, ContextMetadata(ctx))
+	return e.bus.Send(ctx, e.name, id, payloadBytes, metadata)
 }
 
 // classifyResult determines how to handle the handler result.
@@ -336,18 +368,16 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 					return
 				}
 
-				// Check for decode errors (malformed messages) - route to DLQ
-				if decodeErr, isDecodeErr := transport.IsDecodeError(msg.Payload()); isDecodeErr {
-					logger.Error("decode error received, routing to DLQ",
+				// Check for transport-level decode errors
+				if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
+					logger.Error("transport decode error, routing to DLQ",
 						"event", e.Name(),
 						"msg_id", msg.ID(),
-						"error", decodeErr.Err)
+						"error", decodeErrMsg)
 
 					if e.dlqHandler != nil {
-						// Create a context for the DLQ handler
 						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
-						if dlqErr := e.dlqHandler(dlqCtx, msg, decodeErr); dlqErr != nil {
-							// DLQ storage failed - DON'T ACK, let message be redelivered
+						if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
 							logger.Error("DLQ handler failed for decode error, message will be retried",
 								"event", e.Name(),
 								"msg_id", msg.ID(),
@@ -356,16 +386,59 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 							continue
 						}
 					}
-					// Successfully handled or no DLQ configured - ACK
 					msg.Ack(nil)
 					continue
 				}
 
-				// Type assert payload
-				typedData, ok := msg.Payload().(T)
-				if !ok {
-					var zero T
-					typedData = zero
+				// Decode payload from bytes
+				var typedData T
+				contentType := msg.Metadata()[MetadataContentType]
+				if contentType == "" {
+					contentType = "application/json" // default
+				}
+
+				codec, codecOk := payload.Get(contentType)
+				if !codecOk {
+					logger.Error("unknown content type, routing to DLQ",
+						"event", e.Name(),
+						"msg_id", msg.ID(),
+						"content_type", contentType)
+
+					if e.dlqHandler != nil {
+						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
+						dlqErr := e.dlqHandler(dlqCtx, msg, fmt.Errorf("unknown content type: %s", contentType))
+						if dlqErr != nil {
+							logger.Error("DLQ handler failed, message will be retried",
+								"event", e.Name(),
+								"msg_id", msg.ID(),
+								"error", dlqErr)
+							msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
+							continue
+						}
+					}
+					msg.Ack(nil)
+					continue
+				}
+
+				if err := codec.Decode(msg.Payload(), &typedData); err != nil {
+					logger.Error("decode error received, routing to DLQ",
+						"event", e.Name(),
+						"msg_id", msg.ID(),
+						"error", err)
+
+					if e.dlqHandler != nil {
+						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
+						if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
+							logger.Error("DLQ handler failed for decode error, message will be retried",
+								"event", e.Name(),
+								"msg_id", msg.ID(),
+								"error", dlqErr)
+							msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
+							continue
+						}
+					}
+					msg.Ack(nil)
+					continue
 				}
 
 				// Update context values and call handler

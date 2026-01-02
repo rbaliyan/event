@@ -608,15 +608,11 @@ func (r *RedisRelay) publishPending(ctx context.Context) {
 
 // publishMessage publishes a single message
 func (r *RedisRelay) publishMessage(ctx context.Context, msg *RedisMessage) error {
-	var payload any
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-		return err
-	}
-
+	// msg.Payload is already []byte - pass directly to transport
 	transportMsg := message.New(
 		msg.EventID,
 		"outbox",
-		payload,
+		msg.Payload,
 		msg.Metadata,
 		trace.SpanContext{},
 	)

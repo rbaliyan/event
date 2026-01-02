@@ -12,31 +12,24 @@ import (
 // JSON implements Codec using JSON serialization.
 // This is the default codec, providing human-readable output.
 //
-// Payload handling:
-//   - Encode: marshals payload to JSON
-//   - Decode: payload is json.RawMessage, unmarshaled by handler
+// Payload is stored as pre-encoded bytes (base64 in JSON wire format).
 type JSON struct{}
 
 // jsonMessage is the JSON wire format
 type jsonMessage struct {
 	ID         string            `json:"id"`
 	Source     string            `json:"source"`
-	Payload    json.RawMessage   `json:"payload"`
+	Payload    []byte            `json:"payload"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
 	RetryCount int               `json:"retry_count,omitempty"`
 }
 
 // Encode serializes a message to JSON bytes
 func (c JSON) Encode(msg Message) ([]byte, error) {
-	payload, err := json.Marshal(msg.Payload())
-	if err != nil {
-		return nil, errors.Join(ErrEncodeFailure, err)
-	}
-
 	jm := jsonMessage{
 		ID:         msg.ID(),
 		Source:     msg.Source(),
-		Payload:    payload,
+		Payload:    msg.Payload(),
 		RetryCount: msg.RetryCount(),
 	}
 
@@ -66,7 +59,6 @@ func (c JSON) Decode(data []byte) (Message, error) {
 		maps.Copy(metadata, jm.Metadata)
 	}
 
-	// Payload remains as json.RawMessage, will be decoded by handler
 	return message.NewWithRetry(
 		jm.ID,
 		jm.Source,

@@ -2,15 +2,13 @@
 // versions:
 // 	protoc-gen-go v1.36.6
 // 	protoc        v5.29.3
-// source: message.proto
+// source: transport/message/message.proto
 
 package message
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	anypb "google.golang.org/protobuf/types/known/anypb"
-	structpb "google.golang.org/protobuf/types/known/structpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -24,8 +22,7 @@ const (
 )
 
 // ProtoMessage is the wire format for event messages using Protocol Buffers.
-// It supports both strongly-typed proto.Message payloads (via Any) and
-// dynamic JSON-like payloads (via Struct).
+// Payload is stored as pre-encoded bytes.
 type ProtoMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Unique message identifier
@@ -36,20 +33,15 @@ type ProtoMessage struct {
 	Metadata map[string]string `protobuf:"bytes,3,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Number of times this message has been retried
 	RetryCount int32 `protobuf:"varint,4,opt,name=retry_count,json=retryCount,proto3" json:"retry_count,omitempty"`
-	// Payload - either a strongly-typed proto.Message or a dynamic value
-	//
-	// Types that are valid to be assigned to Payload:
-	//
-	//	*ProtoMessage_AnyPayload
-	//	*ProtoMessage_StructPayload
-	Payload       isProtoMessage_Payload `protobuf_oneof:"payload"`
+	// Pre-encoded payload bytes
+	Payload       []byte `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProtoMessage) Reset() {
 	*x = ProtoMessage{}
-	mi := &file_message_proto_msgTypes[0]
+	mi := &file_transport_message_message_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -61,7 +53,7 @@ func (x *ProtoMessage) String() string {
 func (*ProtoMessage) ProtoMessage() {}
 
 func (x *ProtoMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_message_proto_msgTypes[0]
+	mi := &file_transport_message_message_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -74,7 +66,7 @@ func (x *ProtoMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProtoMessage.ProtoReflect.Descriptor instead.
 func (*ProtoMessage) Descriptor() ([]byte, []int) {
-	return file_message_proto_rawDescGZIP(), []int{0}
+	return file_transport_message_message_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *ProtoMessage) GetId() string {
@@ -105,123 +97,75 @@ func (x *ProtoMessage) GetRetryCount() int32 {
 	return 0
 }
 
-func (x *ProtoMessage) GetPayload() isProtoMessage_Payload {
+func (x *ProtoMessage) GetPayload() []byte {
 	if x != nil {
 		return x.Payload
 	}
 	return nil
 }
 
-func (x *ProtoMessage) GetAnyPayload() *anypb.Any {
-	if x != nil {
-		if x, ok := x.Payload.(*ProtoMessage_AnyPayload); ok {
-			return x.AnyPayload
-		}
-	}
-	return nil
-}
+var File_transport_message_message_proto protoreflect.FileDescriptor
 
-func (x *ProtoMessage) GetStructPayload() *structpb.Value {
-	if x != nil {
-		if x, ok := x.Payload.(*ProtoMessage_StructPayload); ok {
-			return x.StructPayload
-		}
-	}
-	return nil
-}
-
-type isProtoMessage_Payload interface {
-	isProtoMessage_Payload()
-}
-
-type ProtoMessage_AnyPayload struct {
-	// For proto.Message payloads - provides type URL for unmarshaling
-	AnyPayload *anypb.Any `protobuf:"bytes,10,opt,name=any_payload,json=anyPayload,proto3,oneof"`
-}
-
-type ProtoMessage_StructPayload struct {
-	// For dynamic payloads (maps, slices, primitives)
-	StructPayload *structpb.Value `protobuf:"bytes,11,opt,name=struct_payload,json=structPayload,proto3,oneof"`
-}
-
-func (*ProtoMessage_AnyPayload) isProtoMessage_Payload() {}
-
-func (*ProtoMessage_StructPayload) isProtoMessage_Payload() {}
-
-var File_message_proto protoreflect.FileDescriptor
-
-const file_message_proto_rawDesc = "" +
+const file_transport_message_message_proto_rawDesc = "" +
 	"\n" +
-	"\rmessage.proto\x12\amessage\x1a\x19google/protobuf/any.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xda\x02\n" +
+	"\x1ftransport/message/message.proto\x12\amessage\"\xef\x01\n" +
 	"\fProtoMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12?\n" +
 	"\bmetadata\x18\x03 \x03(\v2#.message.ProtoMessage.MetadataEntryR\bmetadata\x12\x1f\n" +
 	"\vretry_count\x18\x04 \x01(\x05R\n" +
-	"retryCount\x127\n" +
-	"\vany_payload\x18\n" +
-	" \x01(\v2\x14.google.protobuf.AnyH\x00R\n" +
-	"anyPayload\x12?\n" +
-	"\x0estruct_payload\x18\v \x01(\v2\x16.google.protobuf.ValueH\x00R\rstructPayload\x1a;\n" +
+	"retryCount\x12\x18\n" +
+	"\apayload\x18\x05 \x01(\fR\apayload\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\t\n" +
-	"\apayloadB0Z.github.com/rbaliyan/event/v3/transport/messageb\x06proto3"
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B0Z.github.com/rbaliyan/event/v3/transport/messageb\x06proto3"
 
 var (
-	file_message_proto_rawDescOnce sync.Once
-	file_message_proto_rawDescData []byte
+	file_transport_message_message_proto_rawDescOnce sync.Once
+	file_transport_message_message_proto_rawDescData []byte
 )
 
-func file_message_proto_rawDescGZIP() []byte {
-	file_message_proto_rawDescOnce.Do(func() {
-		file_message_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_message_proto_rawDesc), len(file_message_proto_rawDesc)))
+func file_transport_message_message_proto_rawDescGZIP() []byte {
+	file_transport_message_message_proto_rawDescOnce.Do(func() {
+		file_transport_message_message_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_transport_message_message_proto_rawDesc), len(file_transport_message_message_proto_rawDesc)))
 	})
-	return file_message_proto_rawDescData
+	return file_transport_message_message_proto_rawDescData
 }
 
-var file_message_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
-var file_message_proto_goTypes = []any{
-	(*ProtoMessage)(nil),   // 0: message.ProtoMessage
-	nil,                    // 1: message.ProtoMessage.MetadataEntry
-	(*anypb.Any)(nil),      // 2: google.protobuf.Any
-	(*structpb.Value)(nil), // 3: google.protobuf.Value
+var file_transport_message_message_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_transport_message_message_proto_goTypes = []any{
+	(*ProtoMessage)(nil), // 0: message.ProtoMessage
+	nil,                  // 1: message.ProtoMessage.MetadataEntry
 }
-var file_message_proto_depIdxs = []int32{
+var file_transport_message_message_proto_depIdxs = []int32{
 	1, // 0: message.ProtoMessage.metadata:type_name -> message.ProtoMessage.MetadataEntry
-	2, // 1: message.ProtoMessage.any_payload:type_name -> google.protobuf.Any
-	3, // 2: message.ProtoMessage.struct_payload:type_name -> google.protobuf.Value
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
-func init() { file_message_proto_init() }
-func file_message_proto_init() {
-	if File_message_proto != nil {
+func init() { file_transport_message_message_proto_init() }
+func file_transport_message_message_proto_init() {
+	if File_transport_message_message_proto != nil {
 		return
-	}
-	file_message_proto_msgTypes[0].OneofWrappers = []any{
-		(*ProtoMessage_AnyPayload)(nil),
-		(*ProtoMessage_StructPayload)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_message_proto_rawDesc), len(file_message_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_transport_message_message_proto_rawDesc), len(file_transport_message_message_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_message_proto_goTypes,
-		DependencyIndexes: file_message_proto_depIdxs,
-		MessageInfos:      file_message_proto_msgTypes,
+		GoTypes:           file_transport_message_message_proto_goTypes,
+		DependencyIndexes: file_transport_message_message_proto_depIdxs,
+		MessageInfos:      file_transport_message_message_proto_msgTypes,
 	}.Build()
-	File_message_proto = out.File
-	file_message_proto_goTypes = nil
-	file_message_proto_depIdxs = nil
+	File_transport_message_message_proto = out.File
+	file_transport_message_message_proto_goTypes = nil
+	file_transport_message_message_proto_depIdxs = nil
 }

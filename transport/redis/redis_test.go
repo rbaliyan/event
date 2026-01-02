@@ -207,7 +207,7 @@ func (m *mockRedisClient) Close() error {
 
 // testMessage creates a test message
 func testMessage(source, payload string) message.Message {
-	return message.New(transport.NewID(), source, payload, nil, trace.SpanContext{})
+	return message.New(transport.NewID(), source, []byte(payload), nil, trace.SpanContext{})
 }
 
 func TestNew(t *testing.T) {

@@ -622,13 +622,8 @@ func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration,
 				if !ok {
 					logger.Error("invalid message format", "id", xmsg.ID)
 					// Send decode error to channel for DLQ routing
-					decodeErr := &transport.DecodeError{
-						RawData: nil,
-						Err:     transport.ErrDecodeFailure,
-						MsgID:   msgID,
-					}
-					errorMsg := transport.NewMessageWithAck(
-						msgID, "", decodeErr, nil, 0,
+					errorMsg := transport.NewDecodeErrorMessage(
+						msgID, nil, transport.ErrDecodeFailure,
 						func(err error) error {
 							if err == nil {
 								return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
@@ -646,13 +641,8 @@ func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration,
 				if err != nil {
 					logger.Error("failed to decode message", "error", err, "id", xmsg.ID)
 					// Send decode error to channel for DLQ routing
-					decodeErr := &transport.DecodeError{
-						RawData: []byte(data),
-						Err:     err,
-						MsgID:   msgID,
-					}
-					errorMsg := transport.NewMessageWithAck(
-						msgID, "", decodeErr, nil, 0,
+					errorMsg := transport.NewDecodeErrorMessage(
+						msgID, []byte(data), err,
 						func(ackErr error) error {
 							if ackErr == nil {
 								return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
@@ -757,13 +747,8 @@ func (s *subscription) processPendingMessages(ctx context.Context, logger *slog.
 				if !ok {
 					logger.Error("invalid message format in pending", "id", xmsg.ID)
 					// Send decode error to channel for DLQ routing
-					decodeErr := &transport.DecodeError{
-						RawData: nil,
-						Err:     transport.ErrDecodeFailure,
-						MsgID:   msgID,
-					}
-					errorMsg := transport.NewMessageWithAck(
-						msgID, "", decodeErr, nil, retryCount,
+					errorMsg := transport.NewDecodeErrorMessage(
+						msgID, nil, transport.ErrDecodeFailure,
 						func(err error) error {
 							if err == nil {
 								return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
@@ -781,13 +766,8 @@ func (s *subscription) processPendingMessages(ctx context.Context, logger *slog.
 				if err != nil {
 					logger.Error("failed to decode pending message", "error", err, "id", xmsg.ID)
 					// Send decode error to channel for DLQ routing
-					decodeErr := &transport.DecodeError{
-						RawData: []byte(data),
-						Err:     err,
-						MsgID:   msgID,
-					}
-					errorMsg := transport.NewMessageWithAck(
-						msgID, "", decodeErr, nil, retryCount,
+					errorMsg := transport.NewDecodeErrorMessage(
+						msgID, []byte(data), err,
 						func(ackErr error) error {
 							if ackErr == nil {
 								return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
@@ -913,13 +893,8 @@ func (s *subscription) claimOnce(ctx context.Context, logger *slog.Logger) {
 		if !ok {
 			logger.Error("invalid message format in claimed message", "id", xmsg.ID)
 			// Send decode error to channel for DLQ routing
-			decodeErr := &transport.DecodeError{
-				RawData: nil,
-				Err:     transport.ErrDecodeFailure,
-				MsgID:   msgID,
-			}
-			errorMsg := transport.NewMessageWithAck(
-				msgID, "", decodeErr, nil, retryCount,
+			errorMsg := transport.NewDecodeErrorMessage(
+				msgID, nil, transport.ErrDecodeFailure,
 				func(err error) error {
 					if err == nil {
 						return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
@@ -937,13 +912,8 @@ func (s *subscription) claimOnce(ctx context.Context, logger *slog.Logger) {
 		if err != nil {
 			logger.Error("failed to decode claimed message", "error", err, "id", xmsg.ID)
 			// Send decode error to channel for DLQ routing
-			decodeErr := &transport.DecodeError{
-				RawData: []byte(data),
-				Err:     err,
-				MsgID:   msgID,
-			}
-			errorMsg := transport.NewMessageWithAck(
-				msgID, "", decodeErr, nil, retryCount,
+			errorMsg := transport.NewDecodeErrorMessage(
+				msgID, []byte(data), err,
 				func(ackErr error) error {
 					if ackErr == nil {
 						return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()

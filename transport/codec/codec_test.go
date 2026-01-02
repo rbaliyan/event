@@ -1,6 +1,7 @@
 package codec
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -21,7 +22,7 @@ func TestJSONCodec(t *testing.T) {
 	})
 
 	t.Run("Encode and Decode simple payload", func(t *testing.T) {
-		msg := message.New("id-1", "source-1", "hello", nil, trace.SpanContext{})
+		msg := message.New("id-1", "source-1", []byte("hello"), nil, trace.SpanContext{})
 
 		data, err := codec.Encode(msg)
 		if err != nil {
@@ -40,19 +41,15 @@ func TestJSONCodec(t *testing.T) {
 			t.Errorf("expected source-1, got %s", decoded.Source())
 		}
 
-		// Payload is json.RawMessage, unmarshal to verify
-		var payload string
-		if err := json.Unmarshal(decoded.Payload().(json.RawMessage), &payload); err != nil {
-			t.Fatalf("failed to unmarshal payload: %v", err)
-		}
-		if payload != "hello" {
-			t.Errorf("expected hello, got %s", payload)
+		// Payload is []byte
+		if !bytes.Equal(decoded.Payload(), []byte("hello")) {
+			t.Errorf("expected hello, got %s", string(decoded.Payload()))
 		}
 	})
 
 	t.Run("Encode and Decode with metadata", func(t *testing.T) {
 		metadata := map[string]string{"key": "value", "env": "test"}
-		msg := message.New("id-2", "source-2", "data", metadata, trace.SpanContext{})
+		msg := message.New("id-2", "source-2", []byte("data"), metadata, trace.SpanContext{})
 
 		data, err := codec.Encode(msg)
 		if err != nil {
@@ -73,7 +70,7 @@ func TestJSONCodec(t *testing.T) {
 	})
 
 	t.Run("Encode and Decode with retry count", func(t *testing.T) {
-		msg := message.NewWithRetry("id-3", "source-3", "data", nil, trace.SpanContext{}, 5)
+		msg := message.NewWithRetry("id-3", "source-3", []byte("data"), nil, trace.SpanContext{}, 5)
 
 		data, err := codec.Encode(msg)
 		if err != nil {
@@ -97,7 +94,13 @@ func TestJSONCodec(t *testing.T) {
 		}
 
 		order := Order{ID: "ORD-123", Amount: 99.99}
-		msg := message.New("id-4", "source-4", order, nil, trace.SpanContext{})
+		// Pre-encode the struct as JSON bytes (this is what the event layer does)
+		orderBytes, err := json.Marshal(order)
+		if err != nil {
+			t.Fatalf("failed to marshal order: %v", err)
+		}
+
+		msg := message.New("id-4", "source-4", orderBytes, nil, trace.SpanContext{})
 
 		data, err := codec.Encode(msg)
 		if err != nil {
@@ -110,7 +113,7 @@ func TestJSONCodec(t *testing.T) {
 		}
 
 		var decodedOrder Order
-		if err := json.Unmarshal(decoded.Payload().(json.RawMessage), &decodedOrder); err != nil {
+		if err := json.Unmarshal(decoded.Payload(), &decodedOrder); err != nil {
 			t.Fatalf("failed to unmarshal order: %v", err)
 		}
 
@@ -130,7 +133,7 @@ func TestJSONCodec(t *testing.T) {
 	})
 
 	t.Run("Encode with nil metadata", func(t *testing.T) {
-		msg := message.New("id-5", "source-5", "data", nil, trace.SpanContext{})
+		msg := message.New("id-5", "source-5", []byte("data"), nil, trace.SpanContext{})
 
 		data, err := codec.Encode(msg)
 		if err != nil {

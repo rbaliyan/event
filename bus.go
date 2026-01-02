@@ -756,11 +756,11 @@ func (b *Bus) ConsumerLag(ctx context.Context) ([]ConsumerLag, error) {
 //   - ctx: context for the operation
 //   - eventName: name of the event to publish to
 //   - eventID: unique identifier for this event instance (can be empty to auto-generate)
-//   - payload: the event data to send
-//   - metadata: optional metadata to attach to the message
+//   - payload: the pre-encoded event data as bytes
+//   - metadata: optional metadata to attach to the message (must include Content-Type)
 //
 // Returns error if the bus is closed or transport fails.
-func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payload any, metadata map[string]string) error {
+func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payload []byte, metadata map[string]string) error {
 	if !b.Running() {
 		return ErrBusClosed
 	}

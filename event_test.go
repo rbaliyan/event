@@ -7,13 +7,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"math"
-	"sync/atomic"
-
-	"github.com/google/go-cmp/cmp"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/channel"
 	"github.com/rbaliyan/event/v3/transport/message"
@@ -65,17 +62,24 @@ func wait(ch chan struct{}, timeout int) bool {
 	}
 }
 
-// Compare metadata
-func CompareMetadata(m1, m2 map[string]string) bool {
-	if len(m1) == len(m2) {
-		for i, x := range m1 {
-			if m2[i] != x {
-				return false
-			}
+// Compare metadata (ignoring Content-Type which is added by payload codec)
+func CompareMetadata(expected, actual map[string]string) bool {
+	// Check that all expected keys are in actual
+	for k, v := range expected {
+		if actual[k] != v {
+			return false
 		}
-		return true
 	}
-	return false
+	// Check that actual doesn't have extra keys (except Content-Type)
+	for k := range actual {
+		if k == MetadataContentType {
+			continue
+		}
+		if _, ok := expected[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func TestEvent(t *testing.T) {
@@ -262,67 +266,94 @@ func TestData(t *testing.T) {
 	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	no := faker.RandomInt(0, math.MaxInt-1)
 	s := faker.Lorem().String()
-	st := struct {
-		N int
-		S string
-	}{no, s}
 
-	tests := []struct {
-		name string
-		args any
-	}{
-		{"null", nil},
-		{"number", no},
-		{"string", s},
-		{"struct", st},
-	}
-	ch := make(chan any)
-	ch1 := make(chan any)
-	ch2 := make(chan any)
-	e := New[any]("test-data")
-	if err := Register(context.Background(), bus, e); err != nil {
-		t.Fatalf("failed to register event: %v", err)
-	}
-	e.Subscribe(ctx, func(ctx context.Context, event Event[any], data any) error {
-		ch <- data
-		return nil
-	})
-	e.Subscribe(ctx, func(ctx context.Context, event Event[any], data any) error {
-		ch1 <- data
-		return nil
-	})
-	e.Subscribe(ctx, func(ctx context.Context, event Event[any], data any) error {
-		ch2 <- data
-		return nil
-	})
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			e.Publish(context.Background(), tt.args)
-			out, ok := waitForData(ch, waitChTimeoutMS)
-			if !ok {
-				t.Fatal("Sub failed")
-			}
-			if !cmp.Equal(out, tt.args) {
-				t.Errorf("diff : %v", cmp.Diff(out, tt.args))
-			}
-			out1, ok := waitForData(ch1, waitChTimeoutMS)
-			if !ok {
-				t.Fatal("Sub failed")
-			}
-			if !cmp.Equal(out1, tt.args) {
-				t.Errorf("diff : %v", cmp.Diff(out1, tt.args))
-			}
-			out2, ok := waitForData(ch2, waitChTimeoutMS)
-			if !ok {
-				t.Fatal("Sub failed")
-			}
-			if !cmp.Equal(out2, tt.args) {
-				t.Errorf("diff : %v", cmp.Diff(out2, tt.args))
-			}
+	// Test with specific typed events to ensure proper encoding/decoding
+	t.Run("nil", func(t *testing.T) {
+		ch := make(chan any)
+		e := New[any]("test-nil")
+		if err := Register(context.Background(), bus, e); err != nil {
+			t.Fatalf("failed to register event: %v", err)
+		}
+		e.Subscribe(ctx, func(ctx context.Context, event Event[any], data any) error {
+			ch <- data
+			return nil
 		})
-	}
+		e.Publish(context.Background(), nil)
+		out, ok := waitForData(ch, waitChTimeoutMS)
+		if !ok {
+			t.Fatal("Sub failed")
+		}
+		if out != nil {
+			t.Errorf("expected nil, got %v", out)
+		}
+	})
+
+	t.Run("string", func(t *testing.T) {
+		ch := make(chan string)
+		e := New[string]("test-string")
+		if err := Register(context.Background(), bus, e); err != nil {
+			t.Fatalf("failed to register event: %v", err)
+		}
+		e.Subscribe(ctx, func(ctx context.Context, event Event[string], data string) error {
+			ch <- data
+			return nil
+		})
+		e.Publish(context.Background(), s)
+		out, ok := waitForData(ch, waitChTimeoutMS)
+		if !ok {
+			t.Fatal("Sub failed")
+		}
+		if out != s {
+			t.Errorf("expected %s, got %s", s, out)
+		}
+	})
+
+	t.Run("number", func(t *testing.T) {
+		ch := make(chan int)
+		e := New[int]("test-number")
+		if err := Register(context.Background(), bus, e); err != nil {
+			t.Fatalf("failed to register event: %v", err)
+		}
+		e.Subscribe(ctx, func(ctx context.Context, event Event[int], data int) error {
+			ch <- data
+			return nil
+		})
+		no := 42
+		e.Publish(context.Background(), no)
+		out, ok := waitForData(ch, waitChTimeoutMS)
+		if !ok {
+			t.Fatal("Sub failed")
+		}
+		if out != no {
+			t.Errorf("expected %d, got %d", no, out)
+		}
+	})
+
+	t.Run("struct", func(t *testing.T) {
+		type TestStruct struct {
+			N int    `json:"n"`
+			S string `json:"s"`
+		}
+		ch := make(chan TestStruct)
+		e := New[TestStruct]("test-struct")
+		if err := Register(context.Background(), bus, e); err != nil {
+			t.Fatalf("failed to register event: %v", err)
+		}
+		e.Subscribe(ctx, func(ctx context.Context, event Event[TestStruct], data TestStruct) error {
+			ch <- data
+			return nil
+		})
+		st := TestStruct{N: 42, S: s}
+		e.Publish(context.Background(), st)
+		out, ok := waitForData(ch, waitChTimeoutMS)
+		if !ok {
+			t.Fatal("Sub failed")
+		}
+		if out.N != st.N || out.S != st.S {
+			t.Errorf("expected %+v, got %+v", st, out)
+		}
+	})
 }
 
 func BenchmarkEvent(b *testing.B) {
@@ -984,7 +1015,7 @@ func TestTransportErrorHandler(t *testing.T) {
 	_ = sub // Don't read from this subscription
 
 	// Try to publish - should timeout because subscriber isn't reading
-	msg := message.New("test", "source", "data", nil, trace.SpanContext{})
+	msg := message.New("test", "source", []byte("data"), nil, trace.SpanContext{})
 	go func() {
 		tr.Publish(context.Background(), "test", msg)
 	}()
@@ -1204,7 +1235,7 @@ func TestTransportCloseWithSubscriptions(t *testing.T) {
 	}
 
 	// Publish a message
-	msg := message.New("test-msg", "source", "data", nil, trace.SpanContext{})
+	msg := message.New("test-msg", "source", []byte("data"), nil, trace.SpanContext{})
 	if err := tr.Publish(context.Background(), "test-event", msg); err != nil {
 		t.Fatalf("publish failed: %v", err)
 	}
@@ -1683,7 +1714,7 @@ func TestTransportPublishTimeout(t *testing.T) {
 	defer sub.Close(context.Background())
 
 	// Try to publish - should timeout since subscriber isn't reading
-	msg := message.New("timeout-test", "source", "data", nil, trace.SpanContext{})
+	msg := message.New("timeout-test", "source", []byte("data"), nil, trace.SpanContext{})
 	go func() {
 		tr.Publish(context.Background(), "test-event", msg)
 	}()
@@ -1792,7 +1823,7 @@ func TestBroadcastMultipleSubscribers(t *testing.T) {
 	defer sub2.Close(context.Background())
 
 	// Publish a message
-	msg := message.New("test-msg", "source", "data", nil, trace.SpanContext{})
+	msg := message.New("test-msg", "source", []byte("data"), nil, trace.SpanContext{})
 	if err := tr.Publish(context.Background(), "test-event", msg); err != nil {
 		t.Fatalf("publish failed: %v", err)
 	}

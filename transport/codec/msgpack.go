@@ -13,36 +13,24 @@ import (
 // MessagePack is a binary format that's more compact than JSON
 // while maintaining schema-less flexibility.
 //
-// Benefits:
-//   - Smaller message size than JSON
-//   - Faster encoding/decoding
-//   - Supports binary data natively
-//
-// Payload handling:
-//   - Encode: marshals payload to MessagePack
-//   - Decode: payload is msgpack.RawMessage, unmarshaled by handler
+// Payload is stored as pre-encoded bytes.
 type MsgPack struct{}
 
 // msgpackMessage is the MessagePack wire format
 type msgpackMessage struct {
-	ID         string             `msgpack:"id"`
-	Source     string             `msgpack:"source"`
-	Payload    msgpack.RawMessage `msgpack:"payload"`
-	Metadata   map[string]string  `msgpack:"metadata,omitempty"`
-	RetryCount int                `msgpack:"retry_count,omitempty"`
+	ID         string            `msgpack:"id"`
+	Source     string            `msgpack:"source"`
+	Payload    []byte            `msgpack:"payload"`
+	Metadata   map[string]string `msgpack:"metadata,omitempty"`
+	RetryCount int               `msgpack:"retry_count,omitempty"`
 }
 
 // Encode serializes a message to MessagePack bytes
 func (c MsgPack) Encode(msg Message) ([]byte, error) {
-	payload, err := msgpack.Marshal(msg.Payload())
-	if err != nil {
-		return nil, errors.Join(ErrEncodeFailure, err)
-	}
-
 	mm := msgpackMessage{
 		ID:         msg.ID(),
 		Source:     msg.Source(),
-		Payload:    payload,
+		Payload:    msg.Payload(),
 		RetryCount: msg.RetryCount(),
 	}
 
@@ -72,7 +60,6 @@ func (c MsgPack) Decode(data []byte) (Message, error) {
 		maps.Copy(metadata, mm.Metadata)
 	}
 
-	// Payload remains as msgpack.RawMessage, will be decoded by handler
 	return message.NewWithRetry(
 		mm.ID,
 		mm.Source,

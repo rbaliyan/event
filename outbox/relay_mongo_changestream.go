@@ -2,7 +2,6 @@ package outbox
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -349,15 +348,11 @@ func (r *ChangeStreamRelay) claimMessage(ctx context.Context, id primitive.Objec
 
 // publishMessage publishes a single message to the transport.
 func (r *ChangeStreamRelay) publishMessage(ctx context.Context, msg *MongoMessage) error {
-	var payload any
-	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-		return err
-	}
-
+	// msg.Payload is already []byte - pass directly to transport
 	transportMsg := message.New(
 		msg.EventID,
 		"outbox",
-		payload,
+		msg.Payload,
 		msg.Metadata,
 		trace.SpanContext{},
 	)
