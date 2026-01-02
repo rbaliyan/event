@@ -282,9 +282,16 @@ func (t *JetStreamTransport) Subscribe(ctx context.Context, name string, opts ..
 	var consumerConfig jetstream.ConsumerConfig
 
 	if subOpts.DeliveryMode == transport.WorkerPool {
+		// Determine durable name based on worker group
+		durableName := "workers-" + name
+		if subOpts.WorkerGroup != "" {
+			// WorkerPool with named group: workers in same group compete
+			// Different groups each receive all messages
+			durableName = "workers-" + name + "-" + subOpts.WorkerGroup
+		}
 		// WorkerPool: shared durable consumer per event (load balancing)
 		consumerConfig = jetstream.ConsumerConfig{
-			Durable:       "workers-" + name,
+			Durable:       durableName,
 			AckPolicy:     jetstream.AckExplicitPolicy,
 			DeliverPolicy: deliverPolicy,
 		}

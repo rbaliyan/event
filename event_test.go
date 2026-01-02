@@ -489,6 +489,212 @@ func TestWorkerPoolDeliveryMode(t *testing.T) {
 	}
 }
 
+func TestWorkerGroupDeliveryMode(t *testing.T) {
+	// Test worker groups - each group receives all messages, workers within compete
+	transport := channel.New(
+		channel.WithBufferSize(100),
+		channel.WithTimeout(time.Duration(100)*time.Millisecond),
+	)
+	bus := mustNewBus(t, "test-worker-group", WithTransport(transport))
+	defer bus.Close(context.Background())
+
+	e := New[int32]("test-worker-group")
+	if err := Register(context.Background(), bus, e); err != nil {
+		t.Fatalf("failed to register event: %v", err)
+	}
+
+	var total int32 = 50
+
+	// Counters for each worker in each group
+	var groupAWorker1, groupAWorker2 int32
+	var groupBWorker1, groupBWorker2 int32
+	var totalProcessed int32
+
+	// We expect 2 groups * 50 messages = 100 total handler calls
+	expectedTotal := total * 2
+	done := make(chan struct{}, 1)
+
+	// Group A: 2 workers
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event[int32], data int32) error {
+		atomic.AddInt32(&groupAWorker1, 1)
+		if atomic.AddInt32(&totalProcessed, 1) >= expectedTotal {
+			select {
+			case done <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	}, AsWorker[int32](), WithWorkerGroup[int32]("group-a"))
+
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event[int32], data int32) error {
+		atomic.AddInt32(&groupAWorker2, 1)
+		if atomic.AddInt32(&totalProcessed, 1) >= expectedTotal {
+			select {
+			case done <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	}, AsWorker[int32](), WithWorkerGroup[int32]("group-a"))
+
+	// Group B: 2 workers
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event[int32], data int32) error {
+		atomic.AddInt32(&groupBWorker1, 1)
+		if atomic.AddInt32(&totalProcessed, 1) >= expectedTotal {
+			select {
+			case done <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	}, AsWorker[int32](), WithWorkerGroup[int32]("group-b"))
+
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event[int32], data int32) error {
+		atomic.AddInt32(&groupBWorker2, 1)
+		if atomic.AddInt32(&totalProcessed, 1) >= expectedTotal {
+			select {
+			case done <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	}, AsWorker[int32](), WithWorkerGroup[int32]("group-b"))
+
+	// Publish messages
+	for i := int32(0); i < total; i++ {
+		if err := e.Publish(context.Background(), i); err != nil {
+			t.Errorf("publish failed: %v", err)
+		}
+	}
+
+	// Wait for processing
+	if !wait(done, 2000) {
+		t.Errorf("timeout waiting for messages, processed: %d, expected: %d", totalProcessed, expectedTotal)
+	}
+
+	// Verify each group received all messages
+	groupATotal := groupAWorker1 + groupAWorker2
+	groupBTotal := groupBWorker1 + groupBWorker2
+
+	if groupATotal != total {
+		t.Errorf("group A expected %d messages, got %d (worker1: %d, worker2: %d)",
+			total, groupATotal, groupAWorker1, groupAWorker2)
+	}
+	if groupBTotal != total {
+		t.Errorf("group B expected %d messages, got %d (worker1: %d, worker2: %d)",
+			total, groupBTotal, groupBWorker1, groupBWorker2)
+	}
+
+	t.Logf("Group A: worker1=%d, worker2=%d, total=%d", groupAWorker1, groupAWorker2, groupATotal)
+	t.Logf("Group B: worker1=%d, worker2=%d, total=%d", groupBWorker1, groupBWorker2, groupBTotal)
+}
+
+func TestWorkerGroupWithBroadcast(t *testing.T) {
+	// Test mixing worker groups with broadcast subscribers
+	transport := channel.New(
+		channel.WithBufferSize(100),
+		channel.WithTimeout(time.Duration(100)*time.Millisecond),
+	)
+	bus := mustNewBus(t, "test-mixed", WithTransport(transport))
+	defer bus.Close(context.Background())
+
+	e := New[string]("test-mixed")
+	if err := Register(context.Background(), bus, e); err != nil {
+		t.Fatalf("failed to register event: %v", err)
+	}
+
+	var total int32 = 20
+
+	// Counters
+	var broadcast1, broadcast2 int32     // broadcast subscribers
+	var workerA1, workerA2 int32         // worker group A
+	var workerDefault1, workerDefault2 int32 // default worker pool (no group)
+	var totalProcessed int32
+
+	// Expected: 2 broadcast + 1 from group-a + 1 from default = 4 per message
+	expectedTotal := total * 4
+	done := make(chan struct{}, 1)
+
+	incrementAndCheck := func(counter *int32) {
+		atomic.AddInt32(counter, 1)
+		if atomic.AddInt32(&totalProcessed, 1) >= expectedTotal {
+			select {
+			case done <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	// Broadcast subscribers (receive all messages)
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
+		incrementAndCheck(&broadcast1)
+		return nil
+	}, AsBroadcast[string]())
+
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
+		incrementAndCheck(&broadcast2)
+		return nil
+	}, AsBroadcast[string]())
+
+	// Worker group A (compete within group)
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
+		incrementAndCheck(&workerA1)
+		return nil
+	}, AsWorker[string](), WithWorkerGroup[string]("group-a"))
+
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
+		incrementAndCheck(&workerA2)
+		return nil
+	}, AsWorker[string](), WithWorkerGroup[string]("group-a"))
+
+	// Default worker pool (no group - compete among themselves)
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
+		incrementAndCheck(&workerDefault1)
+		return nil
+	}, AsWorker[string]())
+
+	e.Subscribe(context.Background(), func(ctx context.Context, event Event[string], data string) error {
+		incrementAndCheck(&workerDefault2)
+		return nil
+	}, AsWorker[string]())
+
+	// Publish messages
+	for i := int32(0); i < total; i++ {
+		if err := e.Publish(context.Background(), "msg"); err != nil {
+			t.Errorf("publish failed: %v", err)
+		}
+	}
+
+	// Wait for processing
+	if !wait(done, 2000) {
+		t.Errorf("timeout, processed: %d, expected: %d", totalProcessed, expectedTotal)
+	}
+
+	// Verify broadcast subscribers received all messages
+	if broadcast1 != total {
+		t.Errorf("broadcast1 expected %d, got %d", total, broadcast1)
+	}
+	if broadcast2 != total {
+		t.Errorf("broadcast2 expected %d, got %d", total, broadcast2)
+	}
+
+	// Verify group-a received all messages (distributed among workers)
+	groupATotal := workerA1 + workerA2
+	if groupATotal != total {
+		t.Errorf("group-a expected %d total, got %d", total, groupATotal)
+	}
+
+	// Verify default workers received all messages (distributed among workers)
+	defaultTotal := workerDefault1 + workerDefault2
+	if defaultTotal != total {
+		t.Errorf("default workers expected %d total, got %d", total, defaultTotal)
+	}
+
+	t.Logf("Broadcast: sub1=%d, sub2=%d", broadcast1, broadcast2)
+	t.Logf("Group A: worker1=%d, worker2=%d, total=%d", workerA1, workerA2, groupATotal)
+	t.Logf("Default: worker1=%d, worker2=%d, total=%d", workerDefault1, workerDefault2, defaultTotal)
+}
+
 // TestContextImmutability verifies that context modification functions
 // don't mutate the original context data (race condition fix)
 func TestContextImmutability(t *testing.T) {

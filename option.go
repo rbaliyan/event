@@ -132,13 +132,14 @@ type Middleware[T any] func(Handler[T]) Handler[T]
 
 // subscribeOptions holds configuration for subscriptions
 type subscribeOptions[T any] struct {
-	mode       transport.DeliveryMode
-	startFrom  transport.StartPosition
-	startTime  time.Time
-	maxAge     time.Duration
-	latestOnly bool
-	bufferSize int
-	middleware []Middleware[T]
+	mode        transport.DeliveryMode
+	workerGroup string
+	startFrom   transport.StartPosition
+	startTime   time.Time
+	maxAge      time.Duration
+	latestOnly  bool
+	bufferSize  int
+	middleware  []Middleware[T]
 }
 
 // SubscribeOption configures subscription behavior
@@ -160,6 +161,10 @@ func newSubscribeOptions[T any](opts ...SubscribeOption[T]) *subscribeOptions[T]
 func (o *subscribeOptions[T]) transportOptions() []transport.SubscribeOption {
 	opts := []transport.SubscribeOption{
 		transport.WithDeliveryMode(o.mode),
+	}
+
+	if o.workerGroup != "" {
+		opts = append(opts, transport.WithWorkerGroup(o.workerGroup))
 	}
 
 	if o.startFrom != transport.StartFromBeginning {
@@ -199,6 +204,33 @@ func AsWorker[T any]() SubscribeOption[T] {
 func AsBroadcast[T any]() SubscribeOption[T] {
 	return func(o *subscribeOptions[T]) {
 		o.mode = transport.Broadcast
+	}
+}
+
+// WithWorkerGroup sets the worker group name for WorkerPool mode.
+// Workers with the same group name compete for messages (load balancing).
+// Different groups each receive all messages (like broadcast between groups).
+//
+// This enables patterns like:
+//   - Multiple processing pipelines on the same event
+//   - Separate scaling for different workloads
+//
+// Example:
+//
+//	// Order processors compete within their group
+//	orderEvent.Subscribe(ctx, processOrder,
+//	    event.AsWorker[Order](),
+//	    event.WithWorkerGroup[Order]("order-processors"))
+//
+//	// Inventory updaters compete within their group (separate from processors)
+//	orderEvent.Subscribe(ctx, updateInventory,
+//	    event.AsWorker[Order](),
+//	    event.WithWorkerGroup[Order]("inventory-updaters"))
+//
+//	// Both groups receive every message, but workers within each group compete
+func WithWorkerGroup[T any](group string) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.workerGroup = group
 	}
 }
 

@@ -273,8 +273,14 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	// Determine consumer group based on delivery mode
 	var groupID string
 	if subOpts.DeliveryMode == transport.WorkerPool {
-		// Same group = competing consumers (load balancing)
-		groupID = t.groupID + "-" + name
+		if subOpts.WorkerGroup != "" {
+			// WorkerPool with named group: workers in same group compete
+			// Different groups each receive all messages
+			groupID = t.groupID + "-" + name + "-" + subOpts.WorkerGroup
+		} else {
+			// WorkerPool default: all workers share the base group
+			groupID = t.groupID + "-" + name
+		}
 	} else {
 		// Broadcast: unique group per subscriber (fan-out)
 		groupID = t.groupID + "-" + name + "-" + transport.NewID()

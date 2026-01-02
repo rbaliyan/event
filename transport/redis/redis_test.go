@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -421,6 +422,87 @@ func TestTransportSubscribe(t *testing.T) {
 		rs2 := sub2.(*subscription)
 		if rs1.group == rs2.group {
 			t.Error("expected different groups for broadcast mode")
+		}
+	})
+
+	t.Run("worker groups use separate consumer groups", func(t *testing.T) {
+		tr2, _ := New(newMockRedisClient(), WithConsumerGroup("test-bus"))
+		defer tr2.Close(context.Background())
+
+		tr2.RegisterEvent(ctx, "worker-group-event")
+
+		// Workers in group-a
+		subA1, _ := tr2.Subscribe(ctx, "worker-group-event",
+			transport.WithDeliveryMode(transport.WorkerPool),
+			transport.WithWorkerGroup("group-a"))
+		subA2, _ := tr2.Subscribe(ctx, "worker-group-event",
+			transport.WithDeliveryMode(transport.WorkerPool),
+			transport.WithWorkerGroup("group-a"))
+
+		// Workers in group-b
+		subB1, _ := tr2.Subscribe(ctx, "worker-group-event",
+			transport.WithDeliveryMode(transport.WorkerPool),
+			transport.WithWorkerGroup("group-b"))
+		subB2, _ := tr2.Subscribe(ctx, "worker-group-event",
+			transport.WithDeliveryMode(transport.WorkerPool),
+			transport.WithWorkerGroup("group-b"))
+
+		defer subA1.Close(context.Background())
+		defer subA2.Close(context.Background())
+		defer subB1.Close(context.Background())
+		defer subB2.Close(context.Background())
+
+		rsA1 := subA1.(*subscription)
+		rsA2 := subA2.(*subscription)
+		rsB1 := subB1.(*subscription)
+		rsB2 := subB2.(*subscription)
+
+		// Workers in same group should share same consumer group
+		if rsA1.group != rsA2.group {
+			t.Errorf("expected same group for group-a workers, got %s and %s", rsA1.group, rsA2.group)
+		}
+		if rsB1.group != rsB2.group {
+			t.Errorf("expected same group for group-b workers, got %s and %s", rsB1.group, rsB2.group)
+		}
+
+		// Different worker groups should have different consumer groups
+		if rsA1.group == rsB1.group {
+			t.Errorf("expected different groups for group-a and group-b, both got %s", rsA1.group)
+		}
+
+		// Verify group names contain the worker group name
+		if !strings.Contains(rsA1.group, "group-a") {
+			t.Errorf("expected group name to contain 'group-a', got %s", rsA1.group)
+		}
+		if !strings.Contains(rsB1.group, "group-b") {
+			t.Errorf("expected group name to contain 'group-b', got %s", rsB1.group)
+		}
+	})
+
+	t.Run("default worker pool vs named worker group use different groups", func(t *testing.T) {
+		tr2, _ := New(newMockRedisClient(), WithConsumerGroup("test-bus"))
+		defer tr2.Close(context.Background())
+
+		tr2.RegisterEvent(ctx, "mixed-workers")
+
+		// Default worker pool (no group)
+		subDefault, _ := tr2.Subscribe(ctx, "mixed-workers",
+			transport.WithDeliveryMode(transport.WorkerPool))
+
+		// Named worker group
+		subNamed, _ := tr2.Subscribe(ctx, "mixed-workers",
+			transport.WithDeliveryMode(transport.WorkerPool),
+			transport.WithWorkerGroup("named-group"))
+
+		defer subDefault.Close(context.Background())
+		defer subNamed.Close(context.Background())
+
+		rsDefault := subDefault.(*subscription)
+		rsNamed := subNamed.(*subscription)
+
+		// They should have different consumer groups
+		if rsDefault.group == rsNamed.group {
+			t.Errorf("expected different groups for default and named, both got %s", rsDefault.group)
 		}
 	})
 }

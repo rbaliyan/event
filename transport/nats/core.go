@@ -299,8 +299,15 @@ func (t *CoreTransport) Subscribe(ctx context.Context, name string, opts ...tran
 	var err error
 
 	if subOpts.DeliveryMode == transport.WorkerPool {
+		// Determine queue group name based on worker group
+		queueGroup := "workers"
+		if subOpts.WorkerGroup != "" {
+			// WorkerPool with named group: workers in same group compete
+			// Different groups each receive all messages
+			queueGroup = "workers-" + subOpts.WorkerGroup
+		}
 		// Queue group for load balancing
-		natsSub, err = t.conn.QueueSubscribe(name, "workers", sub.handleMessage)
+		natsSub, err = t.conn.QueueSubscribe(name, queueGroup, sub.handleMessage)
 	} else {
 		// Regular subscription for broadcast
 		natsSub, err = t.conn.Subscribe(name, sub.handleMessage)

@@ -296,6 +296,253 @@ func TestWorkerPoolMode(t *testing.T) {
 	}
 }
 
+func TestWorkerGroups(t *testing.T) {
+	ctx := context.Background()
+	tr := New(WithBufferSize(10))
+	defer tr.Close(ctx)
+
+	tr.RegisterEvent(ctx, "worker-group-event")
+
+	// Create workers in different groups
+	// Group A: 2 workers
+	subA1, _ := tr.Subscribe(ctx, "worker-group-event",
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup("group-a"))
+	subA2, _ := tr.Subscribe(ctx, "worker-group-event",
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup("group-a"))
+
+	// Group B: 2 workers
+	subB1, _ := tr.Subscribe(ctx, "worker-group-event",
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup("group-b"))
+	subB2, _ := tr.Subscribe(ctx, "worker-group-event",
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup("group-b"))
+
+	defer subA1.Close(ctx)
+	defer subA2.Close(ctx)
+	defer subB1.Close(ctx)
+	defer subB2.Close(ctx)
+
+	// Publish 5 messages
+	for i := 0; i < 5; i++ {
+		msg := testMessage("msg-"+string(rune('0'+i)), "source", "worker-group")
+		tr.Publish(ctx, "worker-group-event", msg)
+	}
+
+	// Count messages received by each worker
+	var countA1, countA2, countB1, countB2 int32
+	var wg sync.WaitGroup
+	wg.Add(4)
+
+	countMessages := func(sub transport.Subscription, counter *int32) {
+		defer wg.Done()
+		for {
+			select {
+			case _, ok := <-sub.Messages():
+				if !ok {
+					return
+				}
+				atomic.AddInt32(counter, 1)
+			case <-time.After(50 * time.Millisecond):
+				return
+			}
+		}
+	}
+
+	go countMessages(subA1, &countA1)
+	go countMessages(subA2, &countA2)
+	go countMessages(subB1, &countB1)
+	go countMessages(subB2, &countB2)
+
+	wg.Wait()
+
+	// Each group should receive all 5 messages (distributed among its workers)
+	groupATotal := countA1 + countA2
+	groupBTotal := countB1 + countB2
+
+	if groupATotal != 5 {
+		t.Errorf("group A expected 5 total messages, got %d (A1: %d, A2: %d)", groupATotal, countA1, countA2)
+	}
+	if groupBTotal != 5 {
+		t.Errorf("group B expected 5 total messages, got %d (B1: %d, B2: %d)", groupBTotal, countB1, countB2)
+	}
+
+	// Within each group, both workers should receive some messages (round-robin)
+	t.Logf("Group A distribution: A1=%d, A2=%d", countA1, countA2)
+	t.Logf("Group B distribution: B1=%d, B2=%d", countB1, countB2)
+}
+
+func TestWorkerGroupSingleWorker(t *testing.T) {
+	// Test a worker group with only one worker
+	ctx := context.Background()
+	tr := New(WithBufferSize(10))
+	defer tr.Close(ctx)
+
+	tr.RegisterEvent(ctx, "single-worker-event")
+
+	// Single worker in group
+	sub, _ := tr.Subscribe(ctx, "single-worker-event",
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup("solo-group"))
+	defer sub.Close(ctx)
+
+	// Publish messages
+	for i := 0; i < 5; i++ {
+		msg := testMessage("msg-"+string(rune('0'+i)), "source", "single")
+		tr.Publish(ctx, "single-worker-event", msg)
+	}
+
+	// Single worker should receive all messages
+	var count int32
+	for {
+		select {
+		case _, ok := <-sub.Messages():
+			if !ok {
+				t.Fatal("channel closed unexpectedly")
+			}
+			count++
+			if count >= 5 {
+				goto done
+			}
+		case <-time.After(100 * time.Millisecond):
+			goto done
+		}
+	}
+done:
+	if count != 5 {
+		t.Errorf("expected 5 messages, got %d", count)
+	}
+}
+
+func TestWorkerGroupMixedWithDefaultPool(t *testing.T) {
+	// Test mixing named worker groups with default (unnamed) worker pool
+	ctx := context.Background()
+	tr := New(WithBufferSize(10))
+	defer tr.Close(ctx)
+
+	tr.RegisterEvent(ctx, "mixed-pool-event")
+
+	// Named worker group
+	subNamed1, _ := tr.Subscribe(ctx, "mixed-pool-event",
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup("named"))
+	subNamed2, _ := tr.Subscribe(ctx, "mixed-pool-event",
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup("named"))
+
+	// Default worker pool (empty group name)
+	subDefault1, _ := tr.Subscribe(ctx, "mixed-pool-event",
+		transport.WithDeliveryMode(transport.WorkerPool))
+	subDefault2, _ := tr.Subscribe(ctx, "mixed-pool-event",
+		transport.WithDeliveryMode(transport.WorkerPool))
+
+	defer subNamed1.Close(ctx)
+	defer subNamed2.Close(ctx)
+	defer subDefault1.Close(ctx)
+	defer subDefault2.Close(ctx)
+
+	// Publish messages
+	for i := 0; i < 10; i++ {
+		msg := testMessage("msg-"+string(rune('0'+i)), "source", "mixed")
+		tr.Publish(ctx, "mixed-pool-event", msg)
+	}
+
+	// Count messages
+	var namedCount, defaultCount int32
+	var wg sync.WaitGroup
+	wg.Add(4)
+
+	countMessages := func(sub transport.Subscription, counter *int32) {
+		defer wg.Done()
+		for {
+			select {
+			case _, ok := <-sub.Messages():
+				if !ok {
+					return
+				}
+				atomic.AddInt32(counter, 1)
+			case <-time.After(50 * time.Millisecond):
+				return
+			}
+		}
+	}
+
+	go countMessages(subNamed1, &namedCount)
+	go countMessages(subNamed2, &namedCount)
+	go countMessages(subDefault1, &defaultCount)
+	go countMessages(subDefault2, &defaultCount)
+
+	wg.Wait()
+
+	// Each group should receive all 10 messages
+	if namedCount != 10 {
+		t.Errorf("named group expected 10 messages, got %d", namedCount)
+	}
+	if defaultCount != 10 {
+		t.Errorf("default group expected 10 messages, got %d", defaultCount)
+	}
+}
+
+func TestWorkerGroupEmptyStringIsSameAsDefault(t *testing.T) {
+	// Empty string worker group should be treated the same as no group (default)
+	ctx := context.Background()
+	tr := New(WithBufferSize(10))
+	defer tr.Close(ctx)
+
+	tr.RegisterEvent(ctx, "empty-group-event")
+
+	// Empty string group
+	subEmpty, _ := tr.Subscribe(ctx, "empty-group-event",
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup(""))
+
+	// No group specified (default)
+	subDefault, _ := tr.Subscribe(ctx, "empty-group-event",
+		transport.WithDeliveryMode(transport.WorkerPool))
+
+	defer subEmpty.Close(ctx)
+	defer subDefault.Close(ctx)
+
+	// Publish messages
+	for i := 0; i < 6; i++ {
+		msg := testMessage("msg-"+string(rune('0'+i)), "source", "empty")
+		tr.Publish(ctx, "empty-group-event", msg)
+	}
+
+	// Both should compete for the same messages (same group)
+	var emptyCount, defaultCount int32
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	countMessages := func(sub transport.Subscription, counter *int32) {
+		defer wg.Done()
+		for {
+			select {
+			case _, ok := <-sub.Messages():
+				if !ok {
+					return
+				}
+				atomic.AddInt32(counter, 1)
+			case <-time.After(50 * time.Millisecond):
+				return
+			}
+		}
+	}
+
+	go countMessages(subEmpty, &emptyCount)
+	go countMessages(subDefault, &defaultCount)
+
+	wg.Wait()
+
+	// Together they should receive all 6 messages
+	total := emptyCount + defaultCount
+	if total != 6 {
+		t.Errorf("expected 6 total messages, got %d (empty: %d, default: %d)", total, emptyCount, defaultCount)
+	}
+}
+
 func TestSubscriptionClose(t *testing.T) {
 	ctx := context.Background()
 	tr := New()

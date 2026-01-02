@@ -137,6 +137,13 @@ type SubscribeOptions struct {
 	// Default: Broadcast (all subscribers receive every message)
 	DeliveryMode DeliveryMode
 
+	// WorkerGroup specifies a named group for WorkerPool mode.
+	// Workers with the same group name compete for messages (load balancing).
+	// Different groups each receive all messages (like broadcast between groups).
+	// Only used when DeliveryMode is WorkerPool.
+	// Empty string means all WorkerPool subscribers share the default group.
+	WorkerGroup string
+
 	// StartFrom determines where to start reading messages.
 	// Default: StartFromBeginning (process all historical messages)
 	StartFrom StartPosition
@@ -248,6 +255,31 @@ func WithBufferSize(size int) SubscribeOption {
 func WithDeliveryMode(mode DeliveryMode) SubscribeOption {
 	return func(o *SubscribeOptions) {
 		o.DeliveryMode = mode
+	}
+}
+
+// WithWorkerGroup sets the worker group name for WorkerPool mode.
+// Workers with the same group name compete for messages (load balancing).
+// Different groups each receive all messages (like broadcast between groups).
+//
+// This enables patterns like:
+//   - Multiple processing pipelines on the same event
+//   - Separate scaling for different workloads
+//
+// Example:
+//
+//	// Order processors compete within their group
+//	sub1, err := transport.Subscribe(ctx, "orders",
+//	    transport.WithDeliveryMode(transport.WorkerPool),
+//	    transport.WithWorkerGroup("order-processors"))
+//
+//	// Inventory updaters compete within their group (separate from order processors)
+//	sub2, err := transport.Subscribe(ctx, "orders",
+//	    transport.WithDeliveryMode(transport.WorkerPool),
+//	    transport.WithWorkerGroup("inventory-updaters"))
+func WithWorkerGroup(group string) SubscribeOption {
+	return func(o *SubscribeOptions) {
+		o.WorkerGroup = group
 	}
 }
 

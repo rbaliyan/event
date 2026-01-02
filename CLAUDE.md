@@ -170,6 +170,32 @@ Recovery (panic handling)
 - Subscriber timeout: 0 (no timeout)
 - Delivery mode: Broadcast (all subscribers receive)
 
+### Delivery Modes
+
+Subscribe options control how messages are distributed:
+
+| Option | Mode | Behavior |
+|--------|------|----------|
+| `AsBroadcast[T]()` | Broadcast | All subscribers receive every message (default) |
+| `AsWorker[T]()` | WorkerPool | Only one subscriber receives each message |
+| `WithWorkerGroup[T](name)` | Named WorkerPool | Workers with same group compete; different groups each receive all messages |
+
+**Worker Groups** enable multiple processing pipelines on the same event:
+```go
+// Group A workers compete among themselves
+event.Subscribe(ctx, handler, AsWorker[T](), WithWorkerGroup[T]("group-a"))
+// Group B workers compete among themselves (separate from A)
+event.Subscribe(ctx, handler, AsWorker[T](), WithWorkerGroup[T]("group-b"))
+// Both groups receive all messages
+```
+
+**Transport Implementation:**
+- Redis: Separate consumer groups per worker group
+- Kafka: Separate consumer group IDs per worker group
+- NATS JetStream: Separate durable consumers per worker group
+- NATS Core: Separate queue groups per worker group
+- Channel: Custom fan-out to groups, round-robin within each
+
 ### Monitor HTTP/gRPC API
 
 Handler-only approach - no server management, middleware, or auth. Integrating systems mount handlers with their own servers:

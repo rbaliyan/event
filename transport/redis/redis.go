@@ -267,14 +267,25 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	}
 
 	var groupID string
+	var needsGroupCreate bool
 	if subOpts.DeliveryMode == transport.WorkerPool {
-		// WorkerPool: same consumer group (load balancing)
-		groupID = t.groupID
+		if subOpts.WorkerGroup != "" {
+			// WorkerPool with named group: workers in same group compete
+			// Different groups each receive all messages
+			groupID = t.groupID + "-" + name + "-" + subOpts.WorkerGroup
+			needsGroupCreate = true
+		} else {
+			// WorkerPool default: all workers share the base group
+			groupID = t.groupID
+		}
 	} else {
 		// Broadcast: unique consumer group per subscriber (fan-out)
 		groupID = t.groupID + "-" + subID
+		needsGroupCreate = true
+	}
 
-		// Create new consumer group for this subscriber
+	// Create consumer group if needed (named worker groups or broadcast)
+	if needsGroupCreate {
 		err := t.client.XGroupCreateMkStream(ctx, streamName, groupID, startID).Err()
 		if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 			return nil, err

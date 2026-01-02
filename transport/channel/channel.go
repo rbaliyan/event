@@ -55,12 +55,13 @@ type eventChannel struct {
 
 // subscription implements transport.Subscription
 type subscription struct {
-	id       string
-	ch       chan transport.Message
-	ev       *eventChannel
-	mode     transport.DeliveryMode
-	closed   int32
-	closedCh chan struct{}
+	id          string
+	ch          chan transport.Message
+	ev          *eventChannel
+	mode        transport.DeliveryMode
+	workerGroup string // worker group name for WorkerPool mode
+	closed      int32
+	closedCh    chan struct{}
 }
 
 func (s *subscription) ID() string {
@@ -187,15 +188,16 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 		return nil
 	}
 
-	// Collect subscribers by mode
+	// Collect subscribers by mode and worker group
 	var broadcastSubs []*subscription
-	var workerSubs []*subscription
+	workerGroups := make(map[string][]*subscription) // group name -> subscribers
 
 	ec.subscribers.Range(func(key, value any) bool {
 		sub := value.(*subscription)
 		if atomic.LoadInt32(&sub.closed) == 0 {
 			if sub.mode == transport.WorkerPool {
-				workerSubs = append(workerSubs, sub)
+				// Group by worker group name (empty string = default group)
+				workerGroups[sub.workerGroup] = append(workerGroups[sub.workerGroup], sub)
 			} else {
 				broadcastSubs = append(broadcastSubs, sub)
 			}
@@ -233,8 +235,14 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 		}
 	}
 
-	// Send to ONE worker pool subscriber (round-robin with retry)
-	if len(workerSubs) > 0 {
+	// Send to ONE worker per group (round-robin within each group)
+	// Each worker group receives the message (like broadcast between groups)
+	// Workers within a group compete (like worker pool within group)
+	for groupName, workerSubs := range workerGroups {
+		if len(workerSubs) == 0 {
+			continue
+		}
+
 		startIdx := atomic.AddInt64(&ec.workerNextIndex, 1)
 		numWorkers := int64(len(workerSubs))
 		var lastErr error
@@ -247,32 +255,37 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 				t.logger.Debug("failed to send to worker subscriber, trying next",
 					"event", ec.name,
 					"subscriber", sub.id,
+					"worker_group", groupName,
 					"error", err,
 					"attempt", i+1,
 					"total_workers", numWorkers)
 				lastErr = err
-				continue // Try next worker
+				continue // Try next worker in this group
 			}
-			return nil // Success
+			lastErr = nil
+			break // Success for this group
 		}
 
-		// All workers failed - message will be dropped
-		t.logger.Warn("all worker pool subscribers failed, message dropped",
-			"event", ec.name,
-			"msg_id", msg.ID(),
-			"workers_tried", numWorkers,
-			"last_error", lastErr)
-		// Record metric for dropped message
-		if t.droppedCounter != nil {
-			t.droppedCounter.Add(ctx, 1,
-				metric.WithAttributes(
-					attribute.String("event", ec.name),
-					attribute.String("reason", "all_workers_failed"),
-					attribute.String("mode", "worker_pool"),
-				))
+		// All workers in this group failed
+		if lastErr != nil {
+			t.logger.Warn("all workers in group failed, message dropped for group",
+				"event", ec.name,
+				"worker_group", groupName,
+				"msg_id", msg.ID(),
+				"workers_tried", numWorkers,
+				"last_error", lastErr)
+			// Record metric for dropped message
+			if t.droppedCounter != nil {
+				t.droppedCounter.Add(ctx, 1,
+					metric.WithAttributes(
+						attribute.String("event", ec.name),
+						attribute.String("reason", "all_workers_failed"),
+						attribute.String("mode", "worker_pool"),
+						attribute.String("worker_group", groupName),
+					))
+			}
+			t.onError(lastErr)
 		}
-		t.onError(lastErr)
-		return lastErr
 	}
 
 	return nil
@@ -336,17 +349,18 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	}
 
 	sub := &subscription{
-		id:       transport.NewID(),
-		ch:       make(chan transport.Message, bufSize),
-		ev:       ec,
-		mode:     subOpts.DeliveryMode,
-		closedCh: make(chan struct{}),
+		id:          transport.NewID(),
+		ch:          make(chan transport.Message, bufSize),
+		ev:          ec,
+		mode:        subOpts.DeliveryMode,
+		workerGroup: subOpts.WorkerGroup,
+		closedCh:    make(chan struct{}),
 	}
 
 	ec.subscribers.Store(sub.id, sub)
 	atomic.AddInt64(&ec.subCount, 1)
 
-	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "mode", subOpts.DeliveryMode)
+	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "mode", subOpts.DeliveryMode, "worker_group", subOpts.WorkerGroup)
 	return sub, nil
 }
 

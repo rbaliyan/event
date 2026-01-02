@@ -468,6 +468,96 @@ func main() {
 }
 ```
 
+## Delivery Modes
+
+Control how messages are distributed to subscribers.
+
+### Broadcast (Default)
+
+All subscribers receive every message (fan-out):
+
+```go
+// Default behavior - all handlers receive every message
+orderEvent.Subscribe(ctx, notifyWarehouse, event.AsBroadcast[Order]())
+orderEvent.Subscribe(ctx, notifyShipping, event.AsBroadcast[Order]())
+orderEvent.Subscribe(ctx, updateDashboard, event.AsBroadcast[Order]())
+// All three handlers receive every published order
+```
+
+### Worker Pool
+
+Only one subscriber receives each message (load balancing):
+
+```go
+// Workers compete - each message goes to exactly one handler
+orderEvent.Subscribe(ctx, processOrder, event.AsWorker[Order]())
+orderEvent.Subscribe(ctx, processOrder, event.AsWorker[Order]())
+orderEvent.Subscribe(ctx, processOrder, event.AsWorker[Order]())
+// 3 workers, each order processed by exactly one
+```
+
+### Worker Groups
+
+Multiple worker groups, each receiving all messages. Workers within a group compete:
+
+```go
+// Group A: Order processors (3 workers compete)
+orderEvent.Subscribe(ctx, processOrder,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("order-processors"))
+orderEvent.Subscribe(ctx, processOrder,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("order-processors"))
+orderEvent.Subscribe(ctx, processOrder,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("order-processors"))
+
+// Group B: Inventory updaters (2 workers compete)
+orderEvent.Subscribe(ctx, updateInventory,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("inventory-updaters"))
+orderEvent.Subscribe(ctx, updateInventory,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("inventory-updaters"))
+
+// Result: Each order is processed by:
+// - 1 of 3 order-processors (competing)
+// - 1 of 2 inventory-updaters (competing)
+// Both groups receive all messages (like broadcast between groups)
+```
+
+### Mixing Modes
+
+Combine broadcast, worker pool, and worker groups on the same event:
+
+```go
+// Broadcast: All notification services receive every order
+orderEvent.Subscribe(ctx, sendEmail, event.AsBroadcast[Order]())
+orderEvent.Subscribe(ctx, sendSMS, event.AsBroadcast[Order]())
+
+// Worker Group "processors": 3 workers compete
+orderEvent.Subscribe(ctx, processOrder,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("processors"))
+orderEvent.Subscribe(ctx, processOrder,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("processors"))
+
+// Worker Group "analytics": 2 workers compete
+orderEvent.Subscribe(ctx, trackAnalytics,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("analytics"))
+orderEvent.Subscribe(ctx, trackAnalytics,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("analytics"))
+
+// Each order goes to:
+// - sendEmail (broadcast)
+// - sendSMS (broadcast)
+// - 1 of 2 processors (worker group)
+// - 1 of 2 analytics workers (worker group)
+```
+
 ## Batch Processing
 
 Process messages in batches for high throughput:
