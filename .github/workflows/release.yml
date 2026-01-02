@@ -28,18 +28,18 @@ jobs:
       - name: Get current version from git tags
         id: get_version
         run: |
-          # Get the latest v2.x.x tag from git
-          LATEST_TAG=$(git tag -l "v2.*" --sort=-v:refname | head -n1)
+          # Get the latest v3.x.x tag from git
+          LATEST_TAG=$(git tag -l "v3.*" --sort=-v:refname | head -n1)
 
           if [ -z "$LATEST_TAG" ]; then
-            # No v2 tags exist, start at v2.0.0
-            LATEST_TAG="v2.0.0"
-            echo "No existing v2 tags found, starting at v2.0.0"
+            # No v3 tags exist, start at v3.0.0
+            LATEST_TAG="v3.0.0"
+            echo "No existing v3 tags found, starting at v3.0.0"
           fi
 
           echo "Latest tag: $LATEST_TAG"
 
-          # Extract version numbers (v2.x.x format)
+          # Extract version numbers (v3.x.x format)
           VERSION=${LATEST_TAG#v}
           MAJOR=$(echo $VERSION | cut -d. -f1)
           MINOR=$(echo $VERSION | cut -d. -f2)
