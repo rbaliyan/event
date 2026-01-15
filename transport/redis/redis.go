@@ -78,8 +78,7 @@ type Transport struct {
 
 // redisEvent tracks event-specific state
 type redisEvent struct {
-	name   string
-	subIdx int64 // For generating unique consumer group names in Broadcast mode
+	name string
 }
 
 // subscription implements transport.Subscription for Redis

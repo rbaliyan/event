@@ -80,7 +80,6 @@ type JetStreamTransport struct {
 type natsEvent struct {
 	name   string
 	stream jetstream.Stream
-	subIdx int64 // For generating unique consumer names in Broadcast mode
 }
 
 // jsSubscription implements transport.Subscription for JetStream
@@ -504,7 +503,7 @@ func (s *jsSubscription) consumeLoop(ctx context.Context, logger *slog.Logger) {
 		decoded, err := s.codec.Decode(msg.Data())
 		if err != nil {
 			logger.Error("failed to decode message", "error", err)
-			msg.Ack() // Ack to avoid redelivery loop
+			_ = msg.Ack() // Ack to avoid redelivery loop
 			return
 		}
 
@@ -530,7 +529,7 @@ func (s *jsSubscription) consumeLoop(ctx context.Context, logger *slog.Logger) {
 			return
 		case base.SendTimeout:
 			// Timeout: Nack for immediate redelivery - NO message loss
-			msg.Nak()
+			_ = msg.Nak()
 			logger.Warn("message send timeout, nack'd for redelivery")
 		case base.SendOK:
 			// Successfully sent to handler

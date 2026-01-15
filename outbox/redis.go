@@ -590,7 +590,9 @@ func (r *RedisRelay) publishPending(ctx context.Context) {
 				"id", msg.ID,
 				"event", msg.EventName,
 				"error", err)
-			r.store.MarkFailed(ctx, msg.StreamID, msg, err)
+			if markErr := r.store.MarkFailed(ctx, msg.StreamID, msg, err); markErr != nil {
+				r.logger.Error("failed to mark message as failed", "error", markErr)
+			}
 			continue
 		}
 

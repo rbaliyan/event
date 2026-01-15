@@ -301,7 +301,7 @@ func (p *Processor[T]) Process(
 
 		// Ack/Nack all messages in batch
 		for _, msg := range batch {
-			msg.Ack(err)
+			_ = msg.Ack(err)
 		}
 
 		// Reset batch
@@ -333,7 +333,7 @@ func (p *Processor[T]) Process(
 			}
 			codec, codecOk := payload.Get(contentType)
 			if !codecOk {
-				msg.Ack(nil) // Skip unknown content type
+				_ = msg.Ack(nil) // Skip unknown content type
 				continue
 			}
 			var typed T

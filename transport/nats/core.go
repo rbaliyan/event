@@ -51,8 +51,7 @@ type CoreTransport struct {
 
 // coreEvent tracks event-specific state for NATS Core
 type coreEvent struct {
-	name   string
-	subIdx int64
+	name string
 }
 
 // coreSubscription implements transport.Subscription for NATS Core

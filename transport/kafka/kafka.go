@@ -65,8 +65,7 @@ type Transport struct {
 
 // kafkaEvent tracks event-specific state
 type kafkaEvent struct {
-	name   string
-	subIdx int64 // For generating unique consumer group IDs in Broadcast mode
+	name string
 }
 
 // subscription implements transport.Subscription for Kafka
@@ -654,29 +653,6 @@ func (h *consumerHandler) ConsumeClaim(session sarama.ConsumerGroupSession, clai
 			}
 		}
 	}
-}
-
-// publishToDLT sends a failed message to the dead letter topic.
-func (s *subscription) publishToDLT(originalTopic string, key, value []byte, err error) {
-	if s.deadLetterTopic == "" || s.producer == nil {
-		return
-	}
-
-	// Add DLT headers
-	headers := []sarama.RecordHeader{
-		{Key: []byte("X-Original-Topic"), Value: []byte(originalTopic)},
-		{Key: []byte("X-Error"), Value: []byte(err.Error())},
-		{Key: []byte("X-Failed-At"), Value: []byte(time.Now().UTC().Format(time.RFC3339))},
-	}
-
-	msg := &sarama.ProducerMessage{
-		Topic:   s.deadLetterTopic,
-		Key:     sarama.ByteEncoder(key),
-		Value:   sarama.ByteEncoder(value),
-		Headers: headers,
-	}
-
-	_, _, _ = s.producer.SendMessage(msg) // Best effort - don't block on DLT errors
 }
 
 // Compile-time checks

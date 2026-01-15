@@ -3,7 +3,6 @@ package persistent
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -246,19 +245,14 @@ func TestSequentialProcessing(t *testing.T) {
 		}
 	}
 
-	// Verify messages are received in order
+	// Verify all messages are received
 	var received int32
-	var mu sync.Mutex
-	var order []string
 
 	for i := 0; i < msgCount; i++ {
 		select {
 		case msg := <-sub.Messages():
-			mu.Lock()
-			order = append(order, msg.ID())
-			mu.Unlock()
 			atomic.AddInt32(&received, 1)
-			msg.Ack(nil)
+			_ = msg.Ack(nil)
 		case <-time.After(time.Second):
 			t.Fatalf("timeout waiting for message %d", i)
 		}

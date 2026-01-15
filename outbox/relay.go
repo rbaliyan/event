@@ -212,7 +212,9 @@ func (r *Relay) publishPending(ctx context.Context) {
 				"id", msg.ID,
 				"event", msg.EventName,
 				"error", err)
-			r.store.MarkFailed(ctx, msg.ID, err)
+			if markErr := r.store.MarkFailed(ctx, msg.ID, err); markErr != nil {
+				r.logger.Error("failed to mark message as failed", "error", markErr)
+			}
 			continue
 		}
 
