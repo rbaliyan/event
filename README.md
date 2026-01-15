@@ -11,7 +11,7 @@ A **production-grade event pub-sub library** for Go with support for distributed
 
 ### Core
 - **Type-Safe Generics**: `Event[T]` ensures compile-time type safety
-- **Multiple Transports**: Channel (in-memory), Redis Streams, NATS JetStream, Kafka
+- **Multiple Transports**: Channel (in-memory), Redis Streams, NATS JetStream, Kafka, MongoDB (CDC)
 - **Fire-and-Forget API**: `Publish()` and `Subscribe()` are void - events are facts
 - **Delivery Modes**: Broadcast (fan-out) or WorkerPool (load balancing)
 
@@ -242,22 +242,324 @@ func main() {
 }
 ```
 
+### MongoDB Change Streams (Subscribe-Only)
+
+MongoDB transport is a **subscribe-only** transport for Change Data Capture (CDC) scenarios. It watches MongoDB for changes and delivers them as events. Publishing is implicit - writing to MongoDB triggers the events.
+
+#### Watch Levels
+
+The transport supports three levels of change stream watching:
+
+| Level | Constructor | Watches | Use Case |
+|-------|-------------|---------|----------|
+| Collection | `New(db, WithCollection("orders"))` | Single collection | Track specific entity changes |
+| Database | `New(db)` | All collections in a database | Multi-tenant per database |
+| Cluster | `NewClusterWatch(client)` | All databases | Global audit log, cross-DB sync |
+
+```go
+import (
+    "github.com/rbaliyan/event/v3"
+    "github.com/rbaliyan/event/v3/transport/mongodb"
+    "go.mongodb.org/mongo-driver/mongo"
+    mongoopts "go.mongodb.org/mongo-driver/mongo/options"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Connect to MongoDB
+    client, _ := mongo.Connect(ctx, mongoopts.Client().ApplyURI("mongodb://localhost:27017"))
+    db := client.Database("myapp")
+
+    // Option 1: Watch a specific collection
+    transport, _ := mongodb.New(db,
+        mongodb.WithCollection("orders"),
+        mongodb.WithFullDocument(mongodb.FullDocumentUpdateLookup),
+    )
+
+    // Option 2: Watch all collections in the database
+    transport, _ := mongodb.New(db,
+        mongodb.WithFullDocument(mongodb.FullDocumentUpdateLookup),
+    )
+
+    // Option 3: Watch all databases in the cluster
+    transport, _ := mongodb.NewClusterWatch(client,
+        mongodb.WithFullDocument(mongodb.FullDocumentUpdateLookup),
+    )
+
+    // Create bus - works for subscribing only
+    bus, _ := event.NewBus("order-watcher", event.WithBusTransport(transport))
+    defer bus.Close(ctx)
+
+    // Subscribe to changes
+    changes := event.New[mongodb.ChangeEvent]("db-changes")
+    event.Register(ctx, bus, changes)
+
+    changes.Subscribe(ctx, func(ctx context.Context, e event.Event[mongodb.ChangeEvent], change mongodb.ChangeEvent) error {
+        // For database/cluster level, check which collection the change came from
+        fmt.Printf("Change in %s.%s: %s on %s\n",
+            change.Database,
+            change.Collection,
+            change.OperationType,
+            change.DocumentKey.Hex())
+        return nil
+    })
+
+    // Publishing via Bus is NOT supported - write directly to MongoDB instead
+    // This triggers the change stream and notifies subscribers:
+    ordersCol := db.Collection("orders")
+    ordersCol.InsertOne(ctx, order) // Triggers the subscriber above
+}
+```
+
+#### ChangeEvent Fields
+
+When watching at database or cluster level, use these fields to identify the source:
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `Database` | Database name | `"myapp"` |
+| `Collection` | Collection name | `"orders"` |
+| `Namespace` | Full namespace | `"myapp.orders"` |
+| `OperationType` | Operation type | `"insert"`, `"update"`, `"delete"` |
+| `DocumentKey` | Document `_id` | `ObjectID("...")` |
+| `FullDocument` | Full document (if requested) | `bson.Raw` |
+
+#### Filtering Changes
+
+Use `WithPipeline()` to filter change events:
+
+```go
+// Only watch insert and update in specific collections
+pipeline := mongo.Pipeline{
+    {{Key: "$match", Value: bson.M{
+        "operationType": bson.M{"$in": []string{"insert", "update"}},
+        "ns.coll": bson.M{"$in": []string{"orders", "customers"}},
+    }}},
+}
+
+transport, _ := mongodb.New(db, mongodb.WithPipeline(pipeline))
+```
+
+**Key Differences from Other Transports:**
+- `Publish()` returns `ErrPublishNotSupported` - use direct MongoDB writes instead
+- **Broadcast only** - WorkerPool delivery mode is not supported (all subscribers receive all changes)
+- Events are triggered by database changes (insert, update, delete, replace)
+- Resume tokens automatically stored in `_event_resume_tokens` collection
+- On restart: resumes from where it left off (no missed changes)
+- Use `WithoutResume()` to disable (starts from latest on each restart, may miss changes)
+- Optional acknowledgment tracking via `WithAckStore()`
+
+**Use Cases:**
+- Event sourcing from MongoDB
+- Reacting to database changes across services
+- Building read models/projections
+- Audit logging
+- Cache invalidation
+- Cross-database synchronization (cluster-level watch)
+
 ### Transport Feature Comparison
 
-| Feature | Redis Streams | NATS Core | NATS JetStream | Kafka |
-|---------|:-------------:|:---------:|:--------------:|:-----:|
-| Persistence | ✅ | ❌ | ✅ | ✅ |
-| At-Least-Once | ✅ | ❌ | ✅ | ✅ |
-| Native Deduplication | ❌ (inject store) | ❌ (inject store) | ✅ | ❌ |
-| Native DLQ/DLT | ❌ (inject handler) | ❌ (inject handler) | ❌ | ✅ |
-| Native Retry Limits | ❌ | ❌ | ✅ (MaxDeliver) | ✅ |
-| Consumer Groups | ✅ | Queue Groups | ✅ | ✅ |
-| Health Checks | ✅ | ✅ | ✅ | ✅ |
-| Lag Monitoring | ✅ | ❌ | ❌ | ✅ |
+| Feature | Redis Streams | NATS Core | NATS JetStream | Kafka | MongoDB |
+|---------|:-------------:|:---------:|:--------------:|:-----:|:-------:|
+| Persistence | ✅ | ❌ | ✅ | ✅ | ✅ |
+| At-Least-Once | ✅ | ❌ | ✅ | ✅ | ✅ |
+| Native Deduplication | ❌ (inject store) | ❌ (inject store) | ✅ | ❌ | ❌ |
+| Native DLQ/DLT | ❌ (inject handler) | ❌ (inject handler) | ❌ | ✅ | ❌ |
+| Native Retry Limits | ❌ | ❌ | ✅ (MaxDeliver) | ✅ | ❌ |
+| Consumer Groups | ✅ | Queue Groups | ✅ | ✅ | ❌ (Broadcast only) |
+| Health Checks | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Lag Monitoring | ✅ | ❌ | ❌ | ✅ | ❌ |
+| **Publish Support** | ✅ | ✅ | ✅ | ✅ | ❌ (CDC only) |
+| **WorkerPool Mode** | ✅ | ✅ | ✅ | ✅ | ❌ (Broadcast only) |
 
 **Native vs Injected Features:**
 - **Native features** are handled by the broker (more efficient, no external dependencies)
 - **Injected stores** provide library-level features where the broker lacks native support
+- **MongoDB** is a special CDC transport - publishing happens via direct database writes
+
+## Distributed Worker Emulation
+
+For transports that only support Broadcast mode (like MongoDB Change Streams), use the `distributed` package to emulate WorkerPool semantics using distributed message claiming.
+
+### How It Works
+
+In Broadcast mode, all subscribers receive every message. The `DistributedWorkerMiddleware` uses a `MessageClaimer` to ensure only one worker processes each message:
+
+1. Message arrives (delivered to all subscribers via Broadcast)
+2. Each subscriber calls `TryClaim()` to attempt claiming the message
+3. Only the subscriber that succeeds processes the message
+4. On success: `Complete()` marks it done; on failure: `Release()` allows retry
+
+### Basic Usage
+
+```go
+import (
+    "github.com/rbaliyan/event/v3"
+    "github.com/rbaliyan/event/v3/distributed"
+    "github.com/rbaliyan/event/v3/transport/mongodb"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create MongoDB transport (Broadcast-only)
+    transport, _ := mongodb.New(db, mongodb.WithCollection("orders"))
+
+    bus, _ := event.NewBus("order-watcher", event.WithBusTransport(transport))
+    defer bus.Close(ctx)
+
+    // Create Redis claimer for distributed deployments
+    claimer := distributed.NewRedisClaimer(redisClient,
+        distributed.WithClaimerPrefix("order-workers:"),
+        distributed.WithClaimerTTL(5*time.Minute),
+    )
+
+    orderChanges := event.New[mongodb.ChangeEvent]("order-changes")
+    event.Register(ctx, bus, orderChanges)
+
+    // Subscribe with worker emulation middleware
+    orderChanges.Subscribe(ctx, func(ctx context.Context, e event.Event[mongodb.ChangeEvent], change mongodb.ChangeEvent) error {
+        // Only one worker processes each change
+        return processChange(ctx, change)
+    }, event.WithMiddleware(
+        distributed.DistributedWorkerMiddleware[mongodb.ChangeEvent](claimer, 5*time.Minute),
+    ))
+}
+```
+
+### Claimer Implementations
+
+| Claimer | Use Case | Notes |
+|---------|----------|-------|
+| `RedisClaimer` | Production distributed | Uses SETNX with TTL for atomic claiming |
+| `MongoClaimer` | MongoDB-only deployments | Uses findOneAndUpdate; supports capped collections |
+| `MemoryClaimer` | Single-instance or testing | NOT distributed - each instance has its own state |
+
+```go
+// Redis (recommended for high-throughput)
+claimer := distributed.NewRedisClaimer(redisClient,
+    distributed.WithClaimerPrefix("myapp:claims:"),
+    distributed.WithClaimerTTL(5*time.Minute),
+    distributed.WithCompletionTTL(24*time.Hour),
+)
+
+// MongoDB (ideal when already using MongoDB transport)
+claimer := distributed.NewMongoClaimer(db).
+    WithCollection("worker_claims").
+    WithCompletionTTL(48*time.Hour)
+claimer.EnsureIndexes(ctx) // Create TTL index for automatic cleanup
+
+// MongoDB with custom database
+claimer := distributed.NewMongoClaimer(appDB).
+    WithDatabase(client.Database("claims_db")).
+    WithCollection("worker_claims")
+
+// MongoDB with capped collection (high-throughput, size-based cleanup)
+claimer := distributed.NewMongoClaimer(db).
+    WithCollection("claim_buffer").
+    WithCapped(100*1024*1024, 100000) // 100MB max, 100k docs max
+claimer.CreateCollection(ctx) // Creates the capped collection
+
+// Memory (single-instance or testing)
+claimer := distributed.NewMemoryClaimer()
+defer claimer.Close()
+```
+
+### Worker Groups with Distributed Middleware
+
+To emulate worker groups on Broadcast-only transports, use separate claimers with different prefixes:
+
+```go
+// Group A: Order processors (compete within group)
+claimerA := distributed.NewRedisClaimer(redis,
+    distributed.WithClaimerPrefix("processors:"))
+
+// Group B: Analytics collectors (compete within group)
+claimerB := distributed.NewRedisClaimer(redis,
+    distributed.WithClaimerPrefix("analytics:"))
+
+// Both groups receive all messages (like broadcast between groups)
+// Workers within each group compete (like WorkerPool within group)
+orderChanges.Subscribe(ctx, processOrder,
+    event.WithMiddleware(distributed.DistributedWorkerMiddleware[T](claimerA, ttl)))
+
+orderChanges.Subscribe(ctx, collectAnalytics,
+    event.WithMiddleware(distributed.DistributedWorkerMiddleware[T](claimerB, ttl)))
+```
+
+### Claim TTL Guidelines
+
+The claim TTL should exceed your handler's maximum execution time:
+
+| Handler Timeout | Recommended Claim TTL |
+|-----------------|----------------------|
+| 30s | 1-2 minutes |
+| 1 minute | 3-5 minutes |
+| 5 minutes | 10-15 minutes |
+| No timeout | Max expected time + buffer |
+
+If a worker crashes, the claim expires after TTL and another worker can claim and process the message.
+
+### Error Handling
+
+- **TryClaim error**: Logs warning and proceeds (fail-open to prevent message loss)
+- **Complete error**: Logs warning but doesn't affect handler result
+- **Release error**: Logs warning but doesn't affect error propagation
+
+Handlers should be idempotent to handle potential duplicates when claimers fail.
+
+### Distributed Worker vs Idempotency
+
+These solve different problems and can be used together:
+
+| Aspect | DistributedWorkerMiddleware | IdempotencyMiddleware |
+|--------|----------------------------|----------------------|
+| **Problem** | Multiple workers receive same message simultaneously (Broadcast) | Same message redelivered after processing (retries) |
+| **Question** | "Is someone else processing this right now?" | "Was this already processed before?" |
+| **Timing** | Concurrent (simultaneous delivery) | Sequential (redelivery over time) |
+| **On success** | Mark completed (blocks re-claim during TTL) | Mark processed (blocks reprocessing during TTL) |
+| **On failure** | Release claim (another worker can retry) | Don't mark (same worker can retry) |
+
+**When to use each:**
+
+| Transport | Distributed Worker? | Idempotency? |
+|-----------|:------------------:|:------------:|
+| Redis Streams (WorkerPool) | ❌ (native WorkerPool) | ✅ (retries need dedup) |
+| Kafka (WorkerPool) | ❌ (native WorkerPool) | ✅ (retries need dedup) |
+| NATS JetStream (WorkerPool) | ❌ (native WorkerPool) | ✅ (retries need dedup) |
+| MongoDB Change Streams | ✅ (emulate WorkerPool) | ✅ (if retries possible) |
+| Any Broadcast mode | ✅ (if load balancing needed) | ✅ (if retries possible) |
+
+**Using both together (MongoDB example):**
+
+```go
+// Both use distributed backends (Redis)
+claimer := distributed.NewRedisClaimer(redis)
+idempStore := idempotency.NewRedisStore(redis, time.Hour)
+
+// Or both use MongoDB
+claimer := distributed.NewMongoClaimer(db)
+idempStore := idempotency.NewMongoStore(db) // if available
+
+ev.Subscribe(ctx, handler, event.WithMiddleware(
+    // First: Only one worker claims the message (load balancing)
+    distributed.DistributedWorkerMiddleware[Order](claimer, 5*time.Minute),
+    // Then: Prevent reprocessing if this message was already handled
+    event.IdempotencyMiddleware[Order](idempStore),
+))
+```
+
+**Store distribution:**
+
+Both middleware support distributed stores - they're not limited to single machines:
+
+| Store Type | Distributed? | Use Case |
+|------------|:------------:|----------|
+| Memory stores | ❌ | Testing, single-instance |
+| Redis stores | ✅ | Production multi-instance |
+| MongoDB stores | ✅ | Production multi-instance |
+| PostgreSQL stores | ✅ | Production multi-instance |
 
 ## Transactional Outbox Pattern
 
@@ -1467,6 +1769,100 @@ orderEvent.Subscribe(ctx, handler,
 | Schema Registry | ✅ | ✅ | ✅ | ✅ |
 | Transaction | ✅ | ✅ | - | - |
 | Rate Limit | - | - | ✅ | - |
+| Distributed Worker | - | ✅ | ✅ | ✅ |
+
+## Package Structure
+
+The library is organized into focused packages with shared utilities to minimize code duplication.
+
+### Core Packages
+
+| Package | Description |
+|---------|-------------|
+| `event` | Core bus, event, and middleware types |
+| `transport/*` | Transport implementations (channel, redis, nats, kafka) |
+| `monitor` | Event processing monitoring with HTTP/gRPC APIs |
+| `schema` | Schema registry for publisher-defined event configuration |
+| `idempotency` | Exactly-once processing with multiple backends |
+| `poison` | Poison message detection and quarantine |
+| `dlq` | Dead letter queue management |
+| `outbox` | Transactional outbox pattern |
+| `saga` | Saga orchestration for distributed transactions |
+| `checkpoint` | Resumable subscriptions |
+| `scheduler` | Scheduled/delayed message delivery |
+| `batch` | High-throughput batch processing |
+| `ratelimit` | Distributed rate limiting |
+| `distributed` | WorkerPool emulation for Broadcast-only transports |
+
+### Shared Utilities
+
+Internal packages provide common functionality across implementations:
+
+#### store/base
+
+Shared utilities for database store implementations:
+
+```go
+import "github.com/rbaliyan/event/v3/store/base"
+
+// Cursor-based pagination
+encoded := base.EncodeCursor(cursor{LastID: "123"})
+decoded, _ := base.DecodeCursor[cursor](encoded)
+result := base.Paginate(items, limit, cursorFn)
+
+// Dynamic SQL query building
+qb := base.NewQueryBuilder()
+qb.AddIfNotEmpty("name = $%d", filter.Name)
+qb.AddIfNotZero("created_at >= $%d", filter.StartTime)
+qb.AddIn("status", filter.Statuses)
+query, args := qb.Build("SELECT * FROM users %s ORDER BY id")
+
+// Background cleanup with graceful shutdown
+go base.SimpleCleanupLoop(interval, stopCh, cleanupFn)
+
+// SQL null helpers
+msg.Source = base.NullString(source)      // "" if NULL
+msg.RetriedAt = base.NullTime(retriedAt)  // nil if NULL
+
+// Metadata marshaling
+data, _ := base.MarshalMetadata(metadata)
+metadata, _ := base.UnmarshalMetadata(data)
+```
+
+#### transport/base
+
+Shared utilities for transport implementations:
+
+```go
+import "github.com/rbaliyan/event/v3/transport/base"
+
+// Event registry for managing subscriptions
+registry := base.NewEventRegistry[*MyEvent]()
+event, created := registry.Register("order.created", createFn)
+event, ok := registry.Get("order.created")
+totalSubs := registry.TotalSubscribers()
+
+// Health check builder
+result := base.NewHealthCheck().
+    WithType("redis").
+    WithEvents(10).
+    WithSubscribers(25).
+    Healthy("connected").
+    Build()
+```
+
+### Interface Design
+
+The library uses minimal interfaces for flexibility:
+
+| Root Package Interface | Full Interface | Purpose |
+|----------------------|----------------|---------|
+| `IdempotencyStore` (2 methods) | `idempotency.Store` (4 methods) | Middleware only needs check/mark |
+| `PoisonDetector` (3 methods) | `poison.Store` (6 methods) | Detector wraps Store with threshold logic |
+| `MonitorStore` (2 methods) | `monitor.Store` (7 methods) | Middleware needs start/complete; Store adds queries |
+| `SchemaProvider` | `schema.SchemaProvider` | Type alias for backward compatibility |
+
+This design allows stores to implement both the minimal middleware interface and the full query interface.
 
 ## Testing
 

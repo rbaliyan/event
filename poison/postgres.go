@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/rbaliyan/event/v3/store/base"
 )
 
 // PostgresStore implements Store using PostgreSQL for poison message tracking.
@@ -168,7 +170,7 @@ func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) *PostgresStore {
 
 	// Start background cleanup
 	if s.cleanupInterval > 0 {
-		go s.cleanupLoop()
+		go base.SimpleCleanupLoop(s.cleanupInterval, s.stopCleanup, s.cleanup)
 	}
 
 	return s
@@ -354,21 +356,6 @@ func (s *PostgresStore) ClearFailures(ctx context.Context, messageID string) err
 func (s *PostgresStore) Close() error {
 	close(s.stopCleanup)
 	return nil
-}
-
-// cleanupLoop runs the periodic cleanup of expired entries.
-func (s *PostgresStore) cleanupLoop() {
-	ticker := time.NewTicker(s.cleanupInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			s.cleanup()
-		case <-s.stopCleanup:
-			return
-		}
-	}
 }
 
 // cleanup removes expired entries from both tables.

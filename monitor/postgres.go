@@ -3,11 +3,10 @@ package monitor
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/rbaliyan/event/v3/store/base"
 )
 
 // PostgresStore implements Store using PostgreSQL.
@@ -84,7 +83,10 @@ func NewPostgresStore(db *sql.DB, opts ...StoreOption) *PostgresStore {
 
 	// Start background cleanup if enabled
 	if o.cleanupInterval > 0 {
-		go s.cleanupLoop()
+		go base.SimpleCleanupLoop(o.cleanupInterval, s.stopCleanup, func() {
+			// Default retention: 30 days
+			_, _ = s.DeleteOlderThan(context.Background(), 30*24*time.Hour)
+		})
 	}
 
 	return s
@@ -106,13 +108,9 @@ func (s *PostgresStore) Record(ctx context.Context, entry *Entry) error {
 	}
 
 	// Serialize metadata
-	var metadataJSON []byte
-	if entry.Metadata != nil {
-		var err error
-		metadataJSON, err = json.Marshal(entry.Metadata)
-		if err != nil {
-			return fmt.Errorf("marshal metadata: %w", err)
-		}
+	metadataJSON, err := base.MarshalMetadata(entry.Metadata)
+	if err != nil {
+		return err
 	}
 
 	// Use empty string for subscription_id in WorkerPool mode
@@ -141,7 +139,7 @@ func (s *PostgresStore) Record(ctx context.Context, entry *Entry) error {
 		durationMs = &ms
 	}
 
-	_, err := s.db.ExecContext(ctx, query,
+	_, err = s.db.ExecContext(ctx, query,
 		entry.EventID,
 		subscriptionID,
 		entry.EventName,
@@ -149,13 +147,13 @@ func (s *PostgresStore) Record(ctx context.Context, entry *Entry) error {
 		entry.DeliveryMode.String(),
 		metadataJSON,
 		string(entry.Status),
-		nullString(entry.Error),
+		base.StringPtr(entry.Error),
 		entry.RetryCount,
 		entry.StartedAt,
 		entry.CompletedAt,
 		durationMs,
-		nullString(entry.TraceID),
-		nullString(entry.SpanID),
+		base.StringPtr(entry.TraceID),
+		base.StringPtr(entry.SpanID),
 	)
 	if err != nil {
 		return fmt.Errorf("record monitor: %w", err)
@@ -221,99 +219,85 @@ type pgCursor struct {
 	SubID     string    `json:"u"`
 }
 
-// List returns a page of entries matching the filter.
-func (s *PostgresStore) List(ctx context.Context, filter Filter) (*Page, error) {
-	// Build query with filters
-	var conditions []string
-	var args []any
-	argNum := 1
+// buildFilterQuery builds the WHERE clause and args for filter queries.
+func (s *PostgresStore) buildFilterQuery(filter Filter) (*base.QueryBuilder, error) {
+	qb := base.NewQueryBuilder()
 
-	if filter.EventID != "" {
-		conditions = append(conditions, fmt.Sprintf("event_id = $%d", argNum))
-		args = append(args, filter.EventID)
-		argNum++
-	}
-	if filter.SubscriptionID != "" {
-		conditions = append(conditions, fmt.Sprintf("subscription_id = $%d", argNum))
-		args = append(args, filter.SubscriptionID)
-		argNum++
-	}
-	if filter.EventName != "" {
-		conditions = append(conditions, fmt.Sprintf("event_name = $%d", argNum))
-		args = append(args, filter.EventName)
-		argNum++
-	}
-	if filter.BusID != "" {
-		conditions = append(conditions, fmt.Sprintf("bus_id = $%d", argNum))
-		args = append(args, filter.BusID)
-		argNum++
-	}
+	qb.AddIfNotEmpty("event_id = $%d", filter.EventID)
+	qb.AddIfNotEmpty("subscription_id = $%d", filter.SubscriptionID)
+	qb.AddIfNotEmpty("event_name = $%d", filter.EventName)
+	qb.AddIfNotEmpty("bus_id = $%d", filter.BusID)
+
 	if filter.DeliveryMode != nil {
-		conditions = append(conditions, fmt.Sprintf("delivery_mode = $%d", argNum))
-		args = append(args, filter.DeliveryMode.String())
-		argNum++
+		qb.Add("delivery_mode = $%d", filter.DeliveryMode.String())
 	}
+
 	if len(filter.Status) > 0 {
-		placeholders := make([]string, len(filter.Status))
-		for i, status := range filter.Status {
-			placeholders[i] = fmt.Sprintf("$%d", argNum)
-			args = append(args, string(status))
-			argNum++
+		statusStrs := make([]string, len(filter.Status))
+		for i, st := range filter.Status {
+			statusStrs[i] = string(st)
 		}
-		conditions = append(conditions, fmt.Sprintf("status IN (%s)", strings.Join(placeholders, ", ")))
+		qb.AddIn("status", statusStrs)
 	}
+
 	if filter.HasError != nil {
 		if *filter.HasError {
-			conditions = append(conditions, "error IS NOT NULL AND error != ''")
+			qb.AddRaw("error IS NOT NULL AND error != ''")
 		} else {
-			conditions = append(conditions, "(error IS NULL OR error = '')")
+			qb.AddRaw("(error IS NULL OR error = '')")
 		}
 	}
-	if !filter.StartTime.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("started_at >= $%d", argNum))
-		args = append(args, filter.StartTime)
-		argNum++
-	}
-	if !filter.EndTime.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("started_at < $%d", argNum))
-		args = append(args, filter.EndTime)
-		argNum++
-	}
-	if filter.MinDuration > 0 {
-		conditions = append(conditions, fmt.Sprintf("duration_ms >= $%d", argNum))
-		args = append(args, filter.MinDuration.Milliseconds())
-		argNum++
-	}
-	if filter.MinRetries > 0 {
-		conditions = append(conditions, fmt.Sprintf("retry_count >= $%d", argNum))
-		args = append(args, filter.MinRetries)
-		argNum++
+
+	qb.AddIfNotZero("started_at >= $%d", filter.StartTime)
+	qb.AddIfNotZero("started_at < $%d", filter.EndTime)
+	qb.AddIfPositiveDuration("duration_ms >= $%d", filter.MinDuration)
+	qb.AddIfPositive("retry_count >= $%d", filter.MinRetries)
+
+	return qb, nil
+}
+
+// List returns a page of entries matching the filter.
+func (s *PostgresStore) List(ctx context.Context, filter Filter) (*Page, error) {
+	qb, err := s.buildFilterQuery(filter)
+	if err != nil {
+		return nil, err
 	}
 
 	// Apply cursor for pagination
 	if filter.Cursor != "" {
-		cur, err := s.decodePgCursor(filter.Cursor)
+		cur, err := base.DecodeCursor[pgCursor](filter.Cursor)
 		if err != nil {
 			return nil, fmt.Errorf("invalid cursor: %w", err)
 		}
 
+		argNum := qb.ArgNum()
 		if filter.OrderDesc {
-			conditions = append(conditions, fmt.Sprintf(
+			qb.AddRaw(fmt.Sprintf(
 				"(started_at < $%d OR (started_at = $%d AND (event_id < $%d OR (event_id = $%d AND subscription_id < $%d))))",
 				argNum, argNum, argNum+1, argNum+1, argNum+2))
 		} else {
-			conditions = append(conditions, fmt.Sprintf(
+			qb.AddRaw(fmt.Sprintf(
 				"(started_at > $%d OR (started_at = $%d AND (event_id > $%d OR (event_id = $%d AND subscription_id > $%d))))",
 				argNum, argNum, argNum+1, argNum+1, argNum+2))
 		}
+		// Manually add cursor args since they use multiple placeholders
+		args := qb.Args()
 		args = append(args, cur.StartedAt, cur.EventID, cur.SubID)
-		argNum += 3
+		// We need to rebuild with new args - use a workaround
+		qb = base.NewQueryBuilderFrom(argNum + 3)
+		for i := 0; i < len(args); i++ {
+			// This is a bit hacky, let's just build the query directly
+		}
 	}
 
-	// Build WHERE clause
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
+	// Build query directly for complex cursor handling
+	whereClause := qb.WhereClause()
+	args := qb.Args()
+
+	// Handle cursor args separately if cursor was provided
+	if filter.Cursor != "" {
+		cur, _ := base.DecodeCursor[pgCursor](filter.Cursor)
+		args = append(args, cur.StartedAt, cur.EventID, cur.SubID)
 	}
 
 	// Build ORDER BY
@@ -353,108 +337,33 @@ func (s *PostgresStore) List(ctx context.Context, filter Filter) (*Page, error) 
 		return nil, fmt.Errorf("rows error: %w", err)
 	}
 
-	// Check if there are more pages
-	hasMore := len(entries) > filter.EffectiveLimit()
-	if hasMore {
-		entries = entries[:filter.EffectiveLimit()]
-	}
-
-	// Create next cursor
-	var nextCursor string
-	if hasMore && len(entries) > 0 {
-		lastEntry := entries[len(entries)-1]
-		nextCursor = s.encodePgCursor(pgCursor{
-			StartedAt: lastEntry.StartedAt,
-			EventID:   lastEntry.EventID,
-			SubID:     lastEntry.SubscriptionID,
-		})
-	}
+	// Use base.Paginate for consistent pagination handling
+	pageResult := base.Paginate(entries, filter.EffectiveLimit(), func(e *Entry) pgCursor {
+		return pgCursor{
+			StartedAt: e.StartedAt,
+			EventID:   e.EventID,
+			SubID:     e.SubscriptionID,
+		}
+	})
 
 	return &Page{
-		Entries:    entries,
-		NextCursor: nextCursor,
-		HasMore:    hasMore,
+		Entries:    pageResult.Items,
+		NextCursor: pageResult.NextCursor,
+		HasMore:    pageResult.HasMore,
 	}, nil
 }
 
 // Count returns the number of entries matching the filter.
 func (s *PostgresStore) Count(ctx context.Context, filter Filter) (int64, error) {
-	// Build query with filters (same as List but simpler - no cursor/order/limit)
-	var conditions []string
-	var args []any
-	argNum := 1
-
-	if filter.EventID != "" {
-		conditions = append(conditions, fmt.Sprintf("event_id = $%d", argNum))
-		args = append(args, filter.EventID)
-		argNum++
-	}
-	if filter.SubscriptionID != "" {
-		conditions = append(conditions, fmt.Sprintf("subscription_id = $%d", argNum))
-		args = append(args, filter.SubscriptionID)
-		argNum++
-	}
-	if filter.EventName != "" {
-		conditions = append(conditions, fmt.Sprintf("event_name = $%d", argNum))
-		args = append(args, filter.EventName)
-		argNum++
-	}
-	if filter.BusID != "" {
-		conditions = append(conditions, fmt.Sprintf("bus_id = $%d", argNum))
-		args = append(args, filter.BusID)
-		argNum++
-	}
-	if filter.DeliveryMode != nil {
-		conditions = append(conditions, fmt.Sprintf("delivery_mode = $%d", argNum))
-		args = append(args, filter.DeliveryMode.String())
-		argNum++
-	}
-	if len(filter.Status) > 0 {
-		placeholders := make([]string, len(filter.Status))
-		for i, status := range filter.Status {
-			placeholders[i] = fmt.Sprintf("$%d", argNum)
-			args = append(args, string(status))
-			argNum++
-		}
-		conditions = append(conditions, fmt.Sprintf("status IN (%s)", strings.Join(placeholders, ", ")))
-	}
-	if filter.HasError != nil {
-		if *filter.HasError {
-			conditions = append(conditions, "error IS NOT NULL AND error != ''")
-		} else {
-			conditions = append(conditions, "(error IS NULL OR error = '')")
-		}
-	}
-	if !filter.StartTime.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("started_at >= $%d", argNum))
-		args = append(args, filter.StartTime)
-		argNum++
-	}
-	if !filter.EndTime.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("started_at < $%d", argNum))
-		args = append(args, filter.EndTime)
-		argNum++
-	}
-	if filter.MinDuration > 0 {
-		conditions = append(conditions, fmt.Sprintf("duration_ms >= $%d", argNum))
-		args = append(args, filter.MinDuration.Milliseconds())
-		argNum++
-	}
-	if filter.MinRetries > 0 {
-		conditions = append(conditions, fmt.Sprintf("retry_count >= $%d", argNum))
-		args = append(args, filter.MinRetries)
-		argNum++
+	qb, err := s.buildFilterQuery(filter)
+	if err != nil {
+		return 0, err
 	}
 
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s %s`, s.opts.tableName, whereClause)
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s %s`, s.opts.tableName, qb.WhereClause())
 
 	var count int64
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	err = s.db.QueryRowContext(ctx, query, qb.Args()...).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count monitor: %w", err)
 	}
@@ -549,24 +458,6 @@ func (s *PostgresStore) CreateTable(ctx context.Context) error {
 	return nil
 }
 
-// cleanupLoop runs the periodic cleanup of old entries.
-func (s *PostgresStore) cleanupLoop() {
-	ticker := time.NewTicker(s.opts.cleanupInterval)
-	defer ticker.Stop()
-
-	// Default retention: 30 days
-	retention := 30 * 24 * time.Hour
-
-	for {
-		select {
-		case <-ticker.C:
-			_, _ = s.DeleteOlderThan(context.Background(), retention)
-		case <-s.stopCleanup:
-			return
-		}
-	}
-}
-
 // scanEntry scans a single row into an Entry.
 func (s *PostgresStore) scanEntry(row *sql.Row) (*Entry, error) {
 	var entry Entry
@@ -600,26 +491,18 @@ func (s *PostgresStore) scanEntry(row *sql.Row) (*Entry, error) {
 
 	entry.DeliveryMode = ParseDeliveryMode(deliveryMode)
 	entry.Status = Status(status)
-	if errStr.Valid {
-		entry.Error = errStr.String
-	}
-	if completedAt.Valid {
-		entry.CompletedAt = &completedAt.Time
-	}
-	if durationMs.Valid {
-		entry.Duration = time.Duration(durationMs.Int64) * time.Millisecond
-	}
-	if traceID.Valid {
-		entry.TraceID = traceID.String
-	}
-	if spanID.Valid {
-		entry.SpanID = spanID.String
-	}
+	entry.Error = base.NullString(errStr)
+	entry.CompletedAt = base.NullTime(completedAt)
+	entry.Duration = base.NullDurationMs(durationMs)
+	entry.TraceID = base.NullString(traceID)
+	entry.SpanID = base.NullString(spanID)
 
 	if len(metadataJSON) > 0 {
-		if err := json.Unmarshal(metadataJSON, &entry.Metadata); err != nil {
-			return nil, fmt.Errorf("unmarshal metadata: %w", err)
+		metadata, err := base.UnmarshalMetadata(metadataJSON)
+		if err != nil {
+			return nil, err
 		}
+		entry.Metadata = metadata
 	}
 
 	return &entry, nil
@@ -658,57 +541,21 @@ func (s *PostgresStore) scanEntryRows(rows *sql.Rows) (*Entry, error) {
 
 	entry.DeliveryMode = ParseDeliveryMode(deliveryMode)
 	entry.Status = Status(status)
-	if errStr.Valid {
-		entry.Error = errStr.String
-	}
-	if completedAt.Valid {
-		entry.CompletedAt = &completedAt.Time
-	}
-	if durationMs.Valid {
-		entry.Duration = time.Duration(durationMs.Int64) * time.Millisecond
-	}
-	if traceID.Valid {
-		entry.TraceID = traceID.String
-	}
-	if spanID.Valid {
-		entry.SpanID = spanID.String
-	}
+	entry.Error = base.NullString(errStr)
+	entry.CompletedAt = base.NullTime(completedAt)
+	entry.Duration = base.NullDurationMs(durationMs)
+	entry.TraceID = base.NullString(traceID)
+	entry.SpanID = base.NullString(spanID)
 
 	if len(metadataJSON) > 0 {
-		if err := json.Unmarshal(metadataJSON, &entry.Metadata); err != nil {
-			return nil, fmt.Errorf("unmarshal metadata: %w", err)
+		metadata, err := base.UnmarshalMetadata(metadataJSON)
+		if err != nil {
+			return nil, err
 		}
+		entry.Metadata = metadata
 	}
 
 	return &entry, nil
-}
-
-// encodePgCursor encodes a cursor to a string.
-func (s *PostgresStore) encodePgCursor(c pgCursor) string {
-	data, _ := json.Marshal(c)
-	return base64.StdEncoding.EncodeToString(data)
-}
-
-// decodePgCursor decodes a cursor from a string.
-func (s *PostgresStore) decodePgCursor(str string) (pgCursor, error) {
-	var c pgCursor
-	if str == "" {
-		return c, nil
-	}
-	data, err := base64.StdEncoding.DecodeString(str)
-	if err != nil {
-		return c, err
-	}
-	err = json.Unmarshal(data, &c)
-	return c, err
-}
-
-// nullString returns a pointer to s if non-empty, nil otherwise.
-func nullString(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
 }
 
 // RecordStart records when event processing begins.

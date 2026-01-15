@@ -25,6 +25,7 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/rbaliyan/event/v3/transport"
+	"github.com/rbaliyan/event/v3/transport/base"
 	"github.com/rbaliyan/event/v3/transport/codec"
 )
 
@@ -70,15 +71,10 @@ type kafkaEvent struct {
 
 // subscription implements transport.Subscription for Kafka
 type subscription struct {
-	id          string
-	ch          chan transport.Message
-	closedCh    chan struct{}
-	closed      int32
-	consumer    sarama.ConsumerGroup
-	topic       string
-	codec       codec.Codec
-	wg          sync.WaitGroup // Track consumer goroutine for clean shutdown
-	sendTimeout time.Duration  // Timeout for sending to channel (backpressure)
+	*base.Subscription                   // Embedded base subscription
+	consumer         sarama.ConsumerGroup // Kafka consumer group
+	topic            string               // Topic name
+	codec            codec.Codec          // Message codec
 
 	// Native Kafka features
 	producer        sarama.SyncProducer // For DLT publishing
@@ -297,14 +293,12 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		bufSize = subOpts.BufferSize
 	}
 
+	subID := transport.NewID()
 	sub := &subscription{
-		id:          transport.NewID(),
-		ch:          make(chan transport.Message, bufSize),
-		closedCh:    make(chan struct{}),
-		consumer:    consumer,
-		topic:       t.topicName(name),
-		codec:       t.codec,
-		sendTimeout: t.sendTimeout,
+		Subscription: base.NewSubscription(subID, bufSize, t.sendTimeout),
+		consumer:     consumer,
+		topic:        t.topicName(name),
+		codec:        t.codec,
 		// Native Kafka features
 		producer:        t.producer,
 		deadLetterTopic: t.deadLetterTopic,
@@ -312,13 +306,13 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	}
 
 	// Start consuming in background with WaitGroup tracking
-	sub.wg.Add(1)
+	sub.WaitGroup().Add(1)
 	go func() {
-		defer sub.wg.Done()
+		defer sub.WaitGroup().Done()
 		sub.consumeLoop(ctx, t.logger)
 	}()
 
-	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "group", groupID, "mode", subOpts.DeliveryMode)
+	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.ID(), "group", groupID, "mode", subOpts.DeliveryMode)
 	return sub, nil
 }
 
@@ -534,85 +528,19 @@ func (t *Transport) ConsumerLag(ctx context.Context) ([]transport.ConsumerLag, e
 
 // subscription methods
 
-func (s *subscription) ID() string {
-	return s.id
-}
-
-func (s *subscription) Messages() <-chan transport.Message {
-	return s.ch
-}
-
 func (s *subscription) Close(ctx context.Context) error {
-	if atomic.CompareAndSwapInt32(&s.closed, 0, 1) {
-		close(s.closedCh)
+	return s.Subscription.Close(func() error {
 		if s.consumer != nil {
 			s.consumer.Close()
 		}
-		// Wait for consumer goroutine to exit before closing channel
-		s.wg.Wait()
-		close(s.ch)
-	}
-	return nil
+		return nil
+	})
 }
-
-// sendResult indicates the outcome of sending to channel
-type sendResult int
-
-const (
-	sendOK      sendResult = iota // Message sent successfully
-	sendClosed                    // Subscription was closed
-	sendTimeout                   // Timeout (message NOT lost, will be redelivered)
-)
 
 // sendWithRetry sends a message to the channel with exponential backoff on timeout.
+// This is a convenience wrapper around base.Subscription.SendWithRetry with Kafka-specific logging.
 func (s *subscription) sendWithRetry(msg transport.Message, logger *slog.Logger) bool {
-	backoff := 100 * time.Millisecond
-	maxBackoff := 5 * time.Second
-
-	for {
-		switch s.sendToChannel(msg) {
-		case sendClosed:
-			return false
-		case sendTimeout:
-			jitteredBackoff := transport.Jitter(backoff, 0.3)
-			logger.Warn("message send timeout, retrying with backoff",
-				"topic", s.topic, "backoff", jitteredBackoff)
-			select {
-			case <-s.closedCh:
-				return false
-			case <-time.After(jitteredBackoff):
-			}
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-			continue
-		case sendOK:
-			return true
-		}
-	}
-}
-
-// sendToChannel sends a message to the channel with optional timeout.
-func (s *subscription) sendToChannel(msg transport.Message) sendResult {
-	if s.sendTimeout > 0 {
-		timer := time.NewTimer(s.sendTimeout)
-		defer timer.Stop()
-		select {
-		case <-s.closedCh:
-			return sendClosed
-		case <-timer.C:
-			return sendTimeout
-		case s.ch <- msg:
-			return sendOK
-		}
-	}
-	select {
-	case <-s.closedCh:
-		return sendClosed
-	case s.ch <- msg:
-		return sendOK
-	}
+	return s.Subscription.SendWithRetry(msg, logger, "topic", s.topic)
 }
 
 func (s *subscription) consumeLoop(ctx context.Context, logger *slog.Logger) {
@@ -627,7 +555,7 @@ func (s *subscription) consumeLoop(ctx context.Context, logger *slog.Logger) {
 
 	for {
 		select {
-		case <-s.closedCh:
+		case <-s.ClosedCh():
 			return
 		case <-ctx.Done():
 			return
@@ -637,7 +565,7 @@ func (s *subscription) consumeLoop(ctx context.Context, logger *slog.Logger) {
 				logger.Error("consumer error, retrying with backoff", "error", err, "backoff", jitteredBackoff)
 
 				select {
-				case <-s.closedCh:
+				case <-s.ClosedCh():
 					return
 				case <-ctx.Done():
 					return
@@ -673,7 +601,7 @@ func (h *consumerHandler) Cleanup(sarama.ConsumerGroupSession) error {
 func (h *consumerHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for {
 		select {
-		case <-h.sub.closedCh:
+		case <-h.sub.ClosedCh():
 			return nil
 		case msg, ok := <-claim.Messages():
 			if !ok {

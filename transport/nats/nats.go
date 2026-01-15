@@ -39,6 +39,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rbaliyan/event/v3/transport"
+	"github.com/rbaliyan/event/v3/transport/base"
 	"github.com/rbaliyan/event/v3/transport/codec"
 )
 
@@ -84,15 +85,10 @@ type natsEvent struct {
 
 // jsSubscription implements transport.Subscription for JetStream
 type jsSubscription struct {
-	id          string
-	ch          chan transport.Message
-	closedCh    chan struct{}
-	closed      int32
-	consumer    jetstream.Consumer
-	codec       codec.Codec
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup // Track consumer goroutine for clean shutdown
-	sendTimeout time.Duration  // Timeout for sending to channel (backpressure)
+	*base.Subscription              // Embedded base subscription
+	consumer         jetstream.Consumer // JetStream consumer
+	codec            codec.Codec        // Message codec
+	cancel           context.CancelFunc // Context cancel function
 }
 
 // Default configuration
@@ -328,24 +324,22 @@ func (t *JetStreamTransport) Subscribe(ctx context.Context, name string, opts ..
 		bufSize = subOpts.BufferSize
 	}
 
+	subID := transport.NewID()
 	sub := &jsSubscription{
-		id:          transport.NewID(),
-		ch:          make(chan transport.Message, bufSize),
-		closedCh:    make(chan struct{}),
-		consumer:    consumer,
-		codec:       t.codec,
-		cancel:      cancel,
-		sendTimeout: t.sendTimeout,
+		Subscription: base.NewSubscription(subID, bufSize, t.sendTimeout),
+		consumer:     consumer,
+		codec:        t.codec,
+		cancel:       cancel,
 	}
 
 	// Start consuming in background with WaitGroup tracking
-	sub.wg.Add(1)
+	sub.WaitGroup().Add(1)
 	go func() {
-		defer sub.wg.Done()
+		defer sub.WaitGroup().Done()
 		sub.consumeLoop(subCtx, t.logger)
 	}()
 
-	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "mode", subOpts.DeliveryMode, "startFrom", subOpts.StartFrom)
+	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.ID(), "mode", subOpts.DeliveryMode, "startFrom", subOpts.StartFrom)
 	return sub, nil
 }
 
@@ -489,62 +483,19 @@ func (t *JetStreamTransport) ConsumerLag(ctx context.Context) ([]transport.Consu
 
 // subscription methods
 
-func (s *jsSubscription) ID() string {
-	return s.id
-}
-
-func (s *jsSubscription) Messages() <-chan transport.Message {
-	return s.ch
-}
-
 func (s *jsSubscription) Close(ctx context.Context) error {
-	if atomic.CompareAndSwapInt32(&s.closed, 0, 1) {
-		close(s.closedCh)
+	return s.Subscription.Close(func() error {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		// Wait for consumer goroutine to exit before closing channel
-		s.wg.Wait()
-		close(s.ch)
-	}
-	return nil
-}
-
-// sendResult indicates the outcome of sending to channel
-type sendResult int
-
-const (
-	sendOK      sendResult = iota // Message sent successfully
-	sendClosed                    // Subscription was closed
-	sendTimeout                   // Timeout (message will be nack'd for redelivery)
-)
-
-// sendToChannel sends a message to the channel with optional timeout.
-func (s *jsSubscription) sendToChannel(msg transport.Message) sendResult {
-	if s.sendTimeout > 0 {
-		timer := time.NewTimer(s.sendTimeout)
-		defer timer.Stop()
-		select {
-		case <-s.closedCh:
-			return sendClosed
-		case <-timer.C:
-			return sendTimeout
-		case s.ch <- msg:
-			return sendOK
-		}
-	}
-	select {
-	case <-s.closedCh:
-		return sendClosed
-	case s.ch <- msg:
-		return sendOK
-	}
+		return nil
+	})
 }
 
 func (s *jsSubscription) consumeLoop(ctx context.Context, logger *slog.Logger) {
 	handler := func(msg jetstream.Msg) {
 		select {
-		case <-s.closedCh:
+		case <-s.ClosedCh():
 			return
 		default:
 		}
@@ -574,25 +525,24 @@ func (s *jsSubscription) consumeLoop(ctx context.Context, logger *slog.Logger) {
 		)
 
 		// Send message to handler channel
-		switch s.sendToChannel(wrappedMsg) {
-		case sendClosed:
+		switch s.SendToChannel(wrappedMsg) {
+		case base.SendClosed:
 			return
-		case sendTimeout:
+		case base.SendTimeout:
 			// Timeout: Nack for immediate redelivery - NO message loss
 			msg.Nak()
 			logger.Warn("message send timeout, nack'd for redelivery")
-		case sendOK:
+		case base.SendOK:
 			// Successfully sent to handler
 		}
 	}
 
 	// Retry loop for Consume() - handles connection errors with backoff
-	backoff := 100 * time.Millisecond
-	maxBackoff := 30 * time.Second
+	retryBackoff := base.NewBackoff()
 
 	for {
 		select {
-		case <-s.closedCh:
+		case <-s.ClosedCh():
 			return
 		case <-ctx.Done():
 			return
@@ -613,49 +563,40 @@ func (s *jsSubscription) consumeLoop(ctx context.Context, logger *slog.Logger) {
 
 		cons, err := s.consumer.Consume(handler, errHandler)
 		if err != nil {
-			jitteredBackoff := transport.Jitter(backoff, 0.3)
-			logger.Error("consume error, retrying", "error", err, "backoff", jitteredBackoff)
+			backoffDuration := retryBackoff.Next()
+			logger.Error("consume error, retrying", "error", err, "backoff", backoffDuration)
 			select {
-			case <-s.closedCh:
+			case <-s.ClosedCh():
 				return
 			case <-ctx.Done():
 				return
-			case <-time.After(jitteredBackoff):
-			}
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
+			case <-time.After(backoffDuration):
 			}
 			continue
 		}
 
 		// Reset backoff on successful connection
-		backoff = 100 * time.Millisecond
+		retryBackoff.Reset()
 
 		// Wait for close signal OR consumer error
 		select {
-		case <-s.closedCh:
+		case <-s.ClosedCh():
 			cons.Stop()
 			return
 		case <-ctx.Done():
 			cons.Stop()
 			return
 		case err := <-consumerErrCh:
-			jitteredBackoff := transport.Jitter(backoff, 0.3)
-			logger.Warn("consumer error, reconnecting", "error", err, "backoff", jitteredBackoff)
+			backoffDuration := retryBackoff.Next()
+			logger.Warn("consumer error, reconnecting", "error", err, "backoff", backoffDuration)
 			cons.Stop()
 
 			select {
-			case <-s.closedCh:
+			case <-s.ClosedCh():
 				return
 			case <-ctx.Done():
 				return
-			case <-time.After(jitteredBackoff):
-			}
-
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
+			case <-time.After(backoffDuration):
 			}
 		}
 	}
