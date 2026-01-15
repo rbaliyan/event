@@ -107,6 +107,7 @@ type subscription struct {
 	codec           codec.Codec
 	pollInterval    time.Duration
 	checkpoint      string // Last processed sequence ID
+	checkpointMu    sync.RWMutex
 	cancel          context.CancelFunc
 }
 
@@ -298,7 +299,7 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		if err != nil {
 			t.logger.Warn("failed to load checkpoint", "error", err)
 		} else {
-			sub.checkpoint = checkpoint
+			sub.setCheckpoint(checkpoint)
 		}
 	}
 
@@ -312,7 +313,7 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		sub.pollLoop(subCtx, t.logger)
 	}()
 
-	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.ID(), "checkpoint", sub.checkpoint)
+	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.ID(), "checkpoint", sub.getCheckpoint())
 	return sub, nil
 }
 
@@ -375,6 +376,18 @@ func (t *Transport) Health(ctx context.Context) *transport.HealthCheckResult {
 
 // subscription methods
 
+func (s *subscription) getCheckpoint() string {
+	s.checkpointMu.RLock()
+	defer s.checkpointMu.RUnlock()
+	return s.checkpoint
+}
+
+func (s *subscription) setCheckpoint(cp string) {
+	s.checkpointMu.Lock()
+	defer s.checkpointMu.Unlock()
+	s.checkpoint = cp
+}
+
 func (s *subscription) Close(ctx context.Context) error {
 	return s.Subscription.Close(func() error {
 		if s.cancel != nil {
@@ -398,7 +411,7 @@ func (s *subscription) pollLoop(ctx context.Context, logger *slog.Logger) {
 		}
 
 		// Fetch next message
-		stored, err := s.store.Fetch(ctx, s.eventName, s.checkpoint)
+		stored, err := s.store.Fetch(ctx, s.eventName, s.getCheckpoint())
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return
@@ -428,8 +441,10 @@ func (s *subscription) pollLoop(ctx context.Context, logger *slog.Logger) {
 		if err != nil {
 			logger.Error("decode error", "error", err, "seq_id", stored.SequenceID)
 			// Ack to skip bad message (or could nack for retry)
-			s.store.Ack(ctx, s.eventName, stored.SequenceID)
-			s.checkpoint = stored.SequenceID
+			if ackErr := s.store.Ack(ctx, s.eventName, stored.SequenceID); ackErr != nil {
+				logger.Error("ack error", "error", ackErr, "seq_id", stored.SequenceID)
+			}
+			s.setCheckpoint(stored.SequenceID)
 			continue
 		}
 
@@ -447,10 +462,12 @@ func (s *subscription) pollLoop(ctx context.Context, logger *slog.Logger) {
 					if ackErr := s.store.Ack(ctx, s.eventName, seqID); ackErr != nil {
 						return ackErr
 					}
-					s.checkpoint = seqID
+					s.setCheckpoint(seqID)
 					// Persist checkpoint
 					if s.checkpointStore != nil {
-						s.checkpointStore.Save(ctx, s.eventName, s.consumerID, seqID)
+						if saveErr := s.checkpointStore.Save(ctx, s.eventName, s.consumerID, seqID); saveErr != nil {
+							logger.Error("checkpoint save error", "error", saveErr, "seq_id", seqID)
+						}
 					}
 					return nil
 				}
