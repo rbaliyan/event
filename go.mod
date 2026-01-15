@@ -4,7 +4,6 @@ go 1.24.0
 
 require (
 	github.com/IBM/sarama v1.46.3
-	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/nats.go v1.48.0
 	github.com/redis/go-redis/v9 v9.17.2

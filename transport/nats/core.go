@@ -22,6 +22,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/rbaliyan/event/v3/transport"
+	"github.com/rbaliyan/event/v3/transport/base"
 	"github.com/rbaliyan/event/v3/transport/codec"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -50,19 +51,14 @@ type CoreTransport struct {
 
 // coreEvent tracks event-specific state for NATS Core
 type coreEvent struct {
-	name   string
-	subIdx int64
+	name string
 }
 
 // coreSubscription implements transport.Subscription for NATS Core
 type coreSubscription struct {
-	id       string
-	ch       chan transport.Message
-	closedCh chan struct{}
-	closed   int32
-	sub      *nats.Subscription
-	codec    codec.Codec
-	wg       sync.WaitGroup
+	*base.Subscription          // Embedded base subscription
+	sub              *nats.Subscription
+	codec            codec.Codec
 
 	// Optional reliability features
 	idempotencyStore IdempotencyStore
@@ -285,10 +281,9 @@ func (t *CoreTransport) Subscribe(ctx context.Context, name string, opts ...tran
 		bufSize = subOpts.BufferSize
 	}
 
+	subID := transport.NewID()
 	sub := &coreSubscription{
-		id:               transport.NewID(),
-		ch:               make(chan transport.Message, bufSize),
-		closedCh:         make(chan struct{}),
+		Subscription:     base.NewSubscription(subID, bufSize, 0), // No send timeout for Core
 		codec:            t.codec,
 		idempotencyStore: t.idempotencyStore,
 		dlqHandler:       t.dlqHandler,
@@ -318,7 +313,7 @@ func (t *CoreTransport) Subscribe(ctx context.Context, name string, opts ...tran
 	}
 
 	sub.sub = natsSub
-	t.logger.Debug("subscribed", "event", name, "subscriber", sub.id, "mode", subOpts.DeliveryMode)
+	t.logger.Debug("subscribed", "event", name, "subscriber", sub.ID(), "mode", subOpts.DeliveryMode)
 
 	return sub, nil
 }
@@ -372,29 +367,18 @@ func (t *CoreTransport) Health(ctx context.Context) *transport.HealthCheckResult
 // Subscription Implementation
 // =============================================================================
 
-func (s *coreSubscription) ID() string {
-	return s.id
-}
-
-func (s *coreSubscription) Messages() <-chan transport.Message {
-	return s.ch
-}
-
 func (s *coreSubscription) Close(ctx context.Context) error {
-	if atomic.CompareAndSwapInt32(&s.closed, 0, 1) {
-		close(s.closedCh)
+	return s.Subscription.Close(func() error {
 		if s.sub != nil {
 			s.sub.Unsubscribe()
 		}
-		s.wg.Wait()
-		close(s.ch)
-	}
-	return nil
+		return nil
+	})
 }
 
 func (s *coreSubscription) handleMessage(msg *nats.Msg) {
 	select {
-	case <-s.closedCh:
+	case <-s.ClosedCh():
 		return
 	default:
 	}
@@ -435,9 +419,9 @@ func (s *coreSubscription) handleMessage(msg *nats.Msg) {
 
 	// Send to channel (non-blocking in Core mode - drop if full)
 	select {
-	case <-s.closedCh:
+	case <-s.ClosedCh():
 		return
-	case s.ch <- transportMsg:
+	case s.Ch() <- transportMsg:
 		// Message delivered
 	default:
 		// Channel full - drop message (at-most-once semantics)

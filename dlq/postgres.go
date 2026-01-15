@@ -3,10 +3,11 @@ package dlq
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/rbaliyan/event/v3/store/base"
 )
 
 /*
@@ -52,7 +53,7 @@ func (s *PostgresStore) WithTable(table string) *PostgresStore {
 
 // Store adds a message to the DLQ
 func (s *PostgresStore) Store(ctx context.Context, msg *Message) error {
-	metadata, err := json.Marshal(msg.Metadata)
+	metadata, err := base.MarshalMetadata(msg.Metadata)
 	if err != nil {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
@@ -114,19 +115,9 @@ func (s *PostgresStore) Get(ctx context.Context, id string) (*Message, error) {
 		return nil, fmt.Errorf("query: %w", err)
 	}
 
-	if len(metadata) > 0 {
-		if err := json.Unmarshal(metadata, &msg.Metadata); err != nil {
-			return nil, fmt.Errorf("unmarshal metadata: %w", err)
-		}
-	}
-
-	if retriedAt.Valid {
-		msg.RetriedAt = &retriedAt.Time
-	}
-
-	if source.Valid {
-		msg.Source = source.String
-	}
+	msg.Metadata, _ = base.UnmarshalMetadata(metadata)
+	msg.RetriedAt = base.NullTime(retriedAt)
+	msg.Source = base.NullString(source)
 
 	return &msg, nil
 }
@@ -164,19 +155,9 @@ func (s *PostgresStore) List(ctx context.Context, filter Filter) ([]*Message, er
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 
-		if len(metadata) > 0 {
-			if err := json.Unmarshal(metadata, &msg.Metadata); err != nil {
-				return nil, fmt.Errorf("unmarshal metadata: %w", err)
-			}
-		}
-
-		if retriedAt.Valid {
-			msg.RetriedAt = &retriedAt.Time
-		}
-
-		if source.Valid {
-			msg.Source = source.String
-		}
+		msg.Metadata, _ = base.UnmarshalMetadata(metadata)
+		msg.RetriedAt = base.NullTime(retriedAt)
+		msg.Source = base.NullString(source)
 
 		messages = append(messages, &msg)
 	}
@@ -198,79 +179,39 @@ func (s *PostgresStore) Count(ctx context.Context, filter Filter) (int64, error)
 }
 
 // buildListQuery builds the SQL query for List and Count
-func (s *PostgresStore) buildListQuery(filter Filter, countOnly bool) (string, []interface{}) {
-	var conditions []string
-	var args []interface{}
-	argIndex := 1
+func (s *PostgresStore) buildListQuery(filter Filter, countOnly bool) (string, []any) {
+	qb := base.NewQueryBuilder()
 
-	if filter.EventName != "" {
-		conditions = append(conditions, fmt.Sprintf("event_name = $%d", argIndex))
-		args = append(args, filter.EventName)
-		argIndex++
-	}
-
-	if !filter.StartTime.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("created_at >= $%d", argIndex))
-		args = append(args, filter.StartTime)
-		argIndex++
-	}
-
-	if !filter.EndTime.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("created_at <= $%d", argIndex))
-		args = append(args, filter.EndTime)
-		argIndex++
-	}
-
+	qb.AddIfNotEmpty("event_name = $%d", filter.EventName)
+	qb.AddIfNotZero("created_at >= $%d", filter.StartTime)
+	qb.AddIfNotZero("created_at <= $%d", filter.EndTime)
 	if filter.Error != "" {
-		conditions = append(conditions, fmt.Sprintf("error ILIKE $%d", argIndex))
-		args = append(args, "%"+filter.Error+"%")
-		argIndex++
+		qb.Add("error ILIKE $%d", "%"+filter.Error+"%")
 	}
-
-	if filter.MaxRetries > 0 {
-		conditions = append(conditions, fmt.Sprintf("retry_count <= $%d", argIndex))
-		args = append(args, filter.MaxRetries)
-		argIndex++
-	}
-
-	if filter.Source != "" {
-		conditions = append(conditions, fmt.Sprintf("source = $%d", argIndex))
-		args = append(args, filter.Source)
-		argIndex++
-	}
-
-	if filter.ExcludeRetried {
-		conditions = append(conditions, "retried_at IS NULL")
-	}
-
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
+	qb.AddIfPositive("retry_count <= $%d", filter.MaxRetries)
+	qb.AddIfNotEmpty("source = $%d", filter.Source)
+	qb.AddRawIf(filter.ExcludeRetried, "retried_at IS NULL")
 
 	if countOnly {
-		return fmt.Sprintf("SELECT COUNT(*) FROM %s %s", s.table, whereClause), args
+		return qb.Build(fmt.Sprintf("SELECT COUNT(*) FROM %s %%s", s.table))
 	}
 
 	query := fmt.Sprintf(`
 		SELECT id, event_name, original_id, payload, metadata, error, retry_count, source, created_at, retried_at
 		FROM %s
-		%s
+		%%s
 		ORDER BY created_at DESC
-	`, s.table, whereClause)
+	`, s.table)
+
+	baseQuery, args := qb.Build(query)
 
 	if filter.Limit > 0 {
-		query += fmt.Sprintf(" LIMIT $%d", argIndex)
-		args = append(args, filter.Limit)
-		argIndex++
+		limitClause := qb.AppendLimit(filter.Limit, filter.Offset)
+		baseQuery += limitClause
+		args = qb.Args()
 	}
 
-	if filter.Offset > 0 {
-		query += fmt.Sprintf(" OFFSET $%d", argIndex)
-		args = append(args, filter.Offset)
-	}
-
-	return query, args
+	return baseQuery, args
 }
 
 // MarkRetried marks a message as replayed

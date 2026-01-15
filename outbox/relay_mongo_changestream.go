@@ -307,7 +307,9 @@ func (r *ChangeStreamRelay) processDocument(ctx context.Context, msg *MongoMessa
 			"id", msg.ID.Hex(),
 			"event", msg.EventName,
 			"error", err)
-		r.store.MarkFailed(ctx, msg.ID, err)
+		if markErr := r.store.MarkFailed(ctx, msg.ID, err); markErr != nil {
+			r.logger.Error("failed to mark message as failed", "error", markErr)
+		}
 		return
 	}
 
@@ -394,7 +396,9 @@ func (r *ChangeStreamRelay) processExistingPending(ctx context.Context) {
 					"id", msg.ID.Hex(),
 					"event", msg.EventName,
 					"error", err)
-				r.store.MarkFailed(ctx, msg.ID, err)
+				if markErr := r.store.MarkFailed(ctx, msg.ID, err); markErr != nil {
+					r.logger.Error("failed to mark message as failed", "error", markErr)
+				}
 				continue
 			}
 

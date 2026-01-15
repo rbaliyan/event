@@ -1,0 +1,39 @@
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+
+linters-settings:
+  errcheck:
+    exclude-functions:
+      - (io.Closer).Close
+      - (*os.File).Close
+      - (net.Conn).Close
+      - (*database/sql.Tx).Rollback
+      - (net/http.ResponseWriter).Write
+      - encoding/json.Unmarshal
+      - (*github.com/nats-io/nats.go.Subscription).Unsubscribe
+      - (github.com/nats-io/nats.go.JetStreamMsg).Ack
+      - (github.com/nats-io/nats.go.JetStreamMsg).Nak
+      - (github.com/rbaliyan/event/v3/transport.Message).Ack
+
+issues:
+  exclude-rules:
+    # Exclude errcheck for test files
+    - path: _test\.go
+      linters:
+        - errcheck
+    # Exclude unused for test files (mock types, etc.)
+    - path: _test\.go
+      linters:
+        - unused
+    # Exclude examples directory
+    - path: examples/
+      linters:
+        - errcheck
+        - unused
+
+run:
+  timeout: 5m

@@ -4,11 +4,28 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/rbaliyan/event/v3/schema"
 )
 
-// IdempotencyStore is an interface for idempotency tracking.
-// Implementations can use in-memory, Redis, PostgreSQL, or other storage backends.
-// This interface is compatible with idempotency.Store from the idempotency package.
+// IdempotencyStore is a minimal interface for idempotency tracking in middleware.
+//
+// This interface is satisfied by idempotency.Store from the idempotency package,
+// which provides additional methods like MarkProcessedWithTTL and Remove.
+// The minimal interface allows flexibility in implementation while ensuring
+// compatibility with the IdempotencyMiddleware.
+//
+// Implementations:
+//   - idempotency.NewMemoryStore(): In-memory store for single-instance deployments
+//   - idempotency.NewRedisStore(): Distributed store for multi-instance deployments
+//   - idempotency.NewPostgresStore(): SQL-based store with transaction support
+//
+// Example:
+//
+//	store := idempotency.NewPostgresStore(db)
+//	ev.Subscribe(ctx, handler, event.WithMiddleware(
+//	    event.IdempotencyMiddleware[Order](store),
+//	))
 type IdempotencyStore interface {
 	// IsDuplicate checks if a message ID has already been processed.
 	// Returns true if the message should be skipped (already processed).
@@ -18,9 +35,28 @@ type IdempotencyStore interface {
 	MarkProcessed(ctx context.Context, messageID string) error
 }
 
-// PoisonDetector is an interface for detecting and handling poison messages.
-// Poison messages are messages that repeatedly fail processing.
-// This interface is compatible with poison.Detector from the poison package.
+// PoisonDetector is an interface for detecting and quarantining poison messages.
+//
+// Poison messages are messages that repeatedly fail processing and waste
+// resources by being retried indefinitely. This interface allows middleware
+// to check, record failures, and quarantine problematic messages.
+//
+// This interface is implemented by poison.Detector from the poison package.
+// The Detector wraps a poison.Store and handles threshold checking and
+// quarantine management.
+//
+// Implementations:
+//   - poison.NewDetector(poison.NewMemoryStore()): In-memory for single-instance
+//   - poison.NewDetector(poison.NewRedisStore(client)): Distributed detection
+//   - poison.NewDetector(poison.NewPostgresStore(db)): SQL-based detection
+//
+// Example:
+//
+//	store := poison.NewMemoryStore()
+//	detector := poison.NewDetector(store, poison.WithThreshold(5))
+//	ev.Subscribe(ctx, handler, event.WithMiddleware(
+//	    event.PoisonMiddleware[Order](detector),
+//	))
 type PoisonDetector interface {
 	// Check checks if a message is currently quarantined.
 	// Returns true if the message is quarantined and should be skipped.
@@ -35,7 +71,20 @@ type PoisonDetector interface {
 }
 
 // DeduplicationStore is an interface for storing seen message IDs.
-// Implementations can use in-memory, Redis, or other storage backends.
+//
+// DeduplicationStore provides simple TTL-based deduplication, which is lighter
+// weight than IdempotencyStore. Use this when you need basic duplicate detection
+// without the full exactly-once processing guarantees.
+//
+// The built-in implementation NewInMemoryDeduplicationStore provides an in-memory
+// store with configurable TTL and max size.
+//
+// Example:
+//
+//	store := event.NewInMemoryDeduplicationStore(time.Hour, 10000)
+//	ev.Subscribe(ctx, handler, event.WithMiddleware(
+//	    event.DeduplicationMiddleware[Order](store),
+//	))
 type DeduplicationStore interface {
 	// IsSeen checks if a message ID has been seen before.
 	// Returns true if the message should be skipped (already processed).
@@ -208,12 +257,12 @@ const (
 type CircuitBreaker struct {
 	mu sync.RWMutex
 
-	// Configuration
-	failureThreshold int           // Number of failures before opening
-	successThreshold int           // Number of successes needed to close from half-open
-	timeout          time.Duration // How long to wait before trying half-open
+	// configuration
+	failureThreshold int           // number of failures before opening
+	successThreshold int           // number of successes needed to close from half-open
+	timeout          time.Duration // how long to wait before trying half-open
 
-	// State
+	// state (unexported to prevent external modification)
 	state         CircuitState
 	failures      int
 	successes     int
@@ -385,11 +434,27 @@ func IdempotencyMiddleware[T any](store IdempotencyStore) Middleware[T] {
 	}
 }
 
-// MonitorStore is an interface for event processing monitoring.
-// Implementations can use in-memory, PostgreSQL, MongoDB, or other storage backends.
-// This interface is designed to be compatible with monitor.Store from the monitor package.
+// MonitorStore is a minimal interface for event processing monitoring in middleware.
 //
-// The stores in the monitor package implement this interface directly.
+// This interface provides the two methods needed by MonitorMiddleware to record
+// event processing metrics. Monitor stores from the monitor package implement
+// both this interface AND the full monitor.Store interface (which includes
+// List, Get, Count, and other query methods).
+//
+// The separation allows middleware to use a simple interface while stores
+// can provide full query capabilities for the monitor HTTP/gRPC APIs.
+//
+// Implementations:
+//   - monitor.NewMemoryStore(): In-memory store for development/testing
+//   - monitor.NewPostgresStore(db): PostgreSQL-based persistent store
+//   - monitor.NewMongoStore(db): MongoDB-based persistent store
+//
+// Example:
+//
+//	store := monitor.NewPostgresStore(db)
+//	ev.Subscribe(ctx, handler, event.WithMiddleware(
+//	    event.MonitorMiddleware[Order](store),
+//	))
 type MonitorStore interface {
 	// RecordStart records when event processing begins.
 	// workerPool indicates the delivery mode (true = WorkerPool, false = Broadcast)
@@ -402,66 +467,32 @@ type MonitorStore interface {
 		handlerErr error, duration time.Duration) error
 }
 
-// SchemaProvider is an interface for event schema storage and notification.
-// Implementations can use transport KV (NATS, Kafka) or database (PostgreSQL, MongoDB, Redis).
-// This interface is compatible with schema.SchemaProvider from the schema package.
+// SchemaProvider is an alias for schema.SchemaProvider.
 //
-// Publishers use Set to register event schemas, subscribers auto-load via Get.
-// Watch enables real-time schema updates across distributed systems.
-type SchemaProvider interface {
-	// Get retrieves a schema by event name.
-	// Returns nil, nil if not found.
-	Get(ctx context.Context, eventName string) (*EventSchema, error)
+// This type alias exists for backward compatibility. New code should
+// import and use schema.SchemaProvider directly from the schema package.
+//
+// SchemaProvider abstracts schema storage, implemented by transports
+// (with retention) or database stores (PostgreSQL, MongoDB, Redis).
+type SchemaProvider = schema.SchemaProvider
 
-	// Set stores a schema and notifies subscribers.
-	// Version must be >= existing version (no downgrades).
-	Set(ctx context.Context, schema *EventSchema) error
+// EventSchema is an alias for schema.EventSchema.
+//
+// This type alias exists for backward compatibility. New code should
+// import and use schema.EventSchema directly from the schema package.
+//
+// EventSchema defines processing configuration for an event including
+// timeouts, retries, and feature flags (monitor, idempotency, poison).
+type EventSchema = schema.EventSchema
 
-	// Delete removes a schema.
-	Delete(ctx context.Context, eventName string) error
-
-	// Watch returns a channel that receives schema change notifications.
-	// The channel is closed when the context is cancelled.
-	Watch(ctx context.Context) (<-chan SchemaChangeEvent, error)
-
-	// List returns all schemas (for startup sync).
-	List(ctx context.Context) ([]*EventSchema, error)
-
-	// Close releases resources.
-	Close() error
-}
-
-// EventSchema defines processing configuration for an event.
-// Publishers register schemas; subscribers auto-load them.
-// This ensures all workers processing the same event have consistent settings.
-type EventSchema struct {
-	// Identity
-	Name        string
-	Version     int
-	Description string
-
-	// Processing behavior
-	SubTimeout   time.Duration
-	MaxRetries   int
-	RetryBackoff time.Duration
-
-	// Feature flags
-	EnableMonitor     bool
-	EnableIdempotency bool
-	EnablePoison      bool
-
-	// Metadata
-	Metadata  map[string]string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
-
-// SchemaChangeEvent is published when a schema is updated.
-type SchemaChangeEvent struct {
-	EventName string
-	Version   int
-	UpdatedAt time.Time
-}
+// SchemaChangeEvent is an alias for schema.SchemaChangeEvent.
+//
+// This type alias exists for backward compatibility. New code should
+// import and use schema.SchemaChangeEvent directly from the schema package.
+//
+// SchemaChangeEvent is published when a schema is updated, enabling
+// real-time schema synchronization across distributed systems.
+type SchemaChangeEvent = schema.SchemaChangeEvent
 
 // MonitorMiddleware creates a middleware that records event processing metrics.
 // Records start time, duration, status, and any errors for each event processed.

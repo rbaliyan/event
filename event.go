@@ -389,11 +389,11 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 								"event", e.Name(),
 								"msg_id", msg.ID(),
 								"error", dlqErr)
-							msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
+							_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
 							continue
 						}
 					}
-					msg.Ack(nil)
+					_ = msg.Ack(nil)
 					continue
 				}
 
@@ -419,11 +419,11 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 								"event", e.Name(),
 								"msg_id", msg.ID(),
 								"error", dlqErr)
-							msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
+							_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
 							continue
 						}
 					}
-					msg.Ack(nil)
+					_ = msg.Ack(nil)
 					continue
 				}
 
@@ -440,11 +440,11 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 								"event", e.Name(),
 								"msg_id", msg.ID(),
 								"error", dlqErr)
-							msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
+							_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
 							continue
 						}
 					}
-					msg.Ack(nil)
+					_ = msg.Ack(nil)
 					continue
 				}
 
@@ -464,7 +464,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 							"msg_id", msg.ID(),
 							"error", dlqErr,
 							"original_error", err)
-						msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
+						_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
 						continue
 					}
 				}
@@ -473,13 +473,13 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 				switch result {
 				case ResultAck, ResultReject:
 					// Acknowledge (remove from queue)
-					msg.Ack(nil)
+					_ = msg.Ack(nil)
 				case ResultNack:
 					// Retry immediately
-					msg.Ack(err)
+					_ = msg.Ack(err)
 				case ResultDefer:
 					// Retry with backoff (transport handles this)
-					msg.Ack(err)
+					_ = msg.Ack(err)
 				}
 			}
 		}

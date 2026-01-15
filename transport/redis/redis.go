@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/rbaliyan/event/v3/transport"
+	"github.com/rbaliyan/event/v3/transport/base"
 	"github.com/rbaliyan/event/v3/transport/codec"
 	"github.com/redis/go-redis/v9"
 )
@@ -77,27 +78,21 @@ type Transport struct {
 
 // redisEvent tracks event-specific state
 type redisEvent struct {
-	name   string
-	subIdx int64 // For generating unique consumer group names in Broadcast mode
+	name string
 }
 
 // subscription implements transport.Subscription for Redis
 type subscription struct {
-	id            string
-	ch            chan transport.Message
-	closedCh      chan struct{}
-	closed        int32
-	client        Client
-	stream        string
-	group         string
-	consumer      string
-	codec         codec.Codec
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup // Track consumer goroutines for clean shutdown
-	sendTimeout   time.Duration  // Timeout for sending to channel (backpressure)
-	claimInterval time.Duration  // Interval for claiming orphaned messages
-	claimMinIdle  time.Duration  // Minimum idle time before claiming
-	isBroadcast   bool           // If true, consumer group is deleted on close
+	*base.Subscription             // Embedded base subscription
+	client           Client        // Redis client
+	stream           string        // Stream name
+	group            string        // Consumer group name
+	consumer         string        // Consumer name
+	codec            codec.Codec   // Message codec
+	cancel           context.CancelFunc
+	claimInterval    time.Duration // Interval for claiming orphaned messages
+	claimMinIdle     time.Duration // Minimum idle time before claiming
+	isBroadcast      bool          // If true, consumer group is deleted on close
 
 	// Reliability stores
 	idempotencyStore IdempotencyStore
@@ -300,16 +295,13 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	}
 
 	sub := &subscription{
-		id:            subID,
-		ch:            make(chan transport.Message, bufSize),
-		closedCh:      make(chan struct{}),
+		Subscription:  base.NewSubscription(subID, bufSize, t.sendTimeout),
 		client:        t.client,
 		stream:        streamName,
 		group:         groupID,
 		consumer:      subID,
 		codec:         t.codec,
 		cancel:        cancel,
-		sendTimeout:   t.sendTimeout,
 		claimInterval: t.claimInterval,
 		claimMinIdle:  t.claimMinIdle,
 		isBroadcast:   subOpts.DeliveryMode == transport.Broadcast,
@@ -322,22 +314,22 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	}
 
 	// Start consuming in background with WaitGroup tracking
-	sub.wg.Add(1)
+	sub.WaitGroup().Add(1)
 	go func() {
-		defer sub.wg.Done()
+		defer sub.WaitGroup().Done()
 		sub.consumeLoop(subCtx, t.blockTime, t.logger)
 	}()
 
 	// Start orphan message claimer if configured
 	if t.claimInterval > 0 {
-		sub.wg.Add(1)
+		sub.WaitGroup().Add(1)
 		go func() {
-			defer sub.wg.Done()
+			defer sub.WaitGroup().Done()
 			sub.claimOrphanedMessages(subCtx, t.logger)
 		}()
 	}
 
-	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "group", groupID, "mode", subOpts.DeliveryMode, "start", startID)
+	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.ID(), "group", groupID, "mode", subOpts.DeliveryMode, "start", startID)
 	return sub, nil
 }
 
@@ -471,90 +463,23 @@ func (t *Transport) ConsumerLag(ctx context.Context) ([]transport.ConsumerLag, e
 
 // subscription methods
 
-func (s *subscription) ID() string {
-	return s.id
-}
-
-func (s *subscription) Messages() <-chan transport.Message {
-	return s.ch
-}
-
 func (s *subscription) Close(ctx context.Context) error {
-	if atomic.CompareAndSwapInt32(&s.closed, 0, 1) {
-		close(s.closedCh)
+	return s.Subscription.Close(func() error {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		// Wait for consumer goroutine to exit before closing channel
-		s.wg.Wait()
-		close(s.ch)
-
 		// For broadcast mode, delete the unique consumer group to prevent resource leak
 		if s.isBroadcast && s.client != nil {
 			s.client.XGroupDestroy(ctx, s.stream, s.group)
 		}
-	}
-	return nil
+		return nil
+	})
 }
-
-// sendResult indicates the outcome of sending to channel
-type sendResult int
-
-const (
-	sendOK      sendResult = iota // Message sent successfully
-	sendClosed                    // Subscription was closed
-	sendTimeout                   // Timeout waiting for channel (message NOT lost, stays in PEL)
-)
 
 // sendWithRetry sends a message to the channel with exponential backoff on timeout.
+// This is a convenience wrapper around base.Subscription.SendWithRetry with Redis-specific logging.
 func (s *subscription) sendWithRetry(msg transport.Message, msgID string, logger *slog.Logger) bool {
-	backoff := 100 * time.Millisecond
-	maxBackoff := 5 * time.Second
-
-	for {
-		switch s.sendToChannel(msg) {
-		case sendClosed:
-			return false
-		case sendTimeout:
-			jitteredBackoff := transport.Jitter(backoff, 0.3)
-			logger.Warn("message send timeout, retrying with backoff",
-				"msg_id", msgID, "stream", s.stream, "backoff", jitteredBackoff)
-			select {
-			case <-s.closedCh:
-				return false
-			case <-time.After(jitteredBackoff):
-			}
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-			continue
-		case sendOK:
-			return true
-		}
-	}
-}
-
-// sendToChannel sends a message to the channel with optional timeout.
-func (s *subscription) sendToChannel(msg transport.Message) sendResult {
-	if s.sendTimeout > 0 {
-		timer := time.NewTimer(s.sendTimeout)
-		defer timer.Stop()
-		select {
-		case <-s.closedCh:
-			return sendClosed
-		case <-timer.C:
-			return sendTimeout
-		case s.ch <- msg:
-			return sendOK
-		}
-	}
-	select {
-	case <-s.closedCh:
-		return sendClosed
-	case s.ch <- msg:
-		return sendOK
-	}
+	return s.Subscription.SendWithRetry(msg, logger, "msg_id", msgID, "stream", s.stream)
 }
 
 func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration, logger *slog.Logger) {
@@ -567,7 +492,7 @@ func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration,
 
 	for {
 		select {
-		case <-s.closedCh:
+		case <-s.ClosedCh():
 			return
 		case <-ctx.Done():
 			return
@@ -591,7 +516,7 @@ func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration,
 			logger.Error("read error, retrying with backoff", "error", err, "backoff", jitteredBackoff)
 
 			select {
-			case <-s.closedCh:
+			case <-s.ClosedCh():
 				return
 			case <-ctx.Done():
 				return
@@ -610,7 +535,7 @@ func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration,
 		for _, stream := range streams {
 			for _, xmsg := range stream.Messages {
 				select {
-				case <-s.closedCh:
+				case <-s.ClosedCh():
 					return
 				default:
 				}
@@ -681,7 +606,7 @@ func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration,
 func (s *subscription) processPendingMessages(ctx context.Context, logger *slog.Logger) {
 	for {
 		select {
-		case <-s.closedCh:
+		case <-s.ClosedCh():
 			return
 		case <-ctx.Done():
 			return
@@ -732,7 +657,7 @@ func (s *subscription) processPendingMessages(ctx context.Context, logger *slog.
 			}
 			for _, xmsg := range stream.Messages {
 				select {
-				case <-s.closedCh:
+				case <-s.ClosedCh():
 					return
 				default:
 				}
@@ -814,7 +739,7 @@ func (s *subscription) claimOrphanedMessages(ctx context.Context, logger *slog.L
 
 	for {
 		select {
-		case <-s.closedCh:
+		case <-s.ClosedCh():
 			return
 		case <-ctx.Done():
 			return
@@ -876,7 +801,7 @@ func (s *subscription) claimOnce(ctx context.Context, logger *slog.Logger) {
 
 	for _, xmsg := range messages {
 		select {
-		case <-s.closedCh:
+		case <-s.ClosedCh():
 			return
 		case <-ctx.Done():
 			return

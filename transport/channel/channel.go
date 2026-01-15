@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/rbaliyan/event/v3/transport"
+	"github.com/rbaliyan/event/v3/transport/base"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -55,35 +56,21 @@ type eventChannel struct {
 
 // subscription implements transport.Subscription
 type subscription struct {
-	id          string
-	ch          chan transport.Message
-	ev          *eventChannel
-	mode        transport.DeliveryMode
-	workerGroup string // worker group name for WorkerPool mode
-	closed      int32
-	closedCh    chan struct{}
-}
-
-func (s *subscription) ID() string {
-	return s.id
-}
-
-func (s *subscription) Messages() <-chan transport.Message {
-	return s.ch
+	*base.Subscription              // Embedded base subscription
+	ev               *eventChannel        // Parent event channel
+	mode             transport.DeliveryMode // Delivery mode
+	workerGroup      string                // Worker group name for WorkerPool mode
 }
 
 func (s *subscription) Close(ctx context.Context) error {
-	if atomic.CompareAndSwapInt32(&s.closed, 0, 1) {
-		close(s.closedCh)
+	return s.Subscription.Close(func() error {
 		// Remove from event's subscriber list
 		if s.ev != nil {
-			s.ev.subscribers.Delete(s.id)
+			s.ev.subscribers.Delete(s.ID())
 			atomic.AddInt64(&s.ev.subCount, -1)
 		}
-		// Close the channel
-		close(s.ch)
-	}
-	return nil
+		return nil
+	})
 }
 
 // New creates a new channel-based transport.
@@ -194,7 +181,7 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 
 	ec.subscribers.Range(func(key, value any) bool {
 		sub := value.(*subscription)
-		if atomic.LoadInt32(&sub.closed) == 0 {
+		if !sub.IsClosed() {
 			if sub.mode == transport.WorkerPool {
 				// Group by worker group name (empty string = default group)
 				workerGroups[sub.workerGroup] = append(workerGroups[sub.workerGroup], sub)
@@ -214,7 +201,7 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 			if errors.Is(err, transport.ErrPublishTimeout) {
 				t.logger.Debug("broadcast message dropped due to timeout (subscriber too slow)",
 					"event", ec.name,
-					"subscriber", sub.id,
+					"subscriber", sub.ID(),
 					"msg_id", msg.ID())
 				// Record metric for dropped message
 				if t.droppedCounter != nil {
@@ -228,7 +215,7 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 			} else {
 				t.logger.Debug("failed to send to broadcast subscriber",
 					"event", ec.name,
-					"subscriber", sub.id,
+					"subscriber", sub.ID(),
 					"error", err)
 			}
 			t.onError(err)
@@ -254,7 +241,7 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 			if err := t.sendToSubscriber(ctx, sub, msg); err != nil {
 				t.logger.Debug("failed to send to worker subscriber, trying next",
 					"event", ec.name,
-					"subscriber", sub.id,
+					"subscriber", sub.ID(),
 					"worker_group", groupName,
 					"error", err,
 					"attempt", i+1,
@@ -301,25 +288,25 @@ func (t *Transport) sendToSubscriber(ctx context.Context, sub *subscription, msg
 		select {
 		case <-ctx.Done():
 			return transport.ErrPublishTimeout
-		case <-sub.closedCh:
+		case <-sub.ClosedCh():
 			return transport.ErrSubscriptionClosed
-		case sub.ch <- msg:
+		case sub.Ch() <- msg:
 			return nil
 		}
 	}
 
 	// No timeout - try non-blocking first, then block
 	select {
-	case <-sub.closedCh:
+	case <-sub.ClosedCh():
 		return transport.ErrSubscriptionClosed
-	case sub.ch <- msg:
+	case sub.Ch() <- msg:
 		return nil
 	default:
 		// Channel full - block until ready (blocking mode)
 		select {
-		case <-sub.closedCh:
+		case <-sub.ClosedCh():
 			return transport.ErrSubscriptionClosed
-		case sub.ch <- msg:
+		case sub.Ch() <- msg:
 			return nil
 		}
 	}
@@ -348,19 +335,18 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		bufSize = uint(subOpts.BufferSize)
 	}
 
+	subID := transport.NewID()
 	sub := &subscription{
-		id:          transport.NewID(),
-		ch:          make(chan transport.Message, bufSize),
-		ev:          ec,
-		mode:        subOpts.DeliveryMode,
-		workerGroup: subOpts.WorkerGroup,
-		closedCh:    make(chan struct{}),
+		Subscription: base.NewSubscription(subID, int(bufSize), 0),
+		ev:           ec,
+		mode:         subOpts.DeliveryMode,
+		workerGroup:  subOpts.WorkerGroup,
 	}
 
-	ec.subscribers.Store(sub.id, sub)
+	ec.subscribers.Store(sub.ID(), sub)
 	atomic.AddInt64(&ec.subCount, 1)
 
-	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.id, "mode", subOpts.DeliveryMode, "worker_group", subOpts.WorkerGroup)
+	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.ID(), "mode", subOpts.DeliveryMode, "worker_group", subOpts.WorkerGroup)
 	return sub, nil
 }
 

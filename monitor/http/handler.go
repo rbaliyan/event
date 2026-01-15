@@ -2,7 +2,6 @@
 package http
 
 import (
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -260,20 +259,6 @@ func (h *Handler) parseFilterFromQuery(r *http.Request) monitor.Filter {
 	}
 
 	return filter
-}
-
-func (h *Handler) readRequest(r *http.Request, msg proto.Message) error {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return err
-	}
-	defer r.Body.Close()
-
-	if len(body) == 0 {
-		return nil // Empty body is valid (all fields optional)
-	}
-
-	return h.unmarshaler.Unmarshal(body, msg)
 }
 
 func (h *Handler) writeResponse(w http.ResponseWriter, msg proto.Message) {
