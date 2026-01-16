@@ -58,12 +58,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/base"
+	"github.com/rbaliyan/event/v3/transport/channel"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -197,11 +199,13 @@ type Transport struct {
 	db               *mongo.Database // For database/collection-level watch
 	collectionName   string          // For collection-level watch (empty = database-level)
 	watchLevel       WatchLevel
-	events           sync.Map // map[string]*event
+	channelTransport *channel.Transport // Internal channel transport for fan-out
+	registeredEvents sync.Map           // map[string]struct{} - tracks registered event names
 	logger           *slog.Logger
 	onError          func(error)
 	bufferSize       int
 	resumeTokenStore ResumeTokenStore
+	resumeTokenID    string   // Unique identifier for resume tokens (default: hostname)
 	ackStore         AckStore
 	disableResume    bool // If true, don't persist resume tokens
 
@@ -217,20 +221,6 @@ type Transport struct {
 
 	// Payload options
 	fullDocumentOnly bool // If true, send only fullDocument as payload instead of ChangeEvent
-}
-
-// event tracks event-specific state
-type event struct {
-	name        string
-	subscribers sync.Map // map[string]*subscription
-	subCount    int64
-}
-
-// subscription implements transport.Subscription
-type subscription struct {
-	*base.Subscription
-	eventName string
-	ackStore  AckStore
 }
 
 // Option configures the MongoDB transport
@@ -310,6 +300,35 @@ func WithResumeTokenCollection(db *mongo.Database, collectionName string) Option
 func WithoutResume() Option {
 	return func(t *Transport) {
 		t.disableResume = true
+	}
+}
+
+// WithResumeTokenID sets a unique identifier for resume token storage.
+// This allows multiple instances to maintain their own resume positions.
+//
+// By default, the hostname is used. Each instance will:
+//   - Store its own resume token with key: "namespace:id"
+//   - Resume from its own last position on restart
+//   - Process events independently (may cause duplicates across instances)
+//
+// Use cases:
+//   - Multiple instances processing the same collection independently
+//   - Instance-specific recovery after crashes
+//   - Development/testing with multiple local instances
+//
+// For shared resume tokens (all instances resume from the same position),
+// set the same ID across all instances or use an empty string.
+//
+// Example:
+//
+//	// Each instance uses its own resume token
+//	mongodb.New(db, mongodb.WithResumeTokenID(os.Getenv("INSTANCE_ID")))
+//
+//	// Shared resume token across all instances
+//	mongodb.New(db, mongodb.WithResumeTokenID("shared"))
+func WithResumeTokenID(id string) Option {
+	return func(t *Transport) {
+		t.resumeTokenID = id
 	}
 }
 
@@ -455,11 +474,26 @@ func New(db *mongo.Database, opts ...Option) (*Transport, error) {
 		opt(t)
 	}
 
+	// Create internal channel transport for fan-out
+	t.channelTransport = channel.New(
+		channel.WithBufferSize(uint(t.bufferSize)),
+		channel.WithLogger(t.logger),
+	)
+
 	// Determine watch level
 	if t.collectionName != "" {
 		t.watchLevel = WatchLevelCollection
 	} else {
 		t.watchLevel = WatchLevelDatabase
+	}
+
+	// Default resume token ID to hostname
+	if t.resumeTokenID == "" {
+		if hostname, err := os.Hostname(); err == nil {
+			t.resumeTokenID = hostname
+		} else {
+			t.resumeTokenID = "default"
+		}
 	}
 
 	// Auto-create resume token store if not disabled and not provided
@@ -515,6 +549,21 @@ func NewClusterWatch(client *mongo.Client, opts ...Option) (*Transport, error) {
 		opt(t)
 	}
 
+	// Create internal channel transport for fan-out
+	t.channelTransport = channel.New(
+		channel.WithBufferSize(uint(t.bufferSize)),
+		channel.WithLogger(t.logger),
+	)
+
+	// Default resume token ID to hostname
+	if t.resumeTokenID == "" {
+		if hostname, err := os.Hostname(); err == nil {
+			t.resumeTokenID = hostname
+		} else {
+			t.resumeTokenID = "default"
+		}
+	}
+
 	// Auto-create resume token store if not disabled and not provided
 	if !t.disableResume && t.resumeTokenStore == nil {
 		t.resumeTokenStore = NewMongoResumeTokenStore(adminDB.Collection(DefaultResumeTokenCollection))
@@ -534,14 +583,16 @@ func (t *Transport) RegisterEvent(ctx context.Context, name string) error {
 		return transport.ErrTransportClosed
 	}
 
-	ev := &event{name: name}
-
-	if _, loaded := t.events.LoadOrStore(name, ev); loaded {
-		return transport.ErrEventAlreadyExists
+	// Delegate to channel transport
+	if err := t.channelTransport.RegisterEvent(ctx, name); err != nil {
+		return err
 	}
 
+	// Track registered event name
+	t.registeredEvents.Store(name, struct{}{})
+
 	// Start the change stream watcher if not already running
-	t.startWatcher(ctx)
+	t.startWatcher()
 
 	t.logger.Debug("registered event", "event", name, "collection", t.collectionName)
 	return nil
@@ -553,18 +604,13 @@ func (t *Transport) UnregisterEvent(ctx context.Context, name string) error {
 		return transport.ErrTransportClosed
 	}
 
-	val, ok := t.events.LoadAndDelete(name)
-	if !ok {
-		return transport.ErrEventNotRegistered
+	// Delegate to channel transport
+	if err := t.channelTransport.UnregisterEvent(ctx, name); err != nil {
+		return err
 	}
 
-	// Close all subscriptions
-	ev := val.(*event)
-	ev.subscribers.Range(func(key, value any) bool {
-		sub := value.(*subscription)
-		sub.Close(ctx)
-		return true
-	})
+	// Remove from tracked events
+	t.registeredEvents.Delete(name)
 
 	t.logger.Debug("unregistered event", "event", name)
 	return nil
@@ -581,29 +627,11 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		return nil, transport.ErrTransportClosed
 	}
 
-	subOpts := transport.ApplySubscribeOptions(opts...)
-
-	val, ok := t.events.Load(name)
-	if !ok {
-		return nil, transport.ErrEventNotRegistered
+	// Delegate to channel transport - it handles all the fan-out logic
+	sub, err := t.channelTransport.Subscribe(ctx, name, opts...)
+	if err != nil {
+		return nil, err
 	}
-
-	ev := val.(*event)
-
-	bufSize := t.bufferSize
-	if subOpts.BufferSize > 0 {
-		bufSize = subOpts.BufferSize
-	}
-
-	subID := transport.NewID()
-	sub := &subscription{
-		Subscription: base.NewSubscription(subID, bufSize, 0),
-		eventName:    name,
-		ackStore:     t.ackStore,
-	}
-
-	ev.subscribers.Store(sub.ID(), sub)
-	atomic.AddInt64(&ev.subCount, 1)
 
 	t.logger.Debug("added subscriber", "event", name, "subscriber", sub.ID())
 	return sub, nil
@@ -621,16 +649,10 @@ func (t *Transport) Close(ctx context.Context) error {
 	}
 	t.watcherWg.Wait()
 
-	// Close all subscriptions
-	t.events.Range(func(key, value any) bool {
-		ev := value.(*event)
-		ev.subscribers.Range(func(k, v any) bool {
-			sub := v.(*subscription)
-			sub.Close(ctx)
-			return true
-		})
-		return true
-	})
+	// Close the channel transport (closes all subscriptions)
+	if err := t.channelTransport.Close(ctx); err != nil {
+		t.logger.Warn("failed to close channel transport", "error", err)
+	}
 
 	t.logger.Debug("transport closed")
 	return nil
@@ -665,15 +687,8 @@ func (t *Transport) Health(ctx context.Context) *transport.HealthCheckResult {
 		return result
 	}
 
-	// Count events and subscribers
-	var eventCount int
-	var totalSubs int64
-	t.events.Range(func(key, value any) bool {
-		eventCount++
-		ev := value.(*event)
-		totalSubs += atomic.LoadInt64(&ev.subCount)
-		return true
-	})
+	// Get stats from channel transport
+	channelHealth := t.channelTransport.Health(ctx)
 
 	result.Status = transport.HealthStatusHealthy
 	result.Message = "mongodb transport is healthy"
@@ -686,15 +701,15 @@ func (t *Transport) Health(ctx context.Context) *transport.HealthCheckResult {
 	if t.collectionName != "" {
 		result.Details["collection"] = t.collectionName
 	}
-	result.Details["events"] = eventCount
-	result.Details["subscribers"] = totalSubs
+	result.Details["events"] = channelHealth.Details["events"]
+	result.Details["subscribers"] = channelHealth.Details["subscribers"]
 	result.Details["ping_latency_ms"] = pingLatency.Milliseconds()
 
 	return result
 }
 
 // startWatcher starts the change stream watcher goroutine.
-func (t *Transport) startWatcher(ctx context.Context) {
+func (t *Transport) startWatcher() {
 	// Only start once
 	if t.watcherCancel != nil {
 		return
@@ -842,17 +857,21 @@ func (t *Transport) watchOnce(ctx context.Context) error {
 }
 
 // resumeTokenKey returns the key used for storing resume tokens.
+// Format: "namespace:id" where namespace is based on watch level
+// and id is the resumeTokenID (defaults to hostname).
 func (t *Transport) resumeTokenKey() string {
+	var namespace string
 	switch t.watchLevel {
 	case WatchLevelCollection:
-		return t.db.Name() + "." + t.collectionName
+		namespace = t.db.Name() + "." + t.collectionName
 	case WatchLevelDatabase:
-		return t.db.Name() + ".*"
+		namespace = t.db.Name() + ".*"
 	case WatchLevelCluster:
-		return "*.*"
+		namespace = "*.*"
 	default:
-		return "default"
+		namespace = "default"
 	}
+	return namespace + ":" + t.resumeTokenID
 }
 
 // watchLevelString returns a human-readable string for the watch level.
@@ -952,26 +971,13 @@ func (t *Transport) processChange(ctx context.Context, cs *mongo.ChangeStream) e
 		}
 	}
 
-	// Deliver to all subscribers of all events
-	t.events.Range(func(key, value any) bool {
-		ev := value.(*event)
-		ev.subscribers.Range(func(k, v any) bool {
-			sub := v.(*subscription)
-			if sub.IsClosed() {
-				return true
-			}
-
-			// Non-blocking send with fallback
-			select {
-			case sub.Ch() <- msg:
-			default:
-				select {
-				case sub.Ch() <- msg:
-				case <-sub.ClosedCh():
-				}
-			}
-			return true
-		})
+	// Publish to all registered events via channel transport
+	// Each registered event's subscribers receive the change
+	t.registeredEvents.Range(func(key, value any) bool {
+		eventName := key.(string)
+		if err := t.channelTransport.Publish(ctx, eventName, msg); err != nil {
+			t.logger.Warn("failed to publish to channel transport", "event", eventName, "error", err)
+		}
 		return true
 	})
 
@@ -1065,14 +1071,6 @@ func (t *Transport) extractChangeEvent(raw bson.M) ChangeEvent {
 	return event
 }
 
-// subscription methods
-
-func (s *subscription) Close(ctx context.Context) error {
-	return s.Subscription.Close(func() error {
-		return nil
-	})
-}
-
 // formatDocumentKey converts any MongoDB _id type to a string representation.
 func formatDocumentKey(id any) string {
 	if id == nil {
@@ -1157,5 +1155,4 @@ func bsonMToMap(m bson.M) map[string]any {
 var (
 	_ transport.Transport     = (*Transport)(nil)
 	_ transport.HealthChecker = (*Transport)(nil)
-	_ transport.Subscription  = (*subscription)(nil)
 )
