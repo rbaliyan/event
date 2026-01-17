@@ -19,10 +19,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
-
 // randomString generates a random alphanumeric string of length n.
 func randomString(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
