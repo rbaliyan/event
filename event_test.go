@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -11,15 +12,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-faker/faker/v4"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/channel"
 	"github.com/rbaliyan/event/v3/transport/message"
 	"go.opentelemetry.io/otel/trace"
-	"syreclabs.com/go/faker"
 )
 
 func init() {
-	faker.Seed(time.Now().UnixNano())
+	rand.Seed(time.Now().UnixNano())
+}
+
+// randomString generates a random alphanumeric string of length n.
+func randomString(n int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(b)
 }
 
 // mustNewBus creates a bus for testing, fails test on error
@@ -266,7 +277,7 @@ func TestData(t *testing.T) {
 	bus := mustNewBus(t, "test", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
-	s := faker.Lorem().String()
+	s := faker.Sentence()
 
 	// Test with specific typed events to ensure proper encoding/decoding
 	t.Run("nil", func(t *testing.T) {
@@ -2584,7 +2595,7 @@ func TestBusLevelIdempotency(t *testing.T) {
 	ctx := context.Background()
 	idempStore := newMockIdempotencyStore()
 
-	bus := mustNewBus(t, "test-idemp-bus-"+faker.RandomString(5),
+	bus := mustNewBus(t, "test-idemp-bus-"+randomString(5),
 		WithTransport(channel.New()),
 		WithIdempotency(idempStore),
 	)
@@ -2623,7 +2634,7 @@ func TestBusLevelPoisonDetection(t *testing.T) {
 	ctx := context.Background()
 	poisonDetector := newMockPoisonDetector(2) // quarantine after 2 failures
 
-	bus := mustNewBus(t, "test-poison-bus-"+faker.RandomString(5),
+	bus := mustNewBus(t, "test-poison-bus-"+randomString(5),
 		WithTransport(channel.New()),
 		WithPoisonDetection(poisonDetector),
 	)
@@ -2674,7 +2685,7 @@ func TestBusLevelMiddlewareCombined(t *testing.T) {
 	idempStore := newMockIdempotencyStore()
 	poisonDetector := newMockPoisonDetector(3)
 
-	bus := mustNewBus(t, "test-combined-bus-"+faker.RandomString(5),
+	bus := mustNewBus(t, "test-combined-bus-"+randomString(5),
 		WithTransport(channel.New()),
 		WithIdempotency(idempStore),
 		WithPoisonDetection(poisonDetector),
@@ -2819,7 +2830,7 @@ func TestSchemaLoadingOnRegister(t *testing.T) {
 		EnablePoison:      false,
 	})
 
-	bus := mustNewBus(t, "test-schema-load-"+faker.RandomString(5),
+	bus := mustNewBus(t, "test-schema-load-"+randomString(5),
 		WithTransport(channel.New()),
 		WithSchemaProvider(provider),
 	)
@@ -2858,7 +2869,7 @@ func TestSchemaNotFoundFallback(t *testing.T) {
 	provider := newMockSchemaProvider()
 	// Don't pre-register any schema
 
-	bus := mustNewBus(t, "test-schema-notfound-"+faker.RandomString(5),
+	bus := mustNewBus(t, "test-schema-notfound-"+randomString(5),
 		WithTransport(channel.New()),
 		WithSchemaProvider(provider),
 	)
@@ -2894,7 +2905,7 @@ func TestSchemaControlsMiddleware(t *testing.T) {
 		poisonDetector := newMockPoisonDetector(2)
 		monitorStore := newMockMonitorStore()
 
-		bus := mustNewBus(t, "test-schema-monitor-"+faker.RandomString(5),
+		bus := mustNewBus(t, "test-schema-monitor-"+randomString(5),
 			WithTransport(channel.New()),
 			WithSchemaProvider(provider),
 			WithIdempotency(idempStore),
@@ -2916,7 +2927,7 @@ func TestSchemaControlsMiddleware(t *testing.T) {
 
 		time.Sleep(10 * time.Millisecond)
 
-		msgID := "test-msg-" + faker.RandomString(5)
+		msgID := "test-msg-" + randomString(5)
 		ev.Publish(ContextWithEventID(ctx, msgID), "hello")
 		time.Sleep(30 * time.Millisecond)
 
@@ -2951,7 +2962,7 @@ func TestSchemaControlsMiddleware(t *testing.T) {
 		idempStore := newMockIdempotencyStore()
 		monitorStore := newMockMonitorStore()
 
-		bus := mustNewBus(t, "test-schema-idemp-"+faker.RandomString(5),
+		bus := mustNewBus(t, "test-schema-idemp-"+randomString(5),
 			WithTransport(channel.New()),
 			WithSchemaProvider(provider),
 			WithIdempotency(idempStore),
@@ -2972,7 +2983,7 @@ func TestSchemaControlsMiddleware(t *testing.T) {
 
 		time.Sleep(10 * time.Millisecond)
 
-		msgID := "test-msg-" + faker.RandomString(5)
+		msgID := "test-msg-" + randomString(5)
 		// Publish same message twice
 		ev.Publish(ContextWithEventID(ctx, msgID), "hello")
 		time.Sleep(20 * time.Millisecond)
@@ -3000,7 +3011,7 @@ func TestNoSchemaFallbackToBusMiddleware(t *testing.T) {
 	idempStore := newMockIdempotencyStore()
 	monitorStore := newMockMonitorStore()
 
-	bus := mustNewBus(t, "test-no-schema-fallback-"+faker.RandomString(5),
+	bus := mustNewBus(t, "test-no-schema-fallback-"+randomString(5),
 		WithTransport(channel.New()),
 		WithSchemaProvider(provider),
 		WithIdempotency(idempStore),
@@ -3021,7 +3032,7 @@ func TestNoSchemaFallbackToBusMiddleware(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	msgID := "test-msg-" + faker.RandomString(5)
+	msgID := "test-msg-" + randomString(5)
 	// Publish same message twice
 	ev.Publish(ContextWithEventID(ctx, msgID), "hello")
 	time.Sleep(20 * time.Millisecond)
@@ -3055,7 +3066,7 @@ func TestSchemaDisablesAllMiddleware(t *testing.T) {
 	poisonDetector := newMockPoisonDetector(2)
 	monitorStore := newMockMonitorStore()
 
-	bus := mustNewBus(t, "test-schema-disable-all-"+faker.RandomString(5),
+	bus := mustNewBus(t, "test-schema-disable-all-"+randomString(5),
 		WithTransport(channel.New()),
 		WithSchemaProvider(provider),
 		WithIdempotency(idempStore),
@@ -3077,7 +3088,7 @@ func TestSchemaDisablesAllMiddleware(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	msgID := "test-msg-" + faker.RandomString(5)
+	msgID := "test-msg-" + randomString(5)
 	// Publish same message twice
 	ev.Publish(ContextWithEventID(ctx, msgID), "hello")
 	time.Sleep(20 * time.Millisecond)
@@ -3113,7 +3124,7 @@ func TestSchemaTimeoutApplied(t *testing.T) {
 		SubTimeout: 100 * time.Millisecond,
 	})
 
-	bus := mustNewBus(t, "test-schema-timeout-"+faker.RandomString(5),
+	bus := mustNewBus(t, "test-schema-timeout-"+randomString(5),
 		WithTransport(channel.New()),
 		WithSchemaProvider(provider),
 	)
@@ -3141,7 +3152,7 @@ func TestEventTimeoutOverridesSchema(t *testing.T) {
 		SubTimeout: 100 * time.Millisecond,
 	})
 
-	bus := mustNewBus(t, "test-schema-timeout-override-"+faker.RandomString(5),
+	bus := mustNewBus(t, "test-schema-timeout-override-"+randomString(5),
 		WithTransport(channel.New()),
 		WithSchemaProvider(provider),
 	)
@@ -3198,7 +3209,7 @@ func TestOutboxIntegration(t *testing.T) {
 	outbox := &mockOutboxStore{}
 
 	// Create bus with outbox
-	bus := mustNewBus(t, faker.App().Name(), WithTransport(channel.New()), WithOutbox(outbox))
+	bus := mustNewBus(t, faker.Word(), WithTransport(channel.New()), WithOutbox(outbox))
 	defer bus.Close(context.Background())
 
 	// Create and register event

@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/IBM/sarama v1.46.3
+	github.com/go-faker/faker/v4 v4.7.0
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/nats.go v1.48.0
 	github.com/redis/go-redis/v9 v9.17.2
@@ -15,7 +16,6 @@ require (
 	golang.org/x/time v0.14.0
 	google.golang.org/grpc v1.78.0
 	google.golang.org/protobuf v1.36.11
-	syreclabs.com/go/faker v1.2.3
 )
 
 require (
