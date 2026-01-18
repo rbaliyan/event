@@ -398,6 +398,39 @@ func Logger(component string) *slog.Logger {
 	return slog.Default().With("component", component)
 }
 
+// LevelHandler wraps a slog.Handler with a minimum level filter.
+// Records below the minimum level are dropped.
+type LevelHandler struct {
+	level   slog.Leveler
+	handler slog.Handler
+}
+
+// NewLevelHandler creates a handler that filters records below the given level.
+// Use this to create a logger with a different level than the parent:
+//
+//	// Create logger that suppresses DEBUG logs
+//	handler := transport.NewLevelHandler(slog.LevelInfo, existingLogger.Handler())
+//	quietLogger := slog.New(handler)
+func NewLevelHandler(level slog.Leveler, h slog.Handler) *LevelHandler {
+	return &LevelHandler{level: level, handler: h}
+}
+
+func (h *LevelHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= h.level.Level() && h.handler.Enabled(ctx, level)
+}
+
+func (h *LevelHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.handler.Handle(ctx, r)
+}
+
+func (h *LevelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &LevelHandler{level: h.level, handler: h.handler.WithAttrs(attrs)}
+}
+
+func (h *LevelHandler) WithGroup(name string) slog.Handler {
+	return &LevelHandler{level: h.level, handler: h.handler.WithGroup(name)}
+}
+
 // Jitter adds randomness to a duration to prevent thundering herd.
 // Returns a duration between d*(1-factor) and d*(1+factor).
 // Factor should be between 0 and 1 (e.g., 0.3 for +/-30% jitter).
