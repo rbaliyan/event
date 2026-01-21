@@ -1,15 +1,23 @@
-name: Release
+name: Manual Release
 
 on:
-  push:
-    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type'
+        required: true
+        type: choice
+        options:
+          - minor
+          - major
+        default: minor
 
 permissions:
   contents: write
 
 jobs:
   release:
-    name: Create Release Tag
+    name: Create Release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -25,45 +33,48 @@ jobs:
       - name: Run tests
         run: go test -race ./...
 
-      - name: Get current version and increment patch
+      - name: Calculate new version
         id: get_version
         run: |
-          # Get the latest v3.x.x tag from git (exclude pre-release tags)
+          # Get the latest v3.x.x tag (exclude pre-release tags)
           LATEST_TAG=$(git tag -l "v3.*" --sort=-v:refname | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+$" | head -n1)
 
           if [ -z "$LATEST_TAG" ]; then
-            # No v3 tags exist, start at v3.0.0
-            NEW_VERSION="v3.0.0"
-            echo "No existing v3 tags found, starting at v3.0.0"
+            LATEST_TAG="v3.0.0"
+            echo "No existing v3 tags found, using v3.0.0 as base"
+          fi
+
+          echo "Latest tag: $LATEST_TAG"
+
+          # Extract version numbers
+          VERSION=${LATEST_TAG#v}
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+
+          # Calculate new version based on release type
+          if [ "${{ inputs.release_type }}" == "major" ]; then
+            NEW_MAJOR=$((MAJOR + 1))
+            NEW_VERSION="v${NEW_MAJOR}.0.0"
           else
-            echo "Latest tag: $LATEST_TAG"
-
-            # Extract version numbers (v3.x.x format)
-            VERSION=${LATEST_TAG#v}
-            MAJOR=$(echo $VERSION | cut -d. -f1)
-            MINOR=$(echo $VERSION | cut -d. -f2)
-            PATCH=$(echo $VERSION | cut -d. -f3)
-
-            # Increment patch version
-            NEW_PATCH=$((PATCH + 1))
-            NEW_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+            NEW_MINOR=$((MINOR + 1))
+            NEW_VERSION="v${MAJOR}.${NEW_MINOR}.0"
           fi
 
           echo "New version: $NEW_VERSION"
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
       - name: Check if tag exists
         id: check_tag
         run: |
           if git rev-parse "${{ steps.get_version.outputs.new_version }}" >/dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
+            echo "::error::Tag ${{ steps.get_version.outputs.new_version }} already exists"
+            exit 1
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Create and push tag
-        if: steps.check_tag.outputs.exists == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -71,7 +82,6 @@ jobs:
           git push origin ${{ steps.get_version.outputs.new_version }}
 
       - name: Create GitHub Release
-        if: steps.check_tag.outputs.exists == 'false'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.get_version.outputs.new_version }}
