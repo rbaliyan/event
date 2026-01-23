@@ -59,6 +59,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -745,6 +746,18 @@ func (t *Transport) watchLoop(ctx context.Context) {
 			t.logger.Error("change stream error, reconnecting",
 				"error", err, "backoff", backoffDuration)
 
+			// Check if this is a ChangeStreamHistoryLost error
+			// This means the resume token points to a position no longer in the oplog
+			if isChangeStreamHistoryLost(err) {
+				t.logger.Warn("resume token is stale (oplog rolled past), clearing and starting fresh")
+				if t.resumeTokenStore != nil {
+					resumeKey := t.resumeTokenKey()
+					if clearErr := t.resumeTokenStore.Save(ctx, resumeKey, nil); clearErr != nil {
+						t.logger.Error("failed to clear stale resume token", "error", clearErr)
+					}
+				}
+			}
+
 			select {
 			case <-ctx.Done():
 				return
@@ -756,6 +769,19 @@ func (t *Transport) watchLoop(ctx context.Context) {
 		// Reset backoff on clean exit (shouldn't happen normally)
 		backoff.Reset()
 	}
+}
+
+// isChangeStreamHistoryLost checks if the error indicates the resume token
+// is no longer valid because the oplog has rolled past that position.
+func isChangeStreamHistoryLost(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check for MongoDB error code 286 (ChangeStreamHistoryLost)
+	// or the error message containing the error name
+	errStr := err.Error()
+	return strings.Contains(errStr, "ChangeStreamHistoryLost") ||
+		strings.Contains(errStr, "resume point may no longer be in the oplog")
 }
 
 // watchOnce creates and processes a single change stream.
