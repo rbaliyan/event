@@ -11,7 +11,9 @@
 // The package provides:
 //   - Store interface for idempotency tracking
 //   - MemoryStore for single-instance deployments
-//   - RedisStore for distributed deployments
+//   - RedisStore for distributed deployments with Redis
+//   - MongoStore for distributed deployments with MongoDB
+//   - PostgresStore for distributed deployments with PostgreSQL
 //   - TransactionalStore for database transaction support
 //
 // # Basic Usage
