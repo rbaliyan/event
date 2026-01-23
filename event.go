@@ -385,12 +385,13 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 					if e.dlqHandler != nil {
 						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
 						if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
-							logger.Error("DLQ handler failed for decode error, message will be retried",
+							// DLQ storage failed for decode error - acknowledge anyway to prevent infinite loop
+							// Decode errors won't succeed on retry, so retrying is futile
+							logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
 								"event", e.Name(),
 								"msg_id", msg.ID(),
-								"error", dlqErr)
-							_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
-							continue
+								"dlq_error", dlqErr,
+								"decode_error", decodeErrMsg)
 						}
 					}
 					_ = msg.Ack(nil)
@@ -415,12 +416,13 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
 						dlqErr := e.dlqHandler(dlqCtx, msg, fmt.Errorf("unknown content type: %s", contentType))
 						if dlqErr != nil {
-							logger.Error("DLQ handler failed, message will be retried",
+							// DLQ storage failed for content type error - acknowledge anyway to prevent infinite loop
+							// Content type errors won't succeed on retry
+							logger.Error("DLQ handler failed for content type error, acknowledging to prevent infinite loop (potential data loss)",
 								"event", e.Name(),
 								"msg_id", msg.ID(),
-								"error", dlqErr)
-							_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
-							continue
+								"dlq_error", dlqErr,
+								"content_type", contentType)
 						}
 					}
 					_ = msg.Ack(nil)
@@ -436,12 +438,13 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 					if e.dlqHandler != nil {
 						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
 						if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
-							logger.Error("DLQ handler failed for decode error, message will be retried",
+							// DLQ storage failed for decode error - acknowledge anyway to prevent infinite loop
+							// Decode errors won't succeed on retry, so retrying is futile
+							logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
 								"event", e.Name(),
 								"msg_id", msg.ID(),
-								"error", dlqErr)
-							_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
-							continue
+								"dlq_error", dlqErr,
+								"decode_error", err)
 						}
 					}
 					_ = msg.Ack(nil)

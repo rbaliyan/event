@@ -49,7 +49,14 @@ func (s *MongoResumeTokenStore) Load(ctx context.Context, collectionName string)
 }
 
 // Save persists the resume token for a collection.
+// If token is nil, the stored token is deleted (used to clear stale tokens).
 func (s *MongoResumeTokenStore) Save(ctx context.Context, collectionName string, token bson.Raw) error {
+	// If token is nil, delete the document to clear the resume position
+	if token == nil {
+		_, err := s.collection.DeleteOne(ctx, bson.M{"_id": collectionName})
+		return err
+	}
+
 	_, err := s.collection.UpdateOne(
 		ctx,
 		bson.M{"_id": collectionName},

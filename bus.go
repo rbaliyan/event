@@ -38,11 +38,37 @@ var busRegistry sync.Map // map[string]*Bus
 
 // GetBus returns a registered bus by name.
 // Returns nil if no bus with that name exists.
+//
+// Note: The returned bus may be closed. Use GetBusOrError() if you need
+// to ensure the bus is running, or check bus.Running() after retrieval.
 func GetBus(name string) *Bus {
 	if v, ok := busRegistry.Load(name); ok {
 		return v.(*Bus)
 	}
 	return nil
+}
+
+// GetBusOrError returns a registered bus by name, or an error if the bus
+// doesn't exist or is closed. This is safer than GetBus() when you need
+// to immediately use the bus.
+//
+// Example:
+//
+//	bus, err := event.GetBusOrError("my-bus")
+//	if err != nil {
+//	    return err // Bus doesn't exist or is closed
+//	}
+//	// Bus is guaranteed to be running at this point
+func GetBusOrError(name string) (*Bus, error) {
+	v, ok := busRegistry.Load(name)
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrBusNotFound, name)
+	}
+	bus := v.(*Bus)
+	if !bus.Running() {
+		return nil, fmt.Errorf("%w: %q", ErrBusClosed, name)
+	}
+	return bus, nil
 }
 
 // ListBuses returns the names of all registered buses.
@@ -170,6 +196,7 @@ var (
 	ErrAlreadyBound      = errors.New("event already bound to another bus")
 	ErrTransportRequired = errors.New("transport is required: use WithBusTransport(channel.New()) or similar")
 	ErrInvalidFullName   = errors.New("invalid full name format, expected: <bus_name>://<event_name>")
+	ErrSchemaLoadFailed  = errors.New("failed to load schema from provider")
 )
 
 // StatusCode represents the health state of the bus
@@ -219,10 +246,9 @@ type busOptions struct {
 	idempotencyStore IdempotencyStore
 	poisonDetector   PoisonDetector
 	monitorStore     MonitorStore
-	// Event scheduler for delayed/scheduled events
-	scheduler *EventScheduler
 	// Schema provider for dynamic event configuration
 	schemaProvider SchemaProvider
+	strictSchema   bool // If true, fail registration when schema provider errors occur
 	// Outbox store for transactional event publishing
 	outboxStore OutboxStore
 }
@@ -344,35 +370,6 @@ func WithMonitor(store MonitorStore) BusOption {
 	}
 }
 
-// WithBusScheduler configures an event scheduler for delayed/scheduled event delivery.
-// When set, you can use ScheduleAt and ScheduleAfter to schedule events for future delivery.
-//
-// The scheduler must be started separately (usually in a goroutine) for events to be delivered.
-//
-// Example:
-//
-//	// Create scheduler with Redis backend
-//	redisScheduler := scheduler.NewRedisScheduler(redisClient, transport)
-//	eventScheduler := event.NewEventScheduler(redisScheduler)
-//
-//	bus, _ := event.NewBus("my-app",
-//	    event.WithBusTransport(transport),
-//	    event.WithBusScheduler(eventScheduler),
-//	)
-//
-//	// Start scheduler in background
-//	go eventScheduler.Start(ctx)
-//
-//	// Schedule events using the bus
-//	id, err := bus.ScheduleAt(orderEvent, order, time.Now().Add(time.Hour), nil)
-func WithBusScheduler(scheduler *EventScheduler) BusOption {
-	return func(o *busOptions) {
-		if scheduler != nil {
-			o.scheduler = scheduler
-		}
-	}
-}
-
 // WithSchemaProvider configures a schema provider for dynamic event configuration.
 // When set, events will automatically load their configuration from the schema registry
 // when registered, ensuring all subscribers have consistent settings.
@@ -397,6 +394,33 @@ func WithSchemaProvider(provider SchemaProvider) BusOption {
 		if provider != nil {
 			o.schemaProvider = provider
 		}
+	}
+}
+
+// WithStrictSchema configures strict schema loading behavior.
+// When enabled, event registration will fail if the schema provider
+// returns an error (e.g., database connection failure).
+//
+// By default (strict=false):
+//   - Schema not found: continue with event defaults (expected for new events)
+//   - Schema provider error: log warning and continue with defaults
+//
+// With strict=true:
+//   - Schema not found: continue with event defaults
+//   - Schema provider error: fail registration with ErrSchemaLoadFailed
+//
+// Enable this when schema-defined settings (timeouts, retries, feature flags)
+// are critical for correct operation and should not be silently ignored.
+//
+// Example:
+//
+//	bus, _ := event.NewBus("order-service",
+//	    event.WithSchemaProvider(provider),
+//	    event.WithStrictSchema(true), // Fail if schema provider errors
+//	)
+func WithStrictSchema(strict bool) BusOption {
+	return func(o *busOptions) {
+		o.strictSchema = strict
 	}
 }
 
@@ -464,10 +488,9 @@ type Bus struct {
 	idempotencyStore IdempotencyStore
 	poisonDetector   PoisonDetector
 	monitorStore     MonitorStore
-	// Event scheduler for delayed/scheduled events
-	scheduler *EventScheduler
 	// Schema provider for dynamic event configuration
 	schemaProvider SchemaProvider
+	strictSchema   bool // If true, fail registration when schema provider errors
 	// Outbox store for transactional event publishing
 	outboxStore OutboxStore
 }
@@ -514,8 +537,8 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		idempotencyStore: o.idempotencyStore,
 		poisonDetector:   o.poisonDetector,
 		monitorStore:     o.monitorStore,
-		scheduler:        o.scheduler,
 		schemaProvider:   o.schemaProvider,
+		strictSchema:     o.strictSchema,
 		outboxStore:      o.outboxStore,
 	}
 
@@ -575,19 +598,6 @@ func (b *Bus) PoisonDetector() PoisonDetector {
 // MonitorStore returns the bus-level monitor store (may be nil)
 func (b *Bus) MonitorStore() MonitorStore {
 	return b.monitorStore
-}
-
-// Scheduler returns the bus-level event scheduler (may be nil).
-// Use this to schedule events for future delivery.
-//
-// Example:
-//
-//	scheduler := bus.Scheduler()
-//	if scheduler != nil {
-//	    id, err := event.ScheduleAt(ctx, scheduler, orderEvent, order, futureTime, nil)
-//	}
-func (b *Bus) Scheduler() *EventScheduler {
-	return b.scheduler
 }
 
 // SchemaProvider returns the bus-level schema provider (may be nil).
@@ -939,12 +949,19 @@ func Register[T any](ctx context.Context, bus *Bus, event Event[T]) error {
 	if bus.schemaProvider != nil {
 		schema, err := bus.schemaProvider.Get(ctx, impl.name)
 		if err != nil {
-			bus.logger.Warn("failed to load schema", "event", impl.name, "error", err)
-			// Continue without schema - use event defaults
+			// Schema provider error (not "schema not found")
+			if bus.strictSchema {
+				// Strict mode: fail registration on provider errors
+				return fmt.Errorf("%w: %s: %v", ErrSchemaLoadFailed, impl.name, err)
+			}
+			// Non-strict mode: log warning and continue with defaults
+			bus.logger.Warn("failed to load schema, using defaults",
+				"event", impl.name, "error", err)
 		} else if schema != nil {
 			impl.applySchema(schema)
 			bus.logger.Debug("applied schema", "event", impl.name, "version", schema.Version)
 		}
+		// schema == nil means not found, which is fine - use event defaults
 	}
 
 	// Register with bus

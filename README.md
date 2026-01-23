@@ -5,7 +5,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/rbaliyan/event/v3.svg)](https://pkg.go.dev/github.com/rbaliyan/event/v3)
 [![Go Report Card](https://goreportcard.com/badge/github.com/rbaliyan/event/v3)](https://goreportcard.com/report/github.com/rbaliyan/event/v3)
 
-A **production-grade event pub-sub library** for Go with support for distributed event handling, exactly-once semantics, sagas, scheduled messages, and multiple transports. Comparable to MassTransit (.NET), Axon (Java), and Spring Cloud Stream.
+A **production-grade event pub-sub library** for Go with support for distributed event handling, exactly-once semantics, and multiple transports. Comparable to MassTransit (.NET), Axon (Java), and Spring Cloud Stream.
 
 ## Features
 
@@ -17,16 +17,11 @@ A **production-grade event pub-sub library** for Go with support for distributed
 
 ### Reliability
 - **Transactional Outbox**: Atomic publish with database writes (PostgreSQL, MongoDB, Redis)
-- **Dead Letter Queue**: Store, list, and replay failed messages
 - **Idempotency**: Prevent duplicate processing (Redis, in-memory)
 - **Poison Detection**: Auto-quarantine repeatedly failing messages
 - **At-Least-Once Delivery**: Via Redis Streams, NATS, or Kafka
 
 ### Advanced
-- **Saga Orchestration**: Multi-step workflows with compensation
-- **Scheduled Messages**: Delayed/scheduled delivery (Redis, PostgreSQL, MongoDB)
-- **Batch Processing**: High-throughput batch handlers
-- **Rate Limiting**: Distributed rate limiting (Redis)
 - **Circuit Breaker**: Failure isolation pattern
 - **Schema Registry**: Publisher-defined event configuration with subscriber auto-sync
 
@@ -378,189 +373,6 @@ transport, _ := mongodb.New(db, mongodb.WithPipeline(pipeline))
 - **Injected stores** provide library-level features where the broker lacks native support
 - **MongoDB** is a special CDC transport - publishing happens via direct database writes
 
-## Distributed Worker Emulation
-
-For transports that only support Broadcast mode (like MongoDB Change Streams), use the `distributed` package to emulate WorkerPool semantics using distributed message claiming.
-
-### How It Works
-
-In Broadcast mode, all subscribers receive every message. The `DistributedWorkerMiddleware` uses a `MessageClaimer` to ensure only one worker processes each message:
-
-1. Message arrives (delivered to all subscribers via Broadcast)
-2. Each subscriber calls `TryClaim()` to attempt claiming the message
-3. Only the subscriber that succeeds processes the message
-4. On success: `Complete()` marks it done; on failure: `Release()` allows retry
-
-### Basic Usage
-
-```go
-import (
-    "github.com/rbaliyan/event/v3"
-    "github.com/rbaliyan/event/v3/distributed"
-    "github.com/rbaliyan/event/v3/transport/mongodb"
-)
-
-func main() {
-    ctx := context.Background()
-
-    // Create MongoDB transport (Broadcast-only)
-    transport, _ := mongodb.New(db, mongodb.WithCollection("orders"))
-
-    bus, _ := event.NewBus("order-watcher", event.WithBusTransport(transport))
-    defer bus.Close(ctx)
-
-    // Create Redis claimer for distributed deployments
-    claimer := distributed.NewRedisClaimer(redisClient,
-        distributed.WithClaimerPrefix("order-workers:"),
-        distributed.WithClaimerTTL(5*time.Minute),
-    )
-
-    orderChanges := event.New[mongodb.ChangeEvent]("order-changes")
-    event.Register(ctx, bus, orderChanges)
-
-    // Subscribe with worker emulation middleware
-    orderChanges.Subscribe(ctx, func(ctx context.Context, e event.Event[mongodb.ChangeEvent], change mongodb.ChangeEvent) error {
-        // Only one worker processes each change
-        return processChange(ctx, change)
-    }, event.WithMiddleware(
-        distributed.DistributedWorkerMiddleware[mongodb.ChangeEvent](claimer, 5*time.Minute),
-    ))
-}
-```
-
-### Claimer Implementations
-
-| Claimer | Use Case | Notes |
-|---------|----------|-------|
-| `RedisClaimer` | Production distributed | Uses SETNX with TTL for atomic claiming |
-| `MongoClaimer` | MongoDB-only deployments | Uses findOneAndUpdate; supports capped collections |
-| `MemoryClaimer` | Single-instance or testing | NOT distributed - each instance has its own state |
-
-```go
-// Redis (recommended for high-throughput)
-claimer := distributed.NewRedisClaimer(redisClient,
-    distributed.WithClaimerPrefix("myapp:claims:"),
-    distributed.WithClaimerTTL(5*time.Minute),
-    distributed.WithCompletionTTL(24*time.Hour),
-)
-
-// MongoDB (ideal when already using MongoDB transport)
-claimer := distributed.NewMongoClaimer(db).
-    WithCollection("worker_claims").
-    WithCompletionTTL(48*time.Hour)
-claimer.EnsureIndexes(ctx) // Create TTL index for automatic cleanup
-
-// MongoDB with custom database
-claimer := distributed.NewMongoClaimer(appDB).
-    WithDatabase(client.Database("claims_db")).
-    WithCollection("worker_claims")
-
-// MongoDB with capped collection (high-throughput, size-based cleanup)
-claimer := distributed.NewMongoClaimer(db).
-    WithCollection("claim_buffer").
-    WithCapped(100*1024*1024, 100000) // 100MB max, 100k docs max
-claimer.CreateCollection(ctx) // Creates the capped collection
-
-// Memory (single-instance or testing)
-claimer := distributed.NewMemoryClaimer()
-defer claimer.Close()
-```
-
-### Worker Groups with Distributed Middleware
-
-To emulate worker groups on Broadcast-only transports, use separate claimers with different prefixes:
-
-```go
-// Group A: Order processors (compete within group)
-claimerA := distributed.NewRedisClaimer(redis,
-    distributed.WithClaimerPrefix("processors:"))
-
-// Group B: Analytics collectors (compete within group)
-claimerB := distributed.NewRedisClaimer(redis,
-    distributed.WithClaimerPrefix("analytics:"))
-
-// Both groups receive all messages (like broadcast between groups)
-// Workers within each group compete (like WorkerPool within group)
-orderChanges.Subscribe(ctx, processOrder,
-    event.WithMiddleware(distributed.DistributedWorkerMiddleware[T](claimerA, ttl)))
-
-orderChanges.Subscribe(ctx, collectAnalytics,
-    event.WithMiddleware(distributed.DistributedWorkerMiddleware[T](claimerB, ttl)))
-```
-
-### Claim TTL Guidelines
-
-The claim TTL should exceed your handler's maximum execution time:
-
-| Handler Timeout | Recommended Claim TTL |
-|-----------------|----------------------|
-| 30s | 1-2 minutes |
-| 1 minute | 3-5 minutes |
-| 5 minutes | 10-15 minutes |
-| No timeout | Max expected time + buffer |
-
-If a worker crashes, the claim expires after TTL and another worker can claim and process the message.
-
-### Error Handling
-
-- **TryClaim error**: Logs warning and proceeds (fail-open to prevent message loss)
-- **Complete error**: Logs warning but doesn't affect handler result
-- **Release error**: Logs warning but doesn't affect error propagation
-
-Handlers should be idempotent to handle potential duplicates when claimers fail.
-
-### Distributed Worker vs Idempotency
-
-These solve different problems and can be used together:
-
-| Aspect | DistributedWorkerMiddleware | IdempotencyMiddleware |
-|--------|----------------------------|----------------------|
-| **Problem** | Multiple workers receive same message simultaneously (Broadcast) | Same message redelivered after processing (retries) |
-| **Question** | "Is someone else processing this right now?" | "Was this already processed before?" |
-| **Timing** | Concurrent (simultaneous delivery) | Sequential (redelivery over time) |
-| **On success** | Mark completed (blocks re-claim during TTL) | Mark processed (blocks reprocessing during TTL) |
-| **On failure** | Release claim (another worker can retry) | Don't mark (same worker can retry) |
-
-**When to use each:**
-
-| Transport | Distributed Worker? | Idempotency? |
-|-----------|:------------------:|:------------:|
-| Redis Streams (WorkerPool) | ❌ (native WorkerPool) | ✅ (retries need dedup) |
-| Kafka (WorkerPool) | ❌ (native WorkerPool) | ✅ (retries need dedup) |
-| NATS JetStream (WorkerPool) | ❌ (native WorkerPool) | ✅ (retries need dedup) |
-| MongoDB Change Streams | ✅ (emulate WorkerPool) | ✅ (if retries possible) |
-| Any Broadcast mode | ✅ (if load balancing needed) | ✅ (if retries possible) |
-
-**Using both together (MongoDB example):**
-
-```go
-// Both use distributed backends (Redis)
-claimer := distributed.NewRedisClaimer(redis)
-idempStore := idempotency.NewRedisStore(redis, time.Hour)
-
-// Or both use MongoDB
-claimer := distributed.NewMongoClaimer(db)
-idempStore := idempotency.NewMongoStore(db) // if available
-
-ev.Subscribe(ctx, handler, event.WithMiddleware(
-    // First: Only one worker claims the message (load balancing)
-    distributed.DistributedWorkerMiddleware[Order](claimer, 5*time.Minute),
-    // Then: Prevent reprocessing if this message was already handled
-    event.IdempotencyMiddleware[Order](idempStore),
-))
-```
-
-**Store distribution:**
-
-Both middleware support distributed stores - they're not limited to single machines:
-
-| Store Type | Distributed? | Use Case |
-|------------|:------------:|----------|
-| Memory stores | ❌ | Testing, single-instance |
-| Redis stores | ✅ | Production multi-instance |
-| MongoDB stores | ✅ | Production multi-instance |
-| PostgreSQL stores | ✅ | Production multi-instance |
-
 ## Transactional Outbox Pattern
 
 Ensure atomic publish with database writes - never lose messages.
@@ -669,161 +481,8 @@ CREATE TABLE event_outbox (
 CREATE INDEX idx_outbox_pending ON event_outbox(status, created_at) WHERE status = 'pending';
 ```
 
-## Dead Letter Queue (DLQ)
-
-Store and replay failed messages:
-
-```go
-import (
-    "github.com/rbaliyan/event/v3/dlq"
-    "github.com/rbaliyan/event/v3/transport/message"
-)
-
-func main() {
-    ctx := context.Background()
-
-    // Create DLQ store
-    dlqStore := dlq.NewPostgresStore(db)
-
-    // Create DLQ manager
-    manager := dlq.NewManager(dlqStore, transport)
-
-    // Configure event with DLQ handler
-    orderEvent := event.New[Order]("order.process",
-        event.WithMaxRetries(3),
-        event.WithDeadLetterQueue(func(ctx context.Context, msg message.Message, err error) error {
-            return manager.Store(ctx,
-                "order.process",
-                msg.ID(),
-                msg.Payload().([]byte),
-                msg.Metadata(),
-                err,
-                msg.RetryCount(),
-                "order-service",
-            )
-        }),
-    )
-
-    // Later: List failed messages
-    messages, _ := manager.List(ctx, dlq.Filter{
-        EventName:      "order.process",
-        ExcludeRetried: true,
-        Limit:          100,
-    })
-
-    // Replay failed messages
-    replayed, _ := manager.Replay(ctx, dlq.Filter{
-        EventName: "order.process",
-    })
-    fmt.Printf("Replayed %d messages\n", replayed)
-
-    // Get statistics
-    stats, _ := manager.Stats(ctx)
-    fmt.Printf("Pending: %d, Total: %d\n", stats.PendingMessages, stats.TotalMessages)
-}
-```
-
-## Saga Orchestration
-
-Coordinate distributed transactions with compensation:
-
-```go
-import "github.com/rbaliyan/event/v3/saga"
-
-// Define saga steps
-type CreateOrderStep struct {
-    orderService *OrderService
-}
-
-func (s *CreateOrderStep) Name() string { return "create-order" }
-
-func (s *CreateOrderStep) Execute(ctx context.Context, data any) error {
-    order := data.(*Order)
-    return s.orderService.Create(ctx, order)
-}
-
-func (s *CreateOrderStep) Compensate(ctx context.Context, data any) error {
-    order := data.(*Order)
-    return s.orderService.Cancel(ctx, order.ID)
-}
-
-// Similar for ReserveInventoryStep, ProcessPaymentStep, etc.
-
-func main() {
-    ctx := context.Background()
-
-    // Create saga with persistence
-    store := saga.NewPostgresStore(db)
-
-    orderSaga := saga.New("order-creation",
-        &CreateOrderStep{orderService},
-        &ReserveInventoryStep{inventoryService},
-        &ProcessPaymentStep{paymentService},
-        &SendConfirmationStep{emailService},
-    ).WithStore(store)
-
-    // Execute saga
-    sagaID := uuid.New().String()
-    order := &Order{ID: "ORD-123", Items: items}
-
-    if err := orderSaga.Execute(ctx, sagaID, order); err != nil {
-        // Saga failed - compensations were automatically run
-        log.Printf("Order saga failed: %v", err)
-    }
-
-    // Resume failed sagas after fix
-    failedSagas, _ := store.List(ctx, saga.StoreFilter{
-        Status: []saga.Status{saga.StatusFailed},
-    })
-
-    for _, state := range failedSagas {
-        orderSaga.Resume(ctx, state.ID)
-    }
-}
-```
-
-## Scheduled Messages
-
-Schedule messages for future delivery:
-
-```go
-import "github.com/rbaliyan/event/v3/scheduler"
-
-func main() {
-    ctx := context.Background()
-
-    // Create scheduler with Redis
-    sched := scheduler.NewRedisScheduler(redisClient, transport,
-        scheduler.WithPollInterval(100*time.Millisecond),
-        scheduler.WithBatchSize(100),
-    )
-
-    // Start scheduler
-    go sched.Start(ctx)
-
-    // Schedule a message for later
-    payload, _ := json.Marshal(Order{ID: "ORD-123"})
-
-    // Schedule for specific time
-    msgID, _ := sched.ScheduleAt(ctx, "order.reminder", payload, nil,
-        time.Now().Add(24*time.Hour))
-
-    // Or schedule after delay
-    msgID, _ = sched.ScheduleAfter(ctx, "order.reminder", payload, nil,
-        time.Hour)
-
-    // Cancel scheduled message
-    sched.Cancel(ctx, msgID)
-
-    // List scheduled messages
-    messages, _ := sched.List(ctx, scheduler.Filter{
-        EventName: "order.reminder",
-        Before:    time.Now().Add(48 * time.Hour),
-    })
-}
-```
-
 ## Delivery Modes
+
 
 Control how messages are distributed to subscribers.
 
@@ -913,42 +572,6 @@ orderEvent.Subscribe(ctx, trackAnalytics,
 // - 1 of 2 analytics workers (worker group)
 ```
 
-## Batch Processing
-
-Process messages in batches for high throughput:
-
-```go
-import "github.com/rbaliyan/event/v3/batch"
-
-func main() {
-    ctx := context.Background()
-
-    // Create batch processor
-    processor := batch.NewProcessor[Order](
-        batch.WithBatchSize(100),
-        batch.WithTimeout(time.Second),
-        batch.WithMaxRetries(3),
-        batch.WithOnError(func(b []any, err error) {
-            log.Printf("Batch of %d failed: %v", len(b), err)
-        }),
-    )
-
-    // Subscribe with batch handler
-    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
-        // This is called per-message; use processor for batching
-        return nil
-    })
-
-    // Or use processor directly with subscription messages
-    sub, _ := transport.Subscribe(ctx, "order.process", transport.WorkerPool)
-
-    go processor.Process(ctx, sub.Messages(), func(ctx context.Context, orders []Order) error {
-        // Bulk insert all orders at once
-        return db.BulkInsert(ctx, orders)
-    })
-}
-```
-
 ## Idempotency
 
 Prevent duplicate message processing.
@@ -1002,73 +625,6 @@ orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order 
     return store.MarkProcessed(ctx, msgID)
 })
 ```
-
-## Exactly-Once Processing
-
-For true exactly-once semantics, use `TransactionalHandler` which combines idempotency checking with database transactions:
-
-```go
-import (
-    "github.com/rbaliyan/event/v3/idempotency"
-    "github.com/rbaliyan/event/v3/transaction"
-)
-
-func main() {
-    ctx := context.Background()
-
-    db, _ := sql.Open("postgres", "postgres://localhost/mydb")
-
-    // Create transaction manager and idempotency store
-    txManager := transaction.NewSQLManager(db)
-    idempStore := idempotency.NewPostgresStore(db,
-        idempotency.WithPostgresTTL(24*time.Hour),
-    )
-
-    // Create transactional handler - atomic exactly-once processing
-    handler := transaction.NewTransactionalHandler(
-        func(ctx context.Context, tx transaction.Transaction, order Order) error {
-            sqlTx := tx.(transaction.SQLTransactionProvider).Tx()
-
-            // All operations in the same transaction
-            _, err := sqlTx.ExecContext(ctx,
-                "UPDATE inventory SET quantity = quantity - $1 WHERE product_id = $2",
-                order.Quantity, order.ProductID)
-            if err != nil {
-                return err
-            }
-
-            _, err = sqlTx.ExecContext(ctx,
-                "INSERT INTO orders (id, product_id, quantity) VALUES ($1, $2, $3)",
-                order.ID, order.ProductID, order.Quantity)
-            return err
-        },
-        txManager,
-        idempStore,
-        func(order Order) string { return order.ID },
-    )
-
-    // Use in event subscription
-    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
-        return handler.Handle(ctx, order)
-    })
-}
-```
-
-**PostgreSQL Schema for Idempotency:**
-```sql
-CREATE TABLE event_idempotency (
-    message_id VARCHAR(255) PRIMARY KEY,
-    processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
-);
-CREATE INDEX idx_event_idempotency_expires ON event_idempotency(expires_at);
-```
-
-The `TransactionalHandler` guarantees:
-- Idempotency check within the transaction (no race conditions)
-- Business logic within the same transaction
-- Mark-as-processed within the same transaction
-- Atomic commit/rollback of all operations
 
 ## Poison Message Detection
 
@@ -1153,118 +709,6 @@ CREATE TABLE poison_quarantine (
     reason TEXT
 );
 ```
-
-## Resumable Subscriptions (Checkpoints)
-
-Enable "start from latest, resume on reconnect" semantics for subscribers. Perfect for real-time consumers that don't need historical backlog but shouldn't miss messages during restarts.
-
-### How It Works
-
-1. **First connection** (no checkpoint): Starts from latest messages only - no historical backlog
-2. **Processing**: Checkpoint saved after each successful message
-3. **Disconnect/Restart**: Resumes from last saved checkpoint - no missed messages
-
-### Basic Usage
-
-```go
-import "github.com/rbaliyan/event/v3/checkpoint"
-
-func main() {
-    ctx := context.Background()
-
-    // Create checkpoint store (Redis or MongoDB)
-    store := checkpoint.NewRedisStore(redisClient, "myapp:checkpoints")
-
-    // Subscribe with automatic checkpointing
-    orderEvent.Subscribe(ctx, handler,
-        event.WithCheckpoint[Order](store, "order-processor-1"),
-    )
-}
-```
-
-### Redis Checkpoint Store
-
-```go
-import "github.com/rbaliyan/event/v3/checkpoint"
-
-// Basic setup
-store := checkpoint.NewRedisStore(redisClient, "myapp:checkpoints")
-
-// With TTL (checkpoints expire after 7 days of inactivity)
-store := checkpoint.NewRedisStore(redisClient, "myapp:checkpoints",
-    checkpoint.WithTTL(7*24*time.Hour),
-)
-
-// Use with event
-orderEvent.Subscribe(ctx, handler,
-    event.WithCheckpoint[Order](store, "order-processor-1"),
-)
-```
-
-### MongoDB Checkpoint Store
-
-```go
-import "github.com/rbaliyan/event/v3/checkpoint"
-
-// Create store
-collection := mongoClient.Database("myapp").Collection("checkpoints")
-store := checkpoint.NewMongoStore(collection)
-
-// With TTL
-store := checkpoint.NewMongoStore(collection,
-    checkpoint.WithMongoTTL(7*24*time.Hour),
-)
-
-// Create indexes (call once at startup)
-store.EnsureIndexes(ctx)
-
-// Use with event
-orderEvent.Subscribe(ctx, handler,
-    event.WithCheckpoint[Order](store, "order-processor-1"),
-)
-```
-
-### Advanced: Separate Options
-
-For more control, use the resume and middleware options separately:
-
-```go
-// Resume from checkpoint (or start from latest if none exists)
-orderEvent.Subscribe(ctx, handler,
-    event.WithCheckpointResume[Order](store, "order-processor-1"),
-    event.WithMiddleware(event.CheckpointMiddleware[Order](store, "order-processor-1")),
-)
-
-// Override: Always start from latest (ignore existing checkpoint)
-orderEvent.Subscribe(ctx, handler,
-    event.FromLatest[Order](),
-    event.WithMiddleware(event.CheckpointMiddleware[Order](store, "order-processor-1")),
-)
-```
-
-### Checkpoint Store Methods
-
-| Method | Description |
-|--------|-------------|
-| `Save(ctx, id, position)` | Save checkpoint position |
-| `Load(ctx, id)` | Load last checkpoint (zero time if none) |
-| `Delete(ctx, id)` | Remove a checkpoint |
-| `DeleteAll(ctx)` | Remove all checkpoints |
-| `List(ctx)` | Get all subscriber IDs |
-| `GetAll(ctx)` | Get all checkpoints as map |
-| `GetCheckpointInfo(ctx, id)` | Get detailed info including updated_at |
-| `Indexes()` | Get index models (MongoDB only) |
-| `EnsureIndexes(ctx)` | Create indexes (MongoDB only) |
-
-### When to Use Checkpoints vs Consumer Groups
-
-| Scenario | Solution |
-|----------|----------|
-| Load balancing across workers | WorkerPool mode (consumer groups) |
-| Each instance processes all messages | Broadcast + Checkpoints |
-| Resume after restart | Checkpoints or Consumer Groups |
-| Real-time dashboard (no history) | `FromLatest()` + Checkpoints |
-| Event sourcing (need all history) | `FromBeginning()` (no checkpoint) |
 
 ## Event Monitoring
 
@@ -1655,34 +1099,6 @@ go func() {
 | Handler timeout | Publisher | Consistent SLA |
 | **Delivery mode** | **Subscriber** | Subscriber's architectural choice |
 
-## Rate Limiting
-
-Distributed rate limiting for consumers:
-
-```go
-import "github.com/rbaliyan/event/v3/ratelimit"
-
-func main() {
-    ctx := context.Background()
-
-    // Create rate limiter: 100 requests per second
-    limiter := ratelimit.NewRedisLimiter(redisClient, "order-processor", 100, time.Second)
-
-    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event, order Order) error {
-        // Wait for rate limit
-        if err := limiter.Wait(ctx); err != nil {
-            return event.ErrDefer.Wrap(err) // Retry later
-        }
-
-        return processOrder(ctx, order)
-    })
-
-    // Check remaining capacity
-    remaining, _ := limiter.Remaining(ctx)
-    fmt.Printf("Remaining: %d requests\n", remaining)
-}
-```
-
 ## Error Handling
 
 Use semantic error types to control message acknowledgment:
@@ -1744,32 +1160,21 @@ orderEvent.Subscribe(ctx, handler,
 
 | Publisher Side | Subscriber Side | Must Match |
 |----------------|-----------------|------------|
-| Outbox | DLQ | Event Name |
-| Outbox Relay | Idempotency | Codec |
-| Scheduler | Deduplication | Schema |
-| | Poison Detection | Transport |
-| | Checkpoint | Transport Config |
-| | Monitor | |
-| | Rate Limiting | |
-| | Batch Processing | |
-| | Circuit Breaker | |
+| Outbox | Idempotency | Event Name |
+| Outbox Relay | Deduplication | Codec |
+| | Poison Detection | Schema |
+| | Monitor | Transport |
+| | Circuit Breaker | Transport Config |
 
 ## Database Support
 
 | Component | PostgreSQL | MongoDB | Redis | In-Memory |
 |-----------|:----------:|:-------:|:-----:|:---------:|
 | Outbox | ✅ | ✅ | ✅ | - |
-| DLQ | ✅ | ✅ | ✅ | ✅ |
-| Saga | ✅ | ✅ | ✅ | - |
-| Scheduler | ✅ | ✅ | ✅ | - |
 | Idempotency | ✅ | - | ✅ | ✅ |
 | Poison | ✅ | - | ✅ | - |
-| Checkpoint | - | ✅ | ✅ | ✅ |
 | Monitor | ✅ | ✅ | - | ✅ |
 | Schema Registry | ✅ | ✅ | ✅ | ✅ |
-| Transaction | ✅ | ✅ | - | - |
-| Rate Limit | - | - | ✅ | - |
-| Distributed Worker | - | ✅ | ✅ | ✅ |
 
 ## Package Structure
 
@@ -1780,19 +1185,12 @@ The library is organized into focused packages with shared utilities to minimize
 | Package | Description |
 |---------|-------------|
 | `event` | Core bus, event, and middleware types |
-| `transport/*` | Transport implementations (channel, redis, nats, kafka) |
+| `transport/*` | Transport implementations (channel, redis, nats, kafka, mongodb) |
 | `monitor` | Event processing monitoring with HTTP/gRPC APIs |
 | `schema` | Schema registry for publisher-defined event configuration |
 | `idempotency` | Exactly-once processing with multiple backends |
 | `poison` | Poison message detection and quarantine |
-| `dlq` | Dead letter queue management |
 | `outbox` | Transactional outbox pattern |
-| `saga` | Saga orchestration for distributed transactions |
-| `checkpoint` | Resumable subscriptions |
-| `scheduler` | Scheduled/delayed message delivery |
-| `batch` | High-throughput batch processing |
-| `ratelimit` | Distributed rate limiting |
-| `distributed` | WorkerPool emulation for Broadcast-only transports |
 
 ### Shared Utilities
 
@@ -1915,11 +1313,9 @@ import (
     "time"
 
     "github.com/rbaliyan/event/v3"
-    "github.com/rbaliyan/event/v3/dlq"
     "github.com/rbaliyan/event/v3/idempotency"
     "github.com/rbaliyan/event/v3/outbox"
     "github.com/rbaliyan/event/v3/poison"
-    "github.com/rbaliyan/event/v3/transport/message"
     "github.com/rbaliyan/event/v3/transport/redis"
     redisclient "github.com/redis/go-redis/v9"
 )
@@ -1940,8 +1336,16 @@ func main() {
     // Create transport
     transport, _ := redis.New(rdb, redis.WithConsumerGroup("order-service"))
 
-    // Create bus
-    bus, _ := event.NewBus("order-service", event.WithBusTransport(transport))
+    // Create bus with middleware stores
+    idempStore := idempotency.NewPostgresStore(db, idempotency.WithPostgresTTL(24*time.Hour))
+    poisonStore := poison.NewPostgresStore(db, poison.WithPostgresFailureTTL(24*time.Hour))
+    poisonDetector := poison.NewDetector(poisonStore, poison.WithThreshold(5))
+
+    bus, _ := event.NewBus("order-service",
+        event.WithBusTransport(transport),
+        event.WithBusIdempotency(idempStore),
+        event.WithBusPoisonDetection(poisonDetector),
+    )
     defer bus.Close(ctx)
 
     // === PUBLISHER SIDE ===
@@ -1961,46 +1365,18 @@ func main() {
 
     // === SUBSCRIBER SIDE ===
 
-    // Create stores (all PostgreSQL for consistency)
-    dlqStore := dlq.NewPostgresStore(db)
-    dlqManager := dlq.NewManager(dlqStore, transport)
-    idempStore := idempotency.NewPostgresStore(db, idempotency.WithPostgresTTL(24*time.Hour))
-    poisonStore := poison.NewPostgresStore(db, poison.WithPostgresFailureTTL(24*time.Hour))
-    poisonDetector := poison.NewDetector(poisonStore, poison.WithThreshold(5))
-
     // Create event
     orderEvent := event.New[Order]("order.created",
         event.WithMaxRetries(3),
-        event.WithDeadLetterQueue(func(ctx context.Context, msg message.Message, err error) error {
-            return dlqManager.Store(ctx, "order.created", msg.ID(),
-                msg.Payload().([]byte), msg.Metadata(), err, msg.RetryCount(), "order-service")
-        }),
     )
     event.Register(ctx, bus, orderEvent)
 
-    // Subscribe with all protections
+    // Subscribe - idempotency and poison detection are automatic via bus config
     orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
-        msgID := event.ContextEventID(ctx)
-
-        // Check poison
-        if poisoned, _ := poisonDetector.Check(ctx, msgID); poisoned {
-            return nil
-        }
-
-        // Check idempotency
-        if dup, _ := idempStore.IsDuplicate(ctx, msgID); dup {
-            return nil
-        }
-
-        // Process order
+        // Process order - just business logic!
         if err := processOrder(ctx, order); err != nil {
-            poisonDetector.RecordFailure(ctx, msgID)
             return event.ErrDefer.Wrap(err)
         }
-
-        // Mark processed
-        idempStore.MarkProcessed(ctx, msgID)
-        poisonDetector.RecordSuccess(ctx, msgID)
 
         log.Printf("Processed order: %s", order.ID)
         return nil
