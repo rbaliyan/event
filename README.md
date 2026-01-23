@@ -62,7 +62,7 @@ func main() {
     ctx := context.Background()
 
     // Create a bus with channel transport
-    bus, err := event.NewBus("my-app", event.WithBusTransport(channel.New()))
+    bus, err := event.NewBus("my-app", event.WithTransport(channel.New()))
     if err != nil {
         log.Fatal(err)
     }
@@ -123,7 +123,7 @@ func main() {
         redis.WithMaxRetries(3),                  // Retry limit before DLQ
     )
 
-    bus, err := event.NewBus("order-service", event.WithBusTransport(transport))
+    bus, err := event.NewBus("order-service", event.WithTransport(transport))
     if err != nil {
         log.Fatal(err)
     }
@@ -165,7 +165,7 @@ func main() {
         nats.WithPoisonDetector(poisonDetector), // Poison message detection
     )
 
-    bus, _ := event.NewBus("my-app", event.WithBusTransport(transport))
+    bus, _ := event.NewBus("my-app", event.WithTransport(transport))
     defer bus.Close(ctx)
 }
 ```
@@ -194,7 +194,7 @@ func main() {
         nats.WithAckWait(30*time.Second),   // Acknowledgment timeout
     )
 
-    bus, _ := event.NewBus("my-app", event.WithBusTransport(transport))
+    bus, _ := event.NewBus("my-app", event.WithTransport(transport))
     defer bus.Close(ctx)
 }
 ```
@@ -232,7 +232,7 @@ func main() {
         kafka.WithRetention(24*time.Hour),        // Topic retention
     )
 
-    bus, _ := event.NewBus("my-app", event.WithBusTransport(transport))
+    bus, _ := event.NewBus("my-app", event.WithTransport(transport))
     defer bus.Close(ctx)
 }
 ```
@@ -283,7 +283,7 @@ func main() {
     )
 
     // Create bus - works for subscribing only
-    bus, _ := event.NewBus("order-watcher", event.WithBusTransport(transport))
+    bus, _ := event.NewBus("order-watcher", event.WithTransport(transport))
     defer bus.Close(ctx)
 
     // Subscribe to changes
@@ -591,7 +591,7 @@ func main() {
 
     // Configure at bus level - all events get automatic deduplication
     bus, _ := event.NewBus("order-service",
-        event.WithBusTransport(transport),
+        event.WithTransport(transport),
         event.WithBusIdempotency(store),
     )
     defer bus.Close(ctx)
@@ -649,7 +649,7 @@ func main() {
 
     // Configure at bus level - all events get automatic poison detection
     bus, _ := event.NewBus("order-service",
-        event.WithBusTransport(transport),
+        event.WithTransport(transport),
         event.WithBusPoisonDetection(detector),
     )
     defer bus.Close(ctx)
@@ -1342,7 +1342,7 @@ func main() {
     poisonDetector := poison.NewDetector(poisonStore, poison.WithThreshold(5))
 
     bus, _ := event.NewBus("order-service",
-        event.WithBusTransport(transport),
+        event.WithTransport(transport),
         event.WithBusIdempotency(idempStore),
         event.WithBusPoisonDetection(poisonDetector),
     )

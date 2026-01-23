@@ -15,7 +15,7 @@
 //	}
 //
 //	// Create bus with transport
-//	bus, err := event.NewBus("my-app", event.WithBusTransport(channel.New()))
+//	bus, err := event.NewBus("my-app", event.WithTransport(channel.New()))
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
@@ -37,11 +37,17 @@
 //	userEvent.Publish(ctx, User{ID: "123", Name: "John"})
 //
 // Bus Options:
-//   - WithBusTransport: set transport (required). Use channel.New(), redis.New(), etc.
-//   - WithBusTracing: enable/disable OpenTelemetry tracing. Default is true.
-//   - WithBusRecovery: enable/disable panic recovery in handlers. Default is true.
-//   - WithBusMetrics: enable/disable OpenTelemetry metrics. Default is true.
-//   - WithBusLogger: set logger for the bus.
+//   - WithTransport: set transport (required). Use channel.New(), redis.New(), etc.
+//   - WithTracing: enable/disable OpenTelemetry tracing. Default is true.
+//   - WithRecovery: enable/disable panic recovery in handlers. Default is true.
+//   - WithMetrics: enable/disable OpenTelemetry metrics. Default is true.
+//   - WithLogger: set logger for the bus.
+//   - WithIdempotency: set idempotency store for duplicate detection.
+//   - WithPoisonDetection: set poison detector for failing message quarantine.
+//   - WithMonitor: set monitor store for event processing tracking.
+//   - WithSchemaProvider: set schema provider for dynamic event configuration.
+//   - WithStrictSchema: fail registration if schema provider returns an error.
+//   - WithOutbox: set outbox store for transactional event publishing.
 //
 // Event Options:
 //   - WithSubscriberTimeout: set handler execution timeout. Default is 0 (no timeout).
@@ -81,4 +87,35 @@
 //	events := event.Events[User]{userCreated, userUpdated}
 //	events.Subscribe(ctx, handler)  // Subscribe to all
 //	events.Publish(ctx, user)       // Publish to all
+//
+// Schema Registry:
+// Publishers can define event configuration that subscribers auto-load:
+//
+//	// Create schema provider
+//	provider := schema.NewMemoryProvider()
+//
+//	// Configure bus with schema provider
+//	bus, _ := event.NewBus("my-app",
+//	    event.WithTransport(transport),
+//	    event.WithSchemaProvider(provider),
+//	    event.WithIdempotency(idempStore),     // Required if schema enables idempotency
+//	    event.WithPoisonDetection(detector),   // Required if schema enables poison detection
+//	)
+//
+//	// Publisher defines schema
+//	provider.Set(ctx, &schema.EventSchema{
+//	    Name:              "order.created",
+//	    Version:           1,
+//	    SubTimeout:        30 * time.Second,
+//	    MaxRetries:        3,
+//	    EnableIdempotency: true,
+//	    EnablePoison:      true,
+//	})
+//
+//	// Subscriber auto-loads schema on Register
+//	orderEvent := event.New[Order]("order.created")
+//	event.Register(ctx, bus, orderEvent)  // Schema applied automatically
+//
+// Schema providers: MemoryProvider, PostgresProvider, MongoProvider, RedisProvider.
+// Use WithStrictSchema(true) to fail registration if schema provider returns an error.
 package event
