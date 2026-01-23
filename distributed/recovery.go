@@ -6,23 +6,23 @@ import (
 	"time"
 )
 
-// OrphanReleaser is an optional interface that claimers can implement
-// for efficient batch orphan release.
-type OrphanReleaser interface {
-	// ReleaseOrphans releases orphaned claims in batch.
-	// Returns the number of claims released.
-	ReleaseOrphans(ctx context.Context, staleTimeout time.Duration, limit int) (int64, error)
+// StaleResetter is an optional interface that state managers can implement
+// for efficient batch stale state reset.
+type StaleResetter interface {
+	// ResetStale resets stale states in batch.
+	// Returns the number of states reset.
+	ResetStale(ctx context.Context, staleTimeout time.Duration, limit int) (int64, error)
 }
 
-// OrphanRecoveryRunner provides active orphan detection and recovery.
+// RecoveryRunner provides active stale state detection and recovery.
 //
 // Instead of relying solely on TTL expiration (passive recovery), the runner
-// periodically scans for stale claims and releases them for faster failover.
+// periodically scans for stale states and resets them for faster failover.
 //
 // How it works:
 //  1. Background goroutine runs at configurable interval (default: 30s)
-//  2. Queries claimer for orphaned claims (pending longer than staleTimeout)
-//  3. Releases orphaned claims so other workers can reclaim them
+//  2. Queries state manager for stale states (processing longer than staleTimeout)
+//  3. Resets stale states so other workers can reacquire them
 //
 // Timing guidelines:
 //
@@ -34,8 +34,8 @@ type OrphanReleaser interface {
 //
 // Example:
 //
-//	claimer := distributed.NewMongoClaimer(db)
-//	runner := distributed.NewOrphanRecoveryRunner(claimer,
+//	sm := distributed.NewMongoStateManager(db)
+//	runner := distributed.NewRecoveryRunner(sm,
 //	    distributed.WithStaleTimeout(2*time.Minute),
 //	    distributed.WithCheckInterval(30*time.Second),
 //	)
@@ -46,56 +46,56 @@ type OrphanReleaser interface {
 //	go runner.Run(ctx)
 //
 //	// Or run once for manual recovery
-//	released, err := runner.RecoverOnce(ctx)
-type OrphanRecoveryRunner struct {
-	claimer       MessageClaimer
+//	reset, err := runner.RecoverOnce(ctx)
+type RecoveryRunner struct {
+	sm            StateManager
 	staleTimeout  time.Duration
 	checkInterval time.Duration
 	batchLimit    int
 	logger        *slog.Logger
 }
 
-// OrphanRecoveryOption configures an OrphanRecoveryRunner.
-type OrphanRecoveryOption func(*OrphanRecoveryRunner)
+// RecoveryOption configures a RecoveryRunner.
+type RecoveryOption func(*RecoveryRunner)
 
-// WithStaleTimeout sets how long a claim can be pending before considered orphaned.
+// WithStaleTimeout sets how long a state can be processing before considered stale.
 //
 // This should be longer than the expected handler execution time but shorter
-// than the claim TTL. For example:
+// than the state TTL. For example:
 //   - Handler timeout: 30s → staleTimeout: 1-2m
 //   - Handler timeout: 1m → staleTimeout: 2-3m
 //
 // Default: 2 minutes
-func WithStaleTimeout(d time.Duration) OrphanRecoveryOption {
-	return func(r *OrphanRecoveryRunner) {
+func WithStaleTimeout(d time.Duration) RecoveryOption {
+	return func(r *RecoveryRunner) {
 		if d > 0 {
 			r.staleTimeout = d
 		}
 	}
 }
 
-// WithCheckInterval sets how often to check for orphaned claims.
+// WithCheckInterval sets how often to check for stale states.
 //
-// Shorter intervals mean faster failover but more load on the claimer.
+// Shorter intervals mean faster failover but more load on the state manager.
 // Longer intervals reduce load but delay recovery.
 //
 // Default: 30 seconds
-func WithCheckInterval(d time.Duration) OrphanRecoveryOption {
-	return func(r *OrphanRecoveryRunner) {
+func WithCheckInterval(d time.Duration) RecoveryOption {
+	return func(r *RecoveryRunner) {
 		if d > 0 {
 			r.checkInterval = d
 		}
 	}
 }
 
-// WithBatchLimit sets the maximum number of orphans to process per check.
+// WithBatchLimit sets the maximum number of stale states to process per check.
 //
-// This prevents the runner from overwhelming the claimer when many orphans
-// exist (e.g., after a large-scale failure).
+// This prevents the runner from overwhelming the state manager when many stale
+// states exist (e.g., after a large-scale failure).
 //
 // Default: 100 (0 = no limit)
-func WithBatchLimit(limit int) OrphanRecoveryOption {
-	return func(r *OrphanRecoveryRunner) {
+func WithBatchLimit(limit int) RecoveryOption {
+	return func(r *RecoveryRunner) {
 		r.batchLimit = limit
 	}
 }
@@ -103,23 +103,23 @@ func WithBatchLimit(limit int) OrphanRecoveryOption {
 // WithRecoveryLogger sets the logger for recovery operations.
 //
 // If not set, no logging is performed.
-func WithRecoveryLogger(logger *slog.Logger) OrphanRecoveryOption {
-	return func(r *OrphanRecoveryRunner) {
+func WithRecoveryLogger(logger *slog.Logger) RecoveryOption {
+	return func(r *RecoveryRunner) {
 		r.logger = logger
 	}
 }
 
-// NewOrphanRecoveryRunner creates a new orphan recovery runner.
+// NewRecoveryRunner creates a new stale state recovery runner.
 //
 // Parameters:
-//   - claimer: The claimer to monitor for orphaned claims
+//   - sm: The state manager to monitor for stale states
 //   - opts: Optional configuration
 //
 // Returns a configured runner. Call Run() to start background recovery
 // or RecoverOnce() for manual recovery.
-func NewOrphanRecoveryRunner(claimer MessageClaimer, opts ...OrphanRecoveryOption) *OrphanRecoveryRunner {
-	r := &OrphanRecoveryRunner{
-		claimer:       claimer,
+func NewRecoveryRunner(sm StateManager, opts ...RecoveryOption) *RecoveryRunner {
+	r := &RecoveryRunner{
+		sm:            sm,
 		staleTimeout:  2 * time.Minute,
 		checkInterval: 30 * time.Second,
 		batchLimit:    100,
@@ -133,7 +133,7 @@ func NewOrphanRecoveryRunner(claimer MessageClaimer, opts ...OrphanRecoveryOptio
 // Run starts the background recovery loop.
 //
 // The loop runs until the context is cancelled. It periodically checks for
-// orphaned claims and releases them.
+// stale states and resets them.
 //
 // Example:
 //
@@ -141,7 +141,7 @@ func NewOrphanRecoveryRunner(claimer MessageClaimer, opts ...OrphanRecoveryOptio
 //	defer cancel()
 //
 //	go runner.Run(ctx)
-func (r *OrphanRecoveryRunner) Run(ctx context.Context) {
+func (r *RecoveryRunner) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.checkInterval)
 	defer ticker.Stop()
 
@@ -150,16 +150,16 @@ func (r *OrphanRecoveryRunner) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			released, err := r.RecoverOnce(ctx)
+			reset, err := r.RecoverOnce(ctx)
 			if err != nil {
 				if r.logger != nil {
-					r.logger.Warn("orphan recovery failed",
+					r.logger.Warn("stale state recovery failed",
 						"error", err)
 				}
-			} else if released > 0 {
+			} else if reset > 0 {
 				if r.logger != nil {
-					r.logger.Info("released orphaned claims",
-						"count", released,
+					r.logger.Info("reset stale states",
+						"count", reset,
 						"stale_timeout", r.staleTimeout)
 				}
 			}
@@ -172,31 +172,31 @@ func (r *OrphanRecoveryRunner) Run(ctx context.Context) {
 // This is useful for manual recovery or when you want more control over
 // when recovery runs.
 //
-// Returns the number of claims released.
-func (r *OrphanRecoveryRunner) RecoverOnce(ctx context.Context) (int64, error) {
-	// If claimer implements OrphanReleaser, use the efficient batch method
-	if releaser, ok := r.claimer.(OrphanReleaser); ok {
-		return releaser.ReleaseOrphans(ctx, r.staleTimeout, r.batchLimit)
+// Returns the number of states reset.
+func (r *RecoveryRunner) RecoverOnce(ctx context.Context) (int64, error) {
+	// If state manager implements StaleResetter, use the efficient batch method
+	if resetter, ok := r.sm.(StaleResetter); ok {
+		return resetter.ResetStale(ctx, r.staleTimeout, r.batchLimit)
 	}
 
-	// Fall back to list + release
-	orphans, err := r.claimer.ListOrphanedClaims(ctx, r.staleTimeout, r.batchLimit)
+	// Fall back to list + reset
+	stale, err := r.sm.ListStale(ctx, r.staleTimeout, r.batchLimit)
 	if err != nil {
 		return 0, err
 	}
 
-	var released int64
-	for _, msgID := range orphans {
-		if err := r.claimer.Release(ctx, msgID); err != nil {
+	var reset int64
+	for _, msgID := range stale {
+		if err := r.sm.Reset(ctx, msgID); err != nil {
 			if r.logger != nil {
-				r.logger.Warn("failed to release orphan",
+				r.logger.Warn("failed to reset stale state",
 					"message_id", msgID,
 					"error", err)
 			}
 			continue
 		}
-		released++
+		reset++
 	}
 
-	return released, nil
+	return reset, nil
 }

@@ -6,114 +6,114 @@ import (
 	"time"
 )
 
-func TestMemoryClaimer_TryClaim(t *testing.T) {
+func TestMemoryStateManager_Acquire(t *testing.T) {
 	ctx := context.Background()
-	claimer := NewMemoryClaimer()
-	defer claimer.Close()
+	sm := NewMemoryStateManager()
+	defer sm.Close()
 
-	// First claim should succeed
-	claimed, err := claimer.TryClaim(ctx, "msg-1", time.Minute)
+	// First acquisition should succeed
+	acquired, err := sm.Acquire(ctx, "msg-1", time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !claimed {
-		t.Fatal("expected claim to succeed")
+	if !acquired {
+		t.Fatal("expected acquisition to succeed")
 	}
 
-	// Second claim for same message should fail
-	claimed, err = claimer.TryClaim(ctx, "msg-1", time.Minute)
+	// Second acquisition for same message should fail
+	acquired, err = sm.Acquire(ctx, "msg-1", time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if claimed {
-		t.Fatal("expected second claim to fail")
+	if acquired {
+		t.Fatal("expected second acquisition to fail")
 	}
 
 	// Different message should succeed
-	claimed, err = claimer.TryClaim(ctx, "msg-2", time.Minute)
+	acquired, err = sm.Acquire(ctx, "msg-2", time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !claimed {
-		t.Fatal("expected different message claim to succeed")
+	if !acquired {
+		t.Fatal("expected different message acquisition to succeed")
 	}
 }
 
-func TestMemoryClaimer_Complete(t *testing.T) {
+func TestMemoryStateManager_MarkProcessed(t *testing.T) {
 	ctx := context.Background()
-	claimer := NewMemoryClaimer()
-	defer claimer.Close()
+	sm := NewMemoryStateManager()
+	defer sm.Close()
 
-	// Claim a message
-	claimed, _ := claimer.TryClaim(ctx, "msg-1", time.Minute)
-	if !claimed {
-		t.Fatal("expected claim to succeed")
+	// Acquire a message
+	acquired, _ := sm.Acquire(ctx, "msg-1", time.Minute)
+	if !acquired {
+		t.Fatal("expected acquisition to succeed")
 	}
 
-	// Complete it
-	if err := claimer.Complete(ctx, "msg-1"); err != nil {
+	// Mark it as processed
+	if err := sm.MarkProcessed(ctx, "msg-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should still not be claimable (completed state blocks)
-	claimed, _ = claimer.TryClaim(ctx, "msg-1", time.Minute)
-	if claimed {
-		t.Fatal("expected claim to fail after complete")
+	// Should still not be acquirable (completed state blocks)
+	acquired, _ = sm.Acquire(ctx, "msg-1", time.Minute)
+	if acquired {
+		t.Fatal("expected acquisition to fail after mark processed")
 	}
 }
 
-func TestMemoryClaimer_Release(t *testing.T) {
+func TestMemoryStateManager_Reset(t *testing.T) {
 	ctx := context.Background()
-	claimer := NewMemoryClaimer()
-	defer claimer.Close()
+	sm := NewMemoryStateManager()
+	defer sm.Close()
 
-	// Claim a message
-	claimed, _ := claimer.TryClaim(ctx, "msg-1", time.Minute)
-	if !claimed {
-		t.Fatal("expected claim to succeed")
+	// Acquire a message
+	acquired, _ := sm.Acquire(ctx, "msg-1", time.Minute)
+	if !acquired {
+		t.Fatal("expected acquisition to succeed")
 	}
 
-	// Release it
-	if err := claimer.Release(ctx, "msg-1"); err != nil {
+	// Reset it
+	if err := sm.Reset(ctx, "msg-1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should be claimable again after release
-	claimed, _ = claimer.TryClaim(ctx, "msg-1", time.Minute)
-	if !claimed {
-		t.Fatal("expected claim to succeed after release")
+	// Should be acquirable again after reset
+	acquired, _ = sm.Acquire(ctx, "msg-1", time.Minute)
+	if !acquired {
+		t.Fatal("expected acquisition to succeed after reset")
 	}
 }
 
-func TestMemoryClaimer_Expiry(t *testing.T) {
+func TestMemoryStateManager_Expiry(t *testing.T) {
 	ctx := context.Background()
-	claimer := NewMemoryClaimer(
+	sm := NewMemoryStateManager(
 		WithCleanup(false, 0), // Disable cleanup for this test
 	)
-	defer claimer.Close()
+	defer sm.Close()
 
-	// Claim with very short TTL
-	claimed, _ := claimer.TryClaim(ctx, "msg-1", 10*time.Millisecond)
-	if !claimed {
-		t.Fatal("expected claim to succeed")
+	// Acquire with very short TTL
+	acquired, _ := sm.Acquire(ctx, "msg-1", 10*time.Millisecond)
+	if !acquired {
+		t.Fatal("expected acquisition to succeed")
 	}
 
 	// Wait for expiry
 	time.Sleep(20 * time.Millisecond)
 
-	// Should be claimable again after expiry
-	claimed, _ = claimer.TryClaim(ctx, "msg-1", time.Minute)
-	if !claimed {
-		t.Fatal("expected claim to succeed after expiry")
+	// Should be acquirable again after expiry
+	acquired, _ = sm.Acquire(ctx, "msg-1", time.Minute)
+	if !acquired {
+		t.Fatal("expected acquisition to succeed after expiry")
 	}
 }
 
-func TestClaimerOptions(t *testing.T) {
-	opts := defaultClaimerOptions()
+func TestStateOptions(t *testing.T) {
+	opts := defaultStateOptions()
 
 	// Test defaults
-	if opts.prefix != "claim:" {
-		t.Errorf("expected prefix 'claim:', got %q", opts.prefix)
+	if opts.prefix != "state:" {
+		t.Errorf("expected prefix 'state:', got %q", opts.prefix)
 	}
 	if opts.ttl != 5*time.Minute {
 		t.Errorf("expected ttl 5m, got %v", opts.ttl)
@@ -123,154 +123,154 @@ func TestClaimerOptions(t *testing.T) {
 	}
 
 	// Test options
-	WithClaimerPrefix("test:")(opts)
+	WithPrefix("test:")(opts)
 	if opts.prefix != "test:" {
 		t.Errorf("expected prefix 'test:', got %q", opts.prefix)
 	}
 
-	WithClaimerTTL(10 * time.Minute)(opts)
+	WithStateTTL(10 * time.Minute)(opts)
 	if opts.ttl != 10*time.Minute {
 		t.Errorf("expected ttl 10m, got %v", opts.ttl)
 	}
 
-	WithCompletionTTL(48 * time.Hour)(opts)
+	WithCompletedTTL(48 * time.Hour)(opts)
 	if opts.completionTTL != 48*time.Hour {
 		t.Errorf("expected completionTTL 48h, got %v", opts.completionTTL)
 	}
 }
 
-func TestMemoryClaimer_ListOrphanedClaims(t *testing.T) {
+func TestMemoryStateManager_ListStale(t *testing.T) {
 	ctx := context.Background()
-	claimer := NewMemoryClaimer(
+	sm := NewMemoryStateManager(
 		WithCleanup(false, 0), // Disable cleanup for this test
 	)
-	defer claimer.Close()
+	defer sm.Close()
 
-	// Claim some messages
-	claimer.TryClaim(ctx, "msg-1", time.Hour)
-	claimer.TryClaim(ctx, "msg-2", time.Hour)
-	claimer.TryClaim(ctx, "msg-3", time.Hour)
+	// Acquire some messages
+	sm.Acquire(ctx, "msg-1", time.Hour)
+	sm.Acquire(ctx, "msg-2", time.Hour)
+	sm.Acquire(ctx, "msg-3", time.Hour)
 
-	// Complete one
-	claimer.Complete(ctx, "msg-2")
+	// Mark one as processed
+	sm.MarkProcessed(ctx, "msg-2")
 
-	// Artificially make claims stale by setting updatedAt in the past
-	claimer.mu.Lock()
-	for id, entry := range claimer.claims {
+	// Artificially make states stale by setting updatedAt in the past
+	sm.mu.Lock()
+	for id, entry := range sm.states {
 		if id != "msg-2" { // Don't touch completed one
 			entry.updatedAt = time.Now().Add(-5 * time.Minute)
 		}
 	}
-	claimer.mu.Unlock()
+	sm.mu.Unlock()
 
-	// List orphans with 1 minute stale timeout
-	orphans, err := claimer.ListOrphanedClaims(ctx, time.Minute, 0)
+	// List stale with 1 minute stale timeout
+	stale, err := sm.ListStale(ctx, time.Minute, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should find msg-1 and msg-3 (pending and stale), not msg-2 (completed)
-	if len(orphans) != 2 {
-		t.Fatalf("expected 2 orphans, got %d", len(orphans))
+	// Should find msg-1 and msg-3 (processing and stale), not msg-2 (completed)
+	if len(stale) != 2 {
+		t.Fatalf("expected 2 stale, got %d", len(stale))
 	}
 
 	// Test limit
-	orphans, err = claimer.ListOrphanedClaims(ctx, time.Minute, 1)
+	stale, err = sm.ListStale(ctx, time.Minute, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(orphans) != 1 {
-		t.Fatalf("expected 1 orphan with limit, got %d", len(orphans))
+	if len(stale) != 1 {
+		t.Fatalf("expected 1 stale with limit, got %d", len(stale))
 	}
 }
 
-func TestMemoryClaimer_ReleaseOrphans(t *testing.T) {
+func TestMemoryStateManager_ResetStale(t *testing.T) {
 	ctx := context.Background()
-	claimer := NewMemoryClaimer(
+	sm := NewMemoryStateManager(
 		WithCleanup(false, 0),
 	)
-	defer claimer.Close()
+	defer sm.Close()
 
-	// Claim some messages
-	claimer.TryClaim(ctx, "msg-1", time.Hour)
-	claimer.TryClaim(ctx, "msg-2", time.Hour)
+	// Acquire some messages
+	sm.Acquire(ctx, "msg-1", time.Hour)
+	sm.Acquire(ctx, "msg-2", time.Hour)
 
 	// Make them stale
-	claimer.mu.Lock()
-	for _, entry := range claimer.claims {
+	sm.mu.Lock()
+	for _, entry := range sm.states {
 		entry.updatedAt = time.Now().Add(-5 * time.Minute)
 	}
-	claimer.mu.Unlock()
+	sm.mu.Unlock()
 
-	// Release orphans
-	released, err := claimer.ReleaseOrphans(ctx, time.Minute, 0)
+	// Reset stale states
+	reset, err := sm.ResetStale(ctx, time.Minute, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if released != 2 {
-		t.Fatalf("expected 2 released, got %d", released)
+	if reset != 2 {
+		t.Fatalf("expected 2 reset, got %d", reset)
 	}
 
-	// Should be claimable again
-	claimed, _ := claimer.TryClaim(ctx, "msg-1", time.Hour)
-	if !claimed {
-		t.Fatal("expected claim to succeed after orphan release")
+	// Should be acquirable again
+	acquired, _ := sm.Acquire(ctx, "msg-1", time.Hour)
+	if !acquired {
+		t.Fatal("expected acquisition to succeed after stale reset")
 	}
 }
 
-func TestOrphanRecoveryRunner_RecoverOnce(t *testing.T) {
+func TestRecoveryRunner_RecoverOnce(t *testing.T) {
 	ctx := context.Background()
-	claimer := NewMemoryClaimer(
+	sm := NewMemoryStateManager(
 		WithCleanup(false, 0),
 	)
-	defer claimer.Close()
+	defer sm.Close()
 
-	runner := NewOrphanRecoveryRunner(claimer,
+	runner := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 	)
 
-	// Claim a message
-	claimer.TryClaim(ctx, "msg-1", time.Hour)
+	// Acquire a message
+	sm.Acquire(ctx, "msg-1", time.Hour)
 
 	// Not stale yet
-	released, err := runner.RecoverOnce(ctx)
+	reset, err := runner.RecoverOnce(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if released != 0 {
-		t.Fatalf("expected 0 released (not stale yet), got %d", released)
+	if reset != 0 {
+		t.Fatalf("expected 0 reset (not stale yet), got %d", reset)
 	}
 
 	// Wait for it to become stale
 	time.Sleep(60 * time.Millisecond)
 
-	// Now should be released
-	released, err = runner.RecoverOnce(ctx)
+	// Now should be reset
+	reset, err = runner.RecoverOnce(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if released != 1 {
-		t.Fatalf("expected 1 released, got %d", released)
+	if reset != 1 {
+		t.Fatalf("expected 1 reset, got %d", reset)
 	}
 
-	// Message should be claimable again
-	claimed, _ := claimer.TryClaim(ctx, "msg-1", time.Hour)
-	if !claimed {
-		t.Fatal("expected claim to succeed after recovery")
+	// Message should be acquirable again
+	acquired, _ := sm.Acquire(ctx, "msg-1", time.Hour)
+	if !acquired {
+		t.Fatal("expected acquisition to succeed after recovery")
 	}
 }
 
-func TestOrphanRecoveryRunner_Run(t *testing.T) {
+func TestRecoveryRunner_Run(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	claimer := NewMemoryClaimer(
+	sm := NewMemoryStateManager(
 		WithCleanup(false, 0),
 	)
-	defer claimer.Close()
+	defer sm.Close()
 
-	runner := NewOrphanRecoveryRunner(claimer,
+	runner := NewRecoveryRunner(sm,
 		WithStaleTimeout(30*time.Millisecond),
 		WithCheckInterval(20*time.Millisecond),
 	)
@@ -278,21 +278,21 @@ func TestOrphanRecoveryRunner_Run(t *testing.T) {
 	// Start runner in background
 	go runner.Run(ctx)
 
-	// Claim a message
-	claimer.TryClaim(ctx, "msg-1", time.Hour)
+	// Acquire a message
+	sm.Acquire(ctx, "msg-1", time.Hour)
 
-	// Verify it's claimed
-	claimed, _ := claimer.TryClaim(ctx, "msg-1", time.Hour)
-	if claimed {
-		t.Fatal("expected claim to fail (already claimed)")
+	// Verify it's acquired
+	acquired, _ := sm.Acquire(ctx, "msg-1", time.Hour)
+	if acquired {
+		t.Fatal("expected acquisition to fail (already acquired)")
 	}
 
 	// Wait for stale timeout + check interval
 	time.Sleep(100 * time.Millisecond)
 
-	// Should be claimable now (runner released it)
-	claimed, _ = claimer.TryClaim(ctx, "msg-1", time.Hour)
-	if !claimed {
-		t.Fatal("expected claim to succeed after runner released orphan")
+	// Should be acquirable now (runner reset it)
+	acquired, _ = sm.Acquire(ctx, "msg-1", time.Hour)
+	if !acquired {
+		t.Fatal("expected acquisition to succeed after runner reset stale state")
 	}
 }

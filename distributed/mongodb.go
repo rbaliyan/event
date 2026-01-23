@@ -10,27 +10,34 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Default collection name for claim storage
-const DefaultClaimCollection = "_event_claims"
+// Default collection name for state storage
+const DefaultStateCollection = "_message_state"
 
-// claimDocument represents a claim record in MongoDB.
-type claimDocument struct {
+// stateDocument represents a state record in MongoDB.
+type stateDocument struct {
 	ID        string    `bson:"_id"`
-	State     string    `bson:"state"`
+	Status    string    `bson:"status"`
 	ExpiresAt time.Time `bson:"expires_at"`
 	CreatedAt time.Time `bson:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at"`
 }
 
-// MongoClaimer implements MessageClaimer using MongoDB for distributed deployments.
+// MongoStateManager implements StateManager using MongoDB for distributed deployments.
 //
-// MongoClaimer uses MongoDB's atomic findOneAndUpdate with conditional filters
-// for race-condition-free message claiming. This is ideal when you're already
+// MongoStateManager uses MongoDB's atomic findOneAndUpdate with conditional filters
+// for race-condition-free message state management. This is ideal when you're already
 // using MongoDB (e.g., with the MongoDB Change Streams transport) and don't
 // want to introduce Redis as an additional dependency.
 //
+// Design Philosophy:
+//
+// This implementation uses database atomic operations, not distributed locks:
+//   - findOneAndUpdate with upsert provides atomic state transitions
+//   - TTL indexes provide automatic cleanup of expired states
+//   - No separate lock acquisition/release - state IS the coordination mechanism
+//
 // Features:
-//   - Atomic claim acquisition using findOneAndUpdate with upsert
+//   - Atomic state acquisition using findOneAndUpdate with upsert
 //   - Automatic expiration using MongoDB TTL indexes
 //   - Configurable database and collection for multi-tenant deployments
 //   - Optional capped collection for high-throughput scenarios
@@ -38,11 +45,11 @@ type claimDocument struct {
 //
 // MongoDB Collection:
 //
-// Claims are stored in a collection (default: "_event_claims") with documents:
+// States are stored in a collection (default: "_message_state") with documents:
 //
 //	{
 //	    "_id": "msg-123",           // Message ID
-//	    "state": "pending",         // "pending" or "completed"
+//	    "status": "processing",     // "processing" or "completed"
 //	    "expires_at": ISODate(...), // TTL expiration
 //	    "created_at": ISODate(...),
 //	    "updated_at": ISODate(...)
@@ -54,49 +61,49 @@ type claimDocument struct {
 //
 //	db.collection.createIndex({"expires_at": 1}, {expireAfterSeconds: 0})
 //
-// Or call EnsureIndexes() after creating the claimer.
+// Or call EnsureIndexes() after creating the state manager.
 //
 // Capped Collection Mode:
 //
 // For high-throughput scenarios, you can use a capped collection:
 //
-//	claimer := distributed.NewMongoClaimer(db).
+//	sm := distributed.NewMongoStateManager(db).
 //	    WithCapped(100*1024*1024, 100000) // 100MB, 100k docs max
-//	claimer.CreateCollection(ctx) // Creates capped collection
+//	sm.CreateCollection(ctx) // Creates capped collection
 //
 // IMPORTANT: Capped collections have limitations:
-//   - Release() is a no-op (MongoDB doesn't allow deletes in capped collections)
+//   - Reset() is a no-op (MongoDB doesn't allow deletes in capped collections)
 //   - No TTL index support (cleanup is by size/count, not time)
-//   - Failed claims must wait for natural expiration or size-based removal
+//   - Failed states must wait for natural expiration or size-based removal
 //
 // Example:
 //
-//	// Basic setup - uses "_event_claims" collection
-//	claimer := distributed.NewMongoClaimer(db)
-//	claimer.EnsureIndexes(ctx)
+//	// Basic setup - uses "_message_state" collection
+//	sm := distributed.NewMongoStateManager(db)
+//	sm.EnsureIndexes(ctx)
 //
 //	// With custom collection
-//	claimer := distributed.NewMongoClaimer(db).
-//	    WithCollection("my_claims")
+//	sm := distributed.NewMongoStateManager(db).
+//	    WithCollection("my_states")
 //
 //	// With custom database and collection
-//	claimer := distributed.NewMongoClaimer(db).
+//	sm := distributed.NewMongoStateManager(db).
 //	    WithDatabase(client.Database("other_db")).
-//	    WithCollection("my_claims")
+//	    WithCollection("my_states")
 //
 //	// With capped collection for high throughput
-//	claimer := distributed.NewMongoClaimer(db).
-//	    WithCollection("claim_buffer").
+//	sm := distributed.NewMongoStateManager(db).
+//	    WithCollection("state_buffer").
 //	    WithCapped(100*1024*1024, 0) // 100MB, unlimited docs
-//	claimer.CreateCollection(ctx)
+//	sm.CreateCollection(ctx)
 //
 //	// Use with middleware
 //	event.Subscribe(ctx, handler,
 //	    event.WithMiddleware(
-//	        distributed.DistributedWorkerMiddleware[Order](claimer, 5*time.Minute),
+//	        distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute),
 //	    ),
 //	)
-type MongoClaimer struct {
+type MongoStateManager struct {
 	collection    *mongo.Collection
 	completionTTL time.Duration
 	capped        bool
@@ -104,80 +111,80 @@ type MongoClaimer struct {
 	cappedMaxDocs int64 // Max documents (0 = unlimited)
 }
 
-// NewMongoClaimer creates a new MongoDB-based message claimer.
+// NewMongoStateManager creates a new MongoDB-based state manager.
 //
-// The claimer uses MongoDB's findOneAndUpdate for atomic claim acquisition,
+// The state manager uses MongoDB's findOneAndUpdate for atomic state acquisition,
 // which prevents race conditions between workers.
 //
 // Parameters:
 //   - db: A connected MongoDB database
 //
-// Returns a configured MongoClaimer ready for use.
+// Returns a configured MongoStateManager ready for use.
 // Use WithDatabase() and WithCollection() to customize storage location.
 //
 // Example:
 //
-//	// Simple setup - uses "_event_claims" collection
-//	claimer := distributed.NewMongoClaimer(db)
+//	// Simple setup - uses "_message_state" collection
+//	sm := distributed.NewMongoStateManager(db)
 //
 //	// With custom collection
-//	claimer := distributed.NewMongoClaimer(db).
-//	    WithCollection("worker_claims")
+//	sm := distributed.NewMongoStateManager(db).
+//	    WithCollection("worker_state")
 //
 //	// Don't forget to create indexes for TTL cleanup
-//	claimer.EnsureIndexes(ctx)
-func NewMongoClaimer(db *mongo.Database) *MongoClaimer {
-	opts := defaultClaimerOptions()
+//	sm.EnsureIndexes(ctx)
+func NewMongoStateManager(db *mongo.Database) *MongoStateManager {
+	opts := defaultStateOptions()
 
-	return &MongoClaimer{
-		collection:    db.Collection(DefaultClaimCollection),
+	return &MongoStateManager{
+		collection:    db.Collection(DefaultStateCollection),
 		completionTTL: opts.completionTTL,
 	}
 }
 
-// WithDatabase sets a different database for claim storage.
+// WithDatabase sets a different database for state storage.
 //
-// Use this when you want to store claims in a different database than
+// Use this when you want to store states in a different database than
 // the one used for your main application data.
 //
 // Example:
 //
-//	claimer := distributed.NewMongoClaimer(appDB).
-//	    WithDatabase(client.Database("claims_db"))
-func (c *MongoClaimer) WithDatabase(db *mongo.Database) *MongoClaimer {
-	c.collection = db.Collection(c.collection.Name())
-	return c
+//	sm := distributed.NewMongoStateManager(appDB).
+//	    WithDatabase(client.Database("state_db"))
+func (s *MongoStateManager) WithDatabase(db *mongo.Database) *MongoStateManager {
+	s.collection = db.Collection(s.collection.Name())
+	return s
 }
 
-// WithCollection sets a custom collection name for claim storage.
+// WithCollection sets a custom collection name for state storage.
 //
-// Default: "_event_claims"
+// Default: "_message_state"
 //
 // Example:
 //
-//	claimer := distributed.NewMongoClaimer(db).
-//	    WithCollection("worker_claims")
-func (c *MongoClaimer) WithCollection(name string) *MongoClaimer {
-	c.collection = c.collection.Database().Collection(name)
-	return c
+//	sm := distributed.NewMongoStateManager(db).
+//	    WithCollection("worker_state")
+func (s *MongoStateManager) WithCollection(name string) *MongoStateManager {
+	s.collection = s.collection.Database().Collection(name)
+	return s
 }
 
-// WithCompletionTTL sets how long to remember completed messages.
+// WithCompletedTTL sets how long to remember completed messages.
 //
 // After a message is completed, its ID is remembered for this duration
 // to prevent reprocessing if the same message is delivered again.
 //
 // Default: 24 hours
-func (c *MongoClaimer) WithCompletionTTL(ttl time.Duration) *MongoClaimer {
+func (s *MongoStateManager) WithCompletedTTL(ttl time.Duration) *MongoStateManager {
 	if ttl > 0 {
-		c.completionTTL = ttl
+		s.completionTTL = ttl
 	}
-	return c
+	return s
 }
 
 // Collection returns the underlying MongoDB collection.
-func (c *MongoClaimer) Collection() *mongo.Collection {
-	return c.collection
+func (s *MongoStateManager) Collection() *mongo.Collection {
+	return s.collection
 }
 
 // WithCapped enables capped collection mode for high-throughput scenarios.
@@ -193,33 +200,33 @@ func (c *MongoClaimer) Collection() *mongo.Collection {
 //   - maxDocs: Maximum number of documents (0 = unlimited, size-based only)
 //
 // IMPORTANT LIMITATIONS:
-//   - Release() becomes a no-op (MongoDB doesn't allow deletes in capped collections)
+//   - Reset() becomes a no-op (MongoDB doesn't allow deletes in capped collections)
 //   - No TTL index support (EnsureIndexes skips TTL index for capped collections)
-//   - Failed claims wait for size-based removal, not time-based expiration
+//   - Failed states wait for size-based removal, not time-based expiration
 //   - Updates cannot increase document size
 //
 // After calling WithCapped(), you must call CreateCollection() to create
-// the capped collection before using the claimer.
+// the capped collection before using the state manager.
 //
 // Example:
 //
-//	claimer := distributed.NewMongoClaimer(db).
-//	    WithCollection("claim_buffer").
+//	sm := distributed.NewMongoStateManager(db).
+//	    WithCollection("state_buffer").
 //	    WithCapped(100*1024*1024, 100000) // 100MB, max 100k docs
-//	claimer.CreateCollection(ctx) // Creates the capped collection
-func (c *MongoClaimer) WithCapped(sizeBytes int64, maxDocs int64) *MongoClaimer {
-	c.capped = true
-	c.cappedSize = sizeBytes
-	c.cappedMaxDocs = maxDocs
-	return c
+//	sm.CreateCollection(ctx) // Creates the capped collection
+func (s *MongoStateManager) WithCapped(sizeBytes int64, maxDocs int64) *MongoStateManager {
+	s.capped = true
+	s.cappedSize = sizeBytes
+	s.cappedMaxDocs = maxDocs
+	return s
 }
 
 // IsCapped returns true if capped collection mode is enabled.
-func (c *MongoClaimer) IsCapped() bool {
-	return c.capped
+func (s *MongoStateManager) IsCapped() bool {
+	return s.capped
 }
 
-// CreateCollection creates the claims collection.
+// CreateCollection creates the state collection.
 //
 // For capped collections, this creates a capped collection with the
 // configured size and max documents. For regular collections, this
@@ -229,13 +236,13 @@ func (c *MongoClaimer) IsCapped() bool {
 //
 // Example:
 //
-//	claimer := distributed.NewMongoClaimer(db).
+//	sm := distributed.NewMongoStateManager(db).
 //	    WithCapped(100*1024*1024, 0)
-//	if err := claimer.CreateCollection(ctx); err != nil {
+//	if err := sm.CreateCollection(ctx); err != nil {
 //	    log.Fatal("failed to create collection:", err)
 //	}
-func (c *MongoClaimer) CreateCollection(ctx context.Context) error {
-	if !c.capped {
+func (s *MongoStateManager) CreateCollection(ctx context.Context) error {
+	if !s.capped {
 		// Regular collections are created automatically
 		return nil
 	}
@@ -243,13 +250,13 @@ func (c *MongoClaimer) CreateCollection(ctx context.Context) error {
 	// Create capped collection
 	opts := options.CreateCollection().
 		SetCapped(true).
-		SetSizeInBytes(c.cappedSize)
+		SetSizeInBytes(s.cappedSize)
 
-	if c.cappedMaxDocs > 0 {
-		opts.SetMaxDocuments(c.cappedMaxDocs)
+	if s.cappedMaxDocs > 0 {
+		opts.SetMaxDocuments(s.cappedMaxDocs)
 	}
 
-	err := c.collection.Database().CreateCollection(ctx, c.collection.Name(), opts)
+	err := s.collection.Database().CreateCollection(ctx, s.collection.Name(), opts)
 	if err != nil {
 		// Ignore "collection already exists" error
 		if !mongo.IsDuplicateKeyError(err) && !isNamespaceExistsError(err) {
@@ -272,30 +279,30 @@ func isNamespaceExistsError(err error) bool {
 	return false
 }
 
-// TryClaim attempts to claim a message using MongoDB findOneAndUpdate.
+// Acquire atomically transitions a message to "processing" state using MongoDB findOneAndUpdate.
 //
-// The claim is atomic: the update only succeeds if:
-//   - The document doesn't exist (new claim), OR
-//   - The existing claim has expired (TTL passed)
+// The transition is atomic: the update only succeeds if:
+//   - The document doesn't exist (new state), OR
+//   - The existing state has expired (TTL passed)
 //
 // MongoDB query:
 //
 //	findOneAndUpdate(
-//	    {$or: [{_id: msgID, expires_at: {$lt: now}}, {_id: msgID, state: {$exists: false}}]},
-//	    {$set: {state: "pending", expires_at: now+ttl, ...}},
+//	    {$or: [{_id: msgID, expires_at: {$lt: now}}, {_id: msgID, status: {$exists: false}}]},
+//	    {$set: {status: "processing", expires_at: now+ttl, ...}},
 //	    {upsert: true}
 //	)
 //
 // Parameters:
 //   - ctx: Context for cancellation
-//   - messageID: The message to claim
-//   - ttl: How long to hold the claim
+//   - messageID: The message to acquire
+//   - ttl: How long to hold the state
 //
 // Returns:
-//   - (true, nil): Claim succeeded, process the message
-//   - (false, nil): Already claimed (active claim exists), skip the message
+//   - (true, nil): Acquisition succeeded, process the message
+//   - (false, nil): Already acquired (active state exists), skip the message
 //   - (false, error): MongoDB error occurred
-func (c *MongoClaimer) TryClaim(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
+func (s *MongoStateManager) Acquire(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
 	now := time.Now()
 	expiresAt := now.Add(ttl)
 
@@ -303,14 +310,14 @@ func (c *MongoClaimer) TryClaim(ctx context.Context, messageID string, ttl time.
 	filter := bson.M{
 		"_id": messageID,
 		"$or": []bson.M{
-			{"expires_at": bson.M{"$lt": now}}, // Expired claim
-			{"state": bson.M{"$exists": false}}, // New document (shouldn't happen with upsert, but safe)
+			{"expires_at": bson.M{"$lt": now}}, // Expired state
+			{"status": bson.M{"$exists": false}}, // New document (shouldn't happen with upsert, but safe)
 		},
 	}
 
 	update := bson.M{
 		"$set": bson.M{
-			"state":      "pending",
+			"status":     "processing",
 			"expires_at": expiresAt,
 			"updated_at": now,
 		},
@@ -323,54 +330,54 @@ func (c *MongoClaimer) TryClaim(ctx context.Context, messageID string, ttl time.
 		SetUpsert(true).
 		SetReturnDocument(options.After)
 
-	var result claimDocument
-	err := c.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result)
+	var result stateDocument
+	err := s.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&result)
 
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
-			// Document exists with active claim - another worker claimed it
+			// Document exists with active state - another worker acquired it
 			return false, nil
 		}
 		if err == mongo.ErrNoDocuments {
-			// This can happen if the filter didn't match (active claim exists)
-			// Check if document exists with active state
-			var existing claimDocument
-			findErr := c.collection.FindOne(ctx, bson.M{"_id": messageID}).Decode(&existing)
+			// This can happen if the filter didn't match (active state exists)
+			// Check if document exists with active status
+			var existing stateDocument
+			findErr := s.collection.FindOne(ctx, bson.M{"_id": messageID}).Decode(&existing)
 			if findErr == nil && existing.ExpiresAt.After(now) {
-				// Active claim exists
+				// Active state exists
 				return false, nil
 			}
 			// No document or expired - try insert
-			return c.tryInsert(ctx, messageID, ttl)
+			return s.tryInsert(ctx, messageID, ttl)
 		}
 		return false, fmt.Errorf("mongodb find and update: %w", err)
 	}
 
-	// Check if we actually got the claim (state is pending and our expiry)
-	if result.State == "pending" && result.ExpiresAt.Equal(expiresAt) {
+	// Check if we actually got the state (status is processing and our expiry)
+	if result.Status == "processing" && result.ExpiresAt.Equal(expiresAt) {
 		return true, nil
 	}
 
-	// Someone else has the claim
+	// Someone else has the state
 	return false, nil
 }
 
 // tryInsert attempts a direct insert when findOneAndUpdate fails.
-func (c *MongoClaimer) tryInsert(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
+func (s *MongoStateManager) tryInsert(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
 	now := time.Now()
 
-	doc := claimDocument{
+	doc := stateDocument{
 		ID:        messageID,
-		State:     "pending",
+		Status:    "processing",
 		ExpiresAt: now.Add(ttl),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 
-	_, err := c.collection.InsertOne(ctx, doc)
+	_, err := s.collection.InsertOne(ctx, doc)
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
-			// Another worker claimed it
+			// Another worker acquired it
 			return false, nil
 		}
 		return false, fmt.Errorf("mongodb insert: %w", err)
@@ -379,9 +386,9 @@ func (c *MongoClaimer) tryInsert(ctx context.Context, messageID string, ttl time
 	return true, nil
 }
 
-// Complete marks a message as successfully processed.
+// MarkProcessed transitions a message to "completed" state.
 //
-// Updates the claim state to "completed" and extends the expiry to completionTTL.
+// Updates the state status to "completed" and extends the expiry to completionTTL.
 // This prevents the message from being reprocessed if delivered again
 // within the completion window.
 //
@@ -390,19 +397,19 @@ func (c *MongoClaimer) tryInsert(ctx context.Context, messageID string, ttl time
 //   - messageID: The message that was successfully processed
 //
 // Returns nil on success, error if MongoDB operation fails.
-func (c *MongoClaimer) Complete(ctx context.Context, messageID string) error {
+func (s *MongoStateManager) MarkProcessed(ctx context.Context, messageID string) error {
 	now := time.Now()
 
 	filter := bson.M{"_id": messageID}
 	update := bson.M{
 		"$set": bson.M{
-			"state":      "completed",
-			"expires_at": now.Add(c.completionTTL),
+			"status":     "completed",
+			"expires_at": now.Add(s.completionTTL),
 			"updated_at": now,
 		},
 	}
 
-	_, err := c.collection.UpdateOne(ctx, filter, update)
+	_, err := s.collection.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return fmt.Errorf("mongodb update: %w", err)
 	}
@@ -410,42 +417,42 @@ func (c *MongoClaimer) Complete(ctx context.Context, messageID string) error {
 	return nil
 }
 
-// Release removes the claim to allow immediate retry by another worker.
+// Reset removes the message state to allow immediate reacquisition.
 //
-// For regular collections: Deletes the claim document so another worker
-// can claim the message immediately instead of waiting for TTL expiration.
+// For regular collections: Deletes the state document so another worker
+// can acquire the message immediately instead of waiting for TTL expiration.
 //
 // For capped collections: This is a no-op because MongoDB doesn't allow
-// deletes in capped collections. The claim will remain until it expires
+// deletes in capped collections. The state will remain until it expires
 // naturally or is removed by size-based cleanup.
 //
 // Parameters:
 //   - ctx: Context for cancellation
-//   - messageID: The message to release
+//   - messageID: The message to reset
 //
 // Returns nil on success (including when document doesn't exist), error if MongoDB fails.
-func (c *MongoClaimer) Release(ctx context.Context, messageID string) error {
+func (s *MongoStateManager) Reset(ctx context.Context, messageID string) error {
 	// Capped collections don't support deletes
-	if c.capped {
-		// Update state to "released" so TryClaim can reclaim immediately
+	if s.capped {
+		// Update status to "released" so Acquire can reacquire immediately
 		// (by treating "released" as expired)
 		now := time.Now()
 		filter := bson.M{"_id": messageID}
 		update := bson.M{
 			"$set": bson.M{
-				"state":      "released",
-				"expires_at": now, // Set to now so it's immediately reclaimable
+				"status":     "released",
+				"expires_at": now, // Set to now so it's immediately reacquirable
 				"updated_at": now,
 			},
 		}
-		_, err := c.collection.UpdateOne(ctx, filter, update)
+		_, err := s.collection.UpdateOne(ctx, filter, update)
 		if err != nil {
-			return fmt.Errorf("mongodb update (release): %w", err)
+			return fmt.Errorf("mongodb update (reset): %w", err)
 		}
 		return nil
 	}
 
-	_, err := c.collection.DeleteOne(ctx, bson.M{"_id": messageID})
+	_, err := s.collection.DeleteOne(ctx, bson.M{"_id": messageID})
 	if err != nil {
 		return fmt.Errorf("mongodb delete: %w", err)
 	}
@@ -453,10 +460,106 @@ func (c *MongoClaimer) Release(ctx context.Context, messageID string) error {
 	return nil
 }
 
-// EnsureIndexes creates the necessary indexes for the claims collection.
+// ListStale returns message IDs of states that have been processing
+// for longer than staleTimeout.
+//
+// This enables active recovery: detecting crashed workers faster than
+// waiting for TTL expiration.
+//
+// MongoDB query:
+//
+//	find({status: "processing", updated_at: {$lt: now - staleTimeout}})
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - staleTimeout: How long a state can be processing before considered stale
+//   - limit: Maximum number of stale states to return (0 = no limit)
+//
+// Returns list of message IDs that are stale.
+func (s *MongoStateManager) ListStale(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error) {
+	cutoff := time.Now().Add(-staleTimeout)
+
+	filter := bson.M{
+		"status":     "processing",
+		"updated_at": bson.M{"$lt": cutoff},
+	}
+
+	opts := options.Find().SetProjection(bson.M{"_id": 1})
+	if limit > 0 {
+		opts.SetLimit(int64(limit))
+	}
+
+	cursor, err := s.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongodb find stale: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var stale []string
+	for cursor.Next(ctx) {
+		var doc struct {
+			ID string `bson:"_id"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+		stale = append(stale, doc.ID)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("mongodb cursor: %w", err)
+	}
+
+	return stale, nil
+}
+
+// ResetStale resets all stale states, allowing them to be reacquired.
+//
+// This is a convenience method that combines ListStale and Reset.
+// It's useful for batch cleanup of stale states.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - staleTimeout: How long a state can be processing before considered stale
+//   - limit: Maximum number of stale states to reset (0 = no limit)
+//
+// Returns the number of states reset.
+func (s *MongoStateManager) ResetStale(ctx context.Context, staleTimeout time.Duration, limit int) (int64, error) {
+	cutoff := time.Now().Add(-staleTimeout)
+
+	filter := bson.M{
+		"status":     "processing",
+		"updated_at": bson.M{"$lt": cutoff},
+	}
+
+	if s.capped {
+		// Capped collections don't support deletes, update status instead
+		now := time.Now()
+		update := bson.M{
+			"$set": bson.M{
+				"status":     "released",
+				"expires_at": now,
+				"updated_at": now,
+			},
+		}
+		result, err := s.collection.UpdateMany(ctx, filter, update)
+		if err != nil {
+			return 0, fmt.Errorf("mongodb update stale: %w", err)
+		}
+		return result.ModifiedCount, nil
+	}
+
+	result, err := s.collection.DeleteMany(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("mongodb delete stale: %w", err)
+	}
+	return result.DeletedCount, nil
+}
+
+// EnsureIndexes creates the necessary indexes for the state collection.
 //
 // For regular collections: Creates a TTL index on expires_at for automatic
-// cleanup of expired claims.
+// cleanup of expired states.
 //
 // For capped collections: TTL indexes are not supported, so this only creates
 // a regular index on expires_at for query performance. Cleanup is handled by
@@ -466,17 +569,17 @@ func (c *MongoClaimer) Release(ctx context.Context, messageID string) error {
 //
 // Example:
 //
-//	claimer := distributed.NewMongoClaimer(db)
-//	if err := claimer.EnsureIndexes(ctx); err != nil {
+//	sm := distributed.NewMongoStateManager(db)
+//	if err := sm.EnsureIndexes(ctx); err != nil {
 //	    log.Fatal("failed to create indexes:", err)
 //	}
-func (c *MongoClaimer) EnsureIndexes(ctx context.Context) error {
-	indexes := c.Indexes()
+func (s *MongoStateManager) EnsureIndexes(ctx context.Context) error {
+	indexes := s.Indexes()
 	if len(indexes) == 0 {
 		return nil
 	}
 
-	_, err := c.collection.Indexes().CreateMany(ctx, indexes)
+	_, err := s.collection.Indexes().CreateMany(ctx, indexes)
 	if err != nil {
 		return fmt.Errorf("create indexes: %w", err)
 	}
@@ -484,14 +587,14 @@ func (c *MongoClaimer) EnsureIndexes(ctx context.Context) error {
 	return nil
 }
 
-// Indexes returns the index models for the claims collection.
+// Indexes returns the index models for the state collection.
 //
 // For regular collections: Returns a TTL index for automatic expiration.
 // For capped collections: Returns a regular index (no TTL support in capped).
 //
 // Use this if you prefer to create indexes yourself or need to inspect them.
-func (c *MongoClaimer) Indexes() []mongo.IndexModel {
-	if c.capped {
+func (s *MongoStateManager) Indexes() []mongo.IndexModel {
+	if s.capped {
 		// Capped collections don't support TTL indexes
 		// Return a regular index for query performance
 		return []mongo.IndexModel{
@@ -499,7 +602,7 @@ func (c *MongoClaimer) Indexes() []mongo.IndexModel {
 				Keys: bson.D{{Key: "expires_at", Value: 1}},
 			},
 			{
-				Keys: bson.D{{Key: "state", Value: 1}},
+				Keys: bson.D{{Key: "status", Value: 1}},
 			},
 		}
 	}
@@ -513,101 +616,5 @@ func (c *MongoClaimer) Indexes() []mongo.IndexModel {
 	}
 }
 
-// ListOrphanedClaims returns message IDs of claims that have been pending
-// for longer than staleTimeout.
-//
-// This enables active orphan recovery: detecting crashed workers faster than
-// waiting for TTL expiration.
-//
-// MongoDB query:
-//
-//	find({state: "pending", updated_at: {$lt: now - staleTimeout}})
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//   - staleTimeout: How long a claim can be pending before considered orphaned
-//   - limit: Maximum number of orphans to return (0 = no limit)
-//
-// Returns list of message IDs that are orphaned.
-func (c *MongoClaimer) ListOrphanedClaims(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error) {
-	cutoff := time.Now().Add(-staleTimeout)
-
-	filter := bson.M{
-		"state":      "pending",
-		"updated_at": bson.M{"$lt": cutoff},
-	}
-
-	opts := options.Find().SetProjection(bson.M{"_id": 1})
-	if limit > 0 {
-		opts.SetLimit(int64(limit))
-	}
-
-	cursor, err := c.collection.Find(ctx, filter, opts)
-	if err != nil {
-		return nil, fmt.Errorf("mongodb find orphans: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var orphans []string
-	for cursor.Next(ctx) {
-		var doc struct {
-			ID string `bson:"_id"`
-		}
-		if err := cursor.Decode(&doc); err != nil {
-			continue
-		}
-		orphans = append(orphans, doc.ID)
-	}
-
-	if err := cursor.Err(); err != nil {
-		return nil, fmt.Errorf("mongodb cursor: %w", err)
-	}
-
-	return orphans, nil
-}
-
-// ReleaseOrphans releases all orphaned claims, allowing them to be reclaimed.
-//
-// This is a convenience method that combines ListOrphanedClaims and Release.
-// It's useful for batch cleanup of stale claims.
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//   - staleTimeout: How long a claim can be pending before considered orphaned
-//   - limit: Maximum number of orphans to release (0 = no limit)
-//
-// Returns the number of claims released.
-func (c *MongoClaimer) ReleaseOrphans(ctx context.Context, staleTimeout time.Duration, limit int) (int64, error) {
-	cutoff := time.Now().Add(-staleTimeout)
-
-	filter := bson.M{
-		"state":      "pending",
-		"updated_at": bson.M{"$lt": cutoff},
-	}
-
-	if c.capped {
-		// Capped collections don't support deletes, update state instead
-		now := time.Now()
-		update := bson.M{
-			"$set": bson.M{
-				"state":      "released",
-				"expires_at": now,
-				"updated_at": now,
-			},
-		}
-		result, err := c.collection.UpdateMany(ctx, filter, update)
-		if err != nil {
-			return 0, fmt.Errorf("mongodb update orphans: %w", err)
-		}
-		return result.ModifiedCount, nil
-	}
-
-	result, err := c.collection.DeleteMany(ctx, filter)
-	if err != nil {
-		return 0, fmt.Errorf("mongodb delete orphans: %w", err)
-	}
-	return result.DeletedCount, nil
-}
-
 // Compile-time interface check
-var _ MessageClaimer = (*MongoClaimer)(nil)
+var _ StateManager = (*MongoStateManager)(nil)

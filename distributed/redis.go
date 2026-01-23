@@ -9,140 +9,147 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// redisClaimValue stores claim state with timestamps for orphan detection.
-type redisClaimValue struct {
-	State     string    `json:"s"`
+// redisStateValue stores state with timestamps for stale detection.
+type redisStateValue struct {
+	Status    string    `json:"s"`
 	CreatedAt time.Time `json:"c"`
 	UpdatedAt time.Time `json:"u"`
 }
 
-// RedisClaimer implements MessageClaimer using Redis for distributed deployments.
+// RedisStateManager implements StateManager using Redis for distributed deployments.
 //
-// RedisClaimer uses Redis SETNX (set if not exists) with TTL for atomic,
-// race-condition-free message claiming. This is the recommended implementation
+// RedisStateManager uses Redis SETNX (set if not exists) with TTL for atomic,
+// race-condition-free message state management. This is the recommended implementation
 // for production deployments with multiple application instances.
 //
+// Design Philosophy:
+//
+// This implementation uses database atomic operations, not distributed locks:
+//   - SETNX provides atomic state transitions (set-if-not-exists)
+//   - Redis TTL provides automatic cleanup of expired states
+//   - No separate lock acquisition/release - state IS the coordination mechanism
+//
 // Features:
-//   - Atomic claim acquisition using SETNX
+//   - Atomic state acquisition using SETNX
 //   - Automatic expiration using Redis TTL (no cleanup goroutine needed)
 //   - Configurable key prefix for multi-tenant or multi-service deployments
 //   - Supports Redis single node, Sentinel, Cluster, and UniversalClient
 //
 // Redis Keys:
 //
-// Claims are stored with keys in the format: {prefix}{messageID}
-// Default prefix is "claim:" so a message "order-123" becomes "claim:order-123"
+// States are stored with keys in the format: {prefix}{messageID}
+// Default prefix is "state:" so a message "order-123" becomes "state:order-123"
 //
-// Key values:
-//   - "pending": Message is claimed and being processed
-//   - "completed": Message was successfully processed
+// Key values (JSON):
+//   - {"s":"processing","c":"...","u":"..."}: Message is being processed
+//   - {"s":"completed","c":"...","u":"..."}: Message was successfully processed
 //
 // Example:
 //
 //	// Basic setup
 //	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-//	claimer := distributed.NewRedisClaimer(rdb)
+//	sm := distributed.NewRedisStateManager(rdb)
 //
 //	// With custom options
-//	claimer := distributed.NewRedisClaimer(rdb,
-//	    distributed.WithClaimerPrefix("myapp:worker:"),
-//	    distributed.WithClaimerTTL(10*time.Minute),
-//	    distributed.WithCompletionTTL(48*time.Hour),
+//	sm := distributed.NewRedisStateManager(rdb,
+//	    distributed.WithPrefix("myapp:worker:"),
+//	    distributed.WithStateTTL(10*time.Minute),
+//	    distributed.WithCompletedTTL(48*time.Hour),
 //	)
 //
 //	// Use with middleware
 //	event.Subscribe(ctx, handler,
 //	    event.WithMiddleware(
-//	        distributed.DistributedWorkerMiddleware[Order](claimer, 5*time.Minute),
+//	        distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute),
 //	    ),
 //	)
-type RedisClaimer struct {
+type RedisStateManager struct {
 	client        redis.Cmdable
 	prefix        string
 	completionTTL time.Duration
 }
 
-// NewRedisClaimer creates a new Redis-based message claimer.
+// NewRedisStateManager creates a new Redis-based state manager.
 //
-// The claimer uses Redis SETNX for atomic claim acquisition, which is both
+// The state manager uses Redis SETNX for atomic state acquisition, which is both
 // efficient and prevents race conditions between workers.
 //
 // Parameters:
 //   - client: A connected Redis client (supports single node, Sentinel, Cluster)
 //   - opts: Optional configuration (prefix, TTLs)
 //
-// Returns a configured RedisClaimer ready for use.
+// Returns a configured RedisStateManager ready for use.
 //
 // Example:
 //
 //	// Simple setup
-//	claimer := distributed.NewRedisClaimer(redisClient)
+//	sm := distributed.NewRedisStateManager(redisClient)
 //
 //	// With Redis Sentinel for HA
 //	rdb := redis.NewFailoverClient(&redis.FailoverOptions{
 //	    MasterName:    "mymaster",
 //	    SentinelAddrs: []string{"sentinel1:26379", "sentinel2:26379"},
 //	})
-//	claimer := distributed.NewRedisClaimer(rdb)
+//	sm := distributed.NewRedisStateManager(rdb)
 //
 //	// With Redis Cluster
 //	rdb := redis.NewClusterClient(&redis.ClusterOptions{
 //	    Addrs: []string{"node1:6379", "node2:6379"},
 //	})
-//	claimer := distributed.NewRedisClaimer(rdb)
-func NewRedisClaimer(client redis.Cmdable, opts ...ClaimerOption) *RedisClaimer {
-	o := defaultClaimerOptions()
+//	sm := distributed.NewRedisStateManager(rdb)
+func NewRedisStateManager(client redis.Cmdable, opts ...Option) *RedisStateManager {
+	o := defaultStateOptions()
 	for _, opt := range opts {
 		opt(o)
 	}
 
-	return &RedisClaimer{
+	return &RedisStateManager{
 		client:        client,
 		prefix:        o.prefix,
 		completionTTL: o.completionTTL,
 	}
 }
 
-// TryClaim attempts to claim a message using Redis SETNX.
+// Acquire atomically transitions a message to "processing" state using Redis SETNX.
 //
-// The claim is atomic: only one worker can successfully claim each message.
-// The TTL ensures that if a worker crashes, the claim expires and another
-// worker can pick up the message.
+// The transition is atomic: only one worker can successfully acquire each message.
+// The TTL ensures that if a worker crashes, the state expires and another
+// worker can acquire and process the message.
 //
 // Redis command: SET {prefix}{messageID} {json_value} NX EX {ttl_seconds}
 //
 // Parameters:
 //   - ctx: Context for cancellation
-//   - messageID: The message to claim
-//   - ttl: How long to hold the claim
+//   - messageID: The message to acquire
+//   - ttl: How long to hold the state
 //
 // Returns:
-//   - (true, nil): Claim succeeded, process the message
-//   - (false, nil): Already claimed (key exists), skip the message
+//   - (true, nil): Acquisition succeeded, process the message
+//   - (false, nil): Already acquired (key exists), skip the message
 //   - (false, error): Redis error occurred
-func (c *RedisClaimer) TryClaim(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
-	key := c.prefix + messageID
+func (s *RedisStateManager) Acquire(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
+	key := s.prefix + messageID
 	now := time.Now()
 
-	// Create claim value with timestamps for orphan detection
-	value := redisClaimValue{
-		State:     "pending",
+	// Create state value with timestamps for stale detection
+	value := redisStateValue{
+		Status:    "processing",
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 	valueBytes, err := json.Marshal(value)
 	if err != nil {
-		return false, fmt.Errorf("marshal claim value: %w", err)
+		return false, fmt.Errorf("marshal state value: %w", err)
 	}
 
 	// Use SET NX (set if not exists) with expiry
-	set, err := c.client.SetNX(ctx, key, valueBytes, ttl).Result()
+	set, err := s.client.SetNX(ctx, key, valueBytes, ttl).Result()
 	if err != nil {
 		return false, fmt.Errorf("redis setnx: %w", err)
 	}
 
 	if !set {
-		// Key already exists - check if it's a completed claim or active
+		// Key already exists - check if it's a completed state or active
 		// If completed, we should also skip (prevents reprocessing)
 		return false, nil
 	}
@@ -150,9 +157,9 @@ func (c *RedisClaimer) TryClaim(ctx context.Context, messageID string, ttl time.
 	return true, nil
 }
 
-// Complete marks a message as successfully processed.
+// MarkProcessed transitions a message to "completed" state.
 //
-// Updates the claim value to "completed" and extends TTL to completionTTL.
+// Updates the state value to "completed" and extends TTL to completionTTL.
 // This prevents the message from being reprocessed if delivered again
 // within the completion window.
 //
@@ -163,15 +170,15 @@ func (c *RedisClaimer) TryClaim(ctx context.Context, messageID string, ttl time.
 //   - messageID: The message that was successfully processed
 //
 // Returns nil on success, error if Redis operation fails.
-func (c *RedisClaimer) Complete(ctx context.Context, messageID string) error {
-	key := c.prefix + messageID
+func (s *RedisStateManager) MarkProcessed(ctx context.Context, messageID string) error {
+	key := s.prefix + messageID
 	now := time.Now()
 
 	// Get existing value to preserve created_at
-	existingBytes, err := c.client.Get(ctx, key).Bytes()
+	existingBytes, err := s.client.Get(ctx, key).Bytes()
 	var createdAt time.Time
 	if err == nil {
-		var existing redisClaimValue
+		var existing redisStateValue
 		if json.Unmarshal(existingBytes, &existing) == nil {
 			createdAt = existing.CreatedAt
 		}
@@ -181,17 +188,17 @@ func (c *RedisClaimer) Complete(ctx context.Context, messageID string) error {
 	}
 
 	// Update to completed state with longer TTL
-	value := redisClaimValue{
-		State:     "completed",
+	value := redisStateValue{
+		Status:    "completed",
 		CreatedAt: createdAt,
 		UpdatedAt: now,
 	}
 	valueBytes, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("marshal claim value: %w", err)
+		return fmt.Errorf("marshal state value: %w", err)
 	}
 
-	err = c.client.Set(ctx, key, valueBytes, c.completionTTL).Err()
+	err = s.client.Set(ctx, key, valueBytes, s.completionTTL).Err()
 	if err != nil {
 		return fmt.Errorf("redis set: %w", err)
 	}
@@ -199,23 +206,23 @@ func (c *RedisClaimer) Complete(ctx context.Context, messageID string) error {
 	return nil
 }
 
-// Release removes the claim to allow immediate retry by another worker.
+// Reset removes the message state to allow immediate reacquisition.
 //
 // Call this when processing fails and you want another worker to retry
-// the message immediately instead of waiting for the claim TTL to expire.
+// the message immediately instead of waiting for the state TTL to expire.
 //
 // Redis command: DEL {prefix}{messageID}
 //
 // Parameters:
 //   - ctx: Context for cancellation
-//   - messageID: The message to release
+//   - messageID: The message to reset
 //
 // Returns nil on success (including when key doesn't exist), error if Redis fails.
-func (c *RedisClaimer) Release(ctx context.Context, messageID string) error {
-	key := c.prefix + messageID
+func (s *RedisStateManager) Reset(ctx context.Context, messageID string) error {
+	key := s.prefix + messageID
 
-	// Delete the claim so another worker can claim immediately
-	err := c.client.Del(ctx, key).Err()
+	// Delete the state so another worker can acquire immediately
+	err := s.client.Del(ctx, key).Err()
 	if err != nil {
 		return fmt.Errorf("redis del: %w", err)
 	}
@@ -223,52 +230,52 @@ func (c *RedisClaimer) Release(ctx context.Context, messageID string) error {
 	return nil
 }
 
-// ListOrphanedClaims returns message IDs of claims that have been pending
+// ListStale returns message IDs of states that have been processing
 // for longer than staleTimeout.
 //
-// This uses Redis SCAN to iterate through claim keys and checks each one
-// for stale pending state. Note: This can be expensive with many claims.
+// This uses Redis SCAN to iterate through state keys and checks each one
+// for stale processing state. Note: This can be expensive with many states.
 //
 // Parameters:
 //   - ctx: Context for cancellation
-//   - staleTimeout: How long a claim can be pending before considered orphaned
-//   - limit: Maximum number of orphans to return (0 = no limit)
+//   - staleTimeout: How long a state can be processing before considered stale
+//   - limit: Maximum number of stale states to return (0 = no limit)
 //
-// Returns list of message IDs that are orphaned.
-func (c *RedisClaimer) ListOrphanedClaims(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error) {
+// Returns list of message IDs that are stale.
+func (s *RedisStateManager) ListStale(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error) {
 	cutoff := time.Now().Add(-staleTimeout)
-	var orphans []string
+	var stale []string
 
 	// Use SCAN to iterate through keys with our prefix
-	pattern := c.prefix + "*"
+	pattern := s.prefix + "*"
 	var cursor uint64
 
 	for {
-		keys, nextCursor, err := c.client.Scan(ctx, cursor, pattern, 100).Result()
+		keys, nextCursor, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
 		if err != nil {
 			return nil, fmt.Errorf("redis scan: %w", err)
 		}
 
 		for _, key := range keys {
-			// Get value and check if it's a stale pending claim
-			valueBytes, err := c.client.Get(ctx, key).Bytes()
+			// Get value and check if it's a stale processing state
+			valueBytes, err := s.client.Get(ctx, key).Bytes()
 			if err != nil {
 				continue // Key may have expired
 			}
 
-			var value redisClaimValue
+			var value redisStateValue
 			if err := json.Unmarshal(valueBytes, &value); err != nil {
-				// Legacy format (plain "pending"/"completed" string) - skip
+				// Legacy format (plain string) - skip
 				continue
 			}
 
-			if value.State == "pending" && value.UpdatedAt.Before(cutoff) {
+			if value.Status == "processing" && value.UpdatedAt.Before(cutoff) {
 				// Extract message ID from key (remove prefix)
-				messageID := key[len(c.prefix):]
-				orphans = append(orphans, messageID)
+				messageID := key[len(s.prefix):]
+				stale = append(stale, messageID)
 
-				if limit > 0 && len(orphans) >= limit {
-					return orphans, nil
+				if limit > 0 && len(stale) >= limit {
+					return stale, nil
 				}
 			}
 		}
@@ -279,37 +286,37 @@ func (c *RedisClaimer) ListOrphanedClaims(ctx context.Context, staleTimeout time
 		}
 	}
 
-	return orphans, nil
+	return stale, nil
 }
 
-// ReleaseOrphans releases all orphaned claims, allowing them to be reclaimed.
+// ResetStale resets all stale states, allowing them to be reacquired.
 //
-// This is a convenience method that combines ListOrphanedClaims and Release.
-// It's useful for batch cleanup of stale claims.
+// This is a convenience method that combines ListStale and Reset.
+// It's useful for batch cleanup of stale states.
 //
 // Parameters:
 //   - ctx: Context for cancellation
-//   - staleTimeout: How long a claim can be pending before considered orphaned
-//   - limit: Maximum number of orphans to release (0 = no limit)
+//   - staleTimeout: How long a state can be processing before considered stale
+//   - limit: Maximum number of stale states to reset (0 = no limit)
 //
-// Returns the number of claims released.
-func (c *RedisClaimer) ReleaseOrphans(ctx context.Context, staleTimeout time.Duration, limit int) (int64, error) {
-	orphans, err := c.ListOrphanedClaims(ctx, staleTimeout, limit)
+// Returns the number of states reset.
+func (s *RedisStateManager) ResetStale(ctx context.Context, staleTimeout time.Duration, limit int) (int64, error) {
+	stale, err := s.ListStale(ctx, staleTimeout, limit)
 	if err != nil {
 		return 0, err
 	}
 
-	if len(orphans) == 0 {
+	if len(stale) == 0 {
 		return 0, nil
 	}
 
 	// Build keys to delete
-	keys := make([]string, len(orphans))
-	for i, msgID := range orphans {
-		keys[i] = c.prefix + msgID
+	keys := make([]string, len(stale))
+	for i, msgID := range stale {
+		keys[i] = s.prefix + msgID
 	}
 
-	deleted, err := c.client.Del(ctx, keys...).Result()
+	deleted, err := s.client.Del(ctx, keys...).Result()
 	if err != nil {
 		return 0, fmt.Errorf("redis del: %w", err)
 	}
@@ -318,4 +325,4 @@ func (c *RedisClaimer) ReleaseOrphans(ctx context.Context, staleTimeout time.Dur
 }
 
 // Compile-time interface check
-var _ MessageClaimer = (*RedisClaimer)(nil)
+var _ StateManager = (*RedisStateManager)(nil)

@@ -3,62 +3,79 @@
 //
 // Some transports (like MongoDB Change Streams) natively only support Broadcast mode
 // where all subscribers receive every message. This package enables WorkerPool
-// semantics by using distributed locking to ensure only one worker processes
-// each message.
+// semantics using database atomic state transitions to ensure only one worker
+// processes each message.
+//
+// Design Philosophy:
+//
+// This package uses database atomic operations, NOT distributed locks.
+// Coordination is achieved through atomic state transitions in a shared database:
+//
+//   - All state managers store state in a shared database (Redis/MongoDB)
+//   - State transitions are atomic database operations (SETNX, findOneAndUpdate)
+//   - Multiple workers coordinate by atomically transitioning message state
+//   - Subscribers MUST share the same database to coordinate
+//   - Different databases = no coordination (by design)
 //
 // Key components:
 //
-//   - MessageClaimer: Interface for distributed message claiming (locking)
-//   - DistributedWorkerMiddleware: Middleware that uses a claimer to emulate WorkerPool
-//   - RedisClaimer: Redis-based implementation using SETNX with TTL
-//   - MemoryClaimer: In-memory implementation for single-instance or testing
+//   - StateManager: Interface for atomic message state transitions
+//   - WorkerPoolMiddleware: Middleware that uses a StateManager to emulate WorkerPool
+//   - RedisStateManager: Redis-based implementation using atomic SETNX
+//   - MongoStateManager: MongoDB-based implementation using findOneAndUpdate
+//   - MemoryStateManager: In-memory implementation for single-instance or testing
 //
 // Architecture:
 //
 // In a Broadcast transport, all subscribers receive every message. With the
-// DistributedWorkerMiddleware, each subscriber attempts to "claim" the message
-// using a distributed lock. Only the subscriber that successfully claims the
-// message processes it; others skip silently.
+// WorkerPoolMiddleware, each subscriber attempts to atomically acquire the
+// message state. Only the subscriber that succeeds processes it; others skip.
 //
 //	Message arrives (Broadcast to all)
-//	    ├── Subscriber 1: TryClaim() → success → process → Complete()
-//	    ├── Subscriber 2: TryClaim() → failed → skip (another worker claimed)
-//	    └── Subscriber 3: TryClaim() → failed → skip (another worker claimed)
+//	    ├── Subscriber 1: Acquire() → success → process → MarkProcessed()
+//	    ├── Subscriber 2: Acquire() → failed → skip (another worker acquired)
+//	    └── Subscriber 3: Acquire() → failed → skip (another worker acquired)
+//
+// State Lifecycle:
+//
+//	(none) → Acquire() → "processing" → MarkProcessed() → "completed"
+//	                         │
+//	                         └── Reset() → (none) [for retry]
 //
 // Example usage with MongoDB transport:
 //
-//	// Create claimer (Redis for distributed deployments)
-//	claimer := distributed.NewRedisClaimer(redisClient, distributed.WithClaimerTTL(5*time.Minute))
+//	// Create state manager (Redis for distributed deployments)
+//	sm := distributed.NewRedisStateManager(redisClient, distributed.WithStateTTL(5*time.Minute))
 //
 //	// Subscribe with middleware to emulate WorkerPool
 //	mongoEvent.Subscribe(ctx, handler,
 //	    event.WithMiddleware(
-//	        distributed.DistributedWorkerMiddleware[Order](claimer, 5*time.Minute),
+//	        distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute),
 //	    ),
 //	)
 //
-// Claim TTL:
+// State TTL:
 //
-// The claim TTL should be longer than your handler's maximum execution time.
-// If a worker crashes or hangs, the claim expires after TTL and another
-// worker can claim and process the message. Choose TTL based on:
+// The state TTL should be longer than your handler's maximum execution time.
+// If a worker crashes or hangs, the state expires after TTL and another
+// worker can acquire and process the message. Choose TTL based on:
 //   - Handler timeout + buffer
 //   - Recovery needs (shorter = faster failover, longer = less duplicate risk)
 //
 // Worker Groups:
 //
-// For worker groups with MongoDB, create separate claimers with different prefixes:
+// For worker groups, create separate state managers with different prefixes:
 //
 //	// Group A workers
-//	claimerA := distributed.NewRedisClaimer(redis, distributed.WithClaimerPrefix("group-a:"))
+//	smA := distributed.NewRedisStateManager(redis, distributed.WithPrefix("group-a:"))
 //	eventA.Subscribe(ctx, handlerA, event.WithMiddleware(
-//	    distributed.DistributedWorkerMiddleware[T](claimerA, ttl),
+//	    distributed.WorkerPoolMiddleware[T](smA, ttl),
 //	))
 //
 //	// Group B workers
-//	claimerB := distributed.NewRedisClaimer(redis, distributed.WithClaimerPrefix("group-b:"))
+//	smB := distributed.NewRedisStateManager(redis, distributed.WithPrefix("group-b:"))
 //	eventB.Subscribe(ctx, handlerB, event.WithMiddleware(
-//	    distributed.DistributedWorkerMiddleware[T](claimerB, ttl),
+//	    distributed.WorkerPoolMiddleware[T](smB, ttl),
 //	))
 package distributed
 
@@ -67,31 +84,33 @@ import (
 	"time"
 )
 
-// MessageClaimer provides distributed claiming (locking) for WorkerPool emulation.
+// StateManager provides atomic message state transitions for WorkerPool emulation.
 //
-// In Broadcast transports where all subscribers receive every message, a claimer
-// ensures only one subscriber processes each message by using distributed locks.
+// In Broadcast transports where all subscribers receive every message, a StateManager
+// ensures only one subscriber processes each message using database atomic operations.
 //
 // Implementations must be:
-//   - Atomic: TryClaim must atomically check-and-set to prevent race conditions
-//   - Distributed: State must be shared across all application instances
-//   - TTL-aware: Claims must expire to handle worker crashes/hangs
+//   - Atomic: Acquire must atomically check-and-set to prevent race conditions
+//   - Shared: State must be stored in a database shared by all coordinating workers
+//   - TTL-aware: States must expire to handle worker crashes/hangs
 //
 // Implementations:
-//   - RedisClaimer: Uses Redis SETNX with TTL for distributed deployments
-//   - MemoryClaimer: In-memory for single-instance or testing
+//   - RedisStateManager: Uses Redis atomic SETNX for distributed deployments
+//   - MongoStateManager: Uses MongoDB atomic findOneAndUpdate
+//   - MemoryStateManager: In-memory for single-instance or testing
 //
-// Example implementing a custom claimer:
+// Example implementing a custom state manager:
 //
-//	type PostgresClaimer struct {
+//	type PostgresStateManager struct {
 //	    db  *sql.DB
 //	    ttl time.Duration
 //	}
 //
-//	func (c *PostgresClaimer) TryClaim(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
-//	    result, err := c.db.ExecContext(ctx, `
-//	        INSERT INTO message_claims (message_id, expires_at)
-//	        VALUES ($1, $2)
+//	func (s *PostgresStateManager) Acquire(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
+//	    // Atomic INSERT - only succeeds if row doesn't exist
+//	    result, err := s.db.ExecContext(ctx, `
+//	        INSERT INTO message_state (message_id, status, expires_at)
+//	        VALUES ($1, 'processing', $2)
 //	        ON CONFLICT (message_id) DO NOTHING
 //	    `, messageID, time.Now().Add(ttl))
 //	    if err != nil {
@@ -100,91 +119,91 @@ import (
 //	    rows, _ := result.RowsAffected()
 //	    return rows > 0, nil
 //	}
-type MessageClaimer interface {
-	// TryClaim attempts to claim a message for processing.
+type StateManager interface {
+	// Acquire atomically transitions a message to "processing" state.
 	//
-	// If the claim succeeds, returns (true, nil) and the caller should process
-	// the message, then call Complete() on success or Release() on failure.
+	// If the transition succeeds, returns (true, nil) and the caller should
+	// process the message, then call MarkProcessed() on success or Reset() on failure.
 	//
-	// If the claim fails (another worker claimed it), returns (false, nil)
+	// If the transition fails (another worker acquired it), returns (false, nil)
 	// and the caller should skip processing (return nil to ack).
 	//
-	// The ttl parameter specifies how long the claim is valid. After TTL expires,
-	// another worker can claim the message (useful for crash recovery).
+	// The ttl parameter specifies how long the state is valid. After TTL expires,
+	// another worker can acquire the message (useful for crash recovery).
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
 	//   - messageID: Unique identifier for the message (from event.ContextEventID)
-	//   - ttl: How long to hold the claim before it expires
+	//   - ttl: How long to hold the state before it expires
 	//
 	// Returns:
-	//   - (true, nil): Claim successful, process the message
-	//   - (false, nil): Already claimed by another worker, skip
-	//   - (false, error): Claimer error (log and decide how to handle)
-	TryClaim(ctx context.Context, messageID string, ttl time.Duration) (claimed bool, err error)
+	//   - (true, nil): Acquisition successful, process the message
+	//   - (false, nil): Already acquired by another worker, skip
+	//   - (false, error): Database error (log and decide how to handle)
+	Acquire(ctx context.Context, messageID string, ttl time.Duration) (acquired bool, err error)
 
-	// Complete marks a message as successfully processed.
+	// MarkProcessed transitions a message to "completed" state.
 	//
-	// After successful processing, call Complete to update the claim state.
+	// After successful processing, call MarkProcessed to update the state.
 	// This typically either:
-	//   - Extends the claim TTL to prevent reprocessing during TTL window
+	//   - Extends the state TTL to prevent reprocessing during TTL window
 	//   - Marks the message as "completed" in a persistent store
 	//
-	// If Complete fails, the message may be reprocessed when the claim expires.
+	// If MarkProcessed fails, the message may be reprocessed when the state expires.
 	// Handlers should be idempotent to handle this safely.
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
 	//   - messageID: The message ID that was successfully processed
 	//
-	// Returns error if the completion record fails (log but don't fail the handler).
-	Complete(ctx context.Context, messageID string) error
+	// Returns error if the state update fails (log but don't fail the handler).
+	MarkProcessed(ctx context.Context, messageID string) error
 
-	// Release releases a claim without completing the message.
+	// Reset removes the message state to allow immediate reprocessing.
 	//
 	// Call this when processing fails and you want another worker to retry
-	// immediately instead of waiting for the claim to expire. This is optional;
-	// letting the claim expire naturally is also valid behavior.
+	// immediately instead of waiting for the state to expire. This is optional;
+	// letting the state expire naturally is also valid behavior.
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
-	//   - messageID: The message ID to release
+	//   - messageID: The message ID to reset
 	//
-	// Returns error if the release fails (log but don't affect error propagation).
-	Release(ctx context.Context, messageID string) error
+	// Returns error if the reset fails (log but don't affect error propagation).
+	Reset(ctx context.Context, messageID string) error
 
-	// ListOrphanedClaims returns message IDs of claims that appear orphaned.
+	// ListStale returns message IDs of states that appear stale.
 	//
-	// An orphaned claim is one that has been in "pending" state for longer than
+	// A stale state is one that has been in "processing" state for longer than
 	// the specified staleTimeout. This typically indicates that the worker
 	// processing the message has crashed or become unresponsive.
 	//
-	// This method enables active orphan recovery: instead of waiting for claims
-	// to expire via TTL (passive), a background goroutine can periodically check
-	// for orphans and release them for faster failover.
+	// This method enables active recovery: instead of waiting for states
+	// to expire via TTL (passive), a background goroutine can periodically
+	// check for stale states and reset them for faster failover.
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and timeouts
-	//   - staleTimeout: Duration after which a pending claim is considered orphaned.
-	//     Should be longer than expected handler execution time but shorter than claim TTL.
-	//   - limit: Maximum number of orphaned claims to return (0 = no limit)
+	//   - staleTimeout: Duration after which a processing state is considered stale.
+	//     Should be longer than expected handler execution time but shorter than state TTL.
+	//   - limit: Maximum number of stale states to return (0 = no limit)
 	//
 	// Returns:
-	//   - List of message IDs that are orphaned
+	//   - List of message IDs that are stale
 	//   - error if the query fails
 	//
 	// Example staleTimeout values:
 	//   - Handler timeout 30s → staleTimeout 1-2 minutes
 	//   - Handler timeout 1m → staleTimeout 2-3 minutes
 	//   - No timeout → staleTimeout based on expected max processing time
-	ListOrphanedClaims(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error)
+	ListStale(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error)
 }
 
-// ClaimerOption configures a claimer implementation.
-type ClaimerOption func(*claimerOptions)
+// Option configures a state manager implementation.
+type Option func(*stateOptions)
 
-// claimerOptions holds common configuration for claimer implementations.
-type claimerOptions struct {
+// stateOptions holds common configuration for state manager implementations.
+type stateOptions struct {
 	prefix         string
 	ttl            time.Duration
 	completionTTL  time.Duration
@@ -192,10 +211,10 @@ type claimerOptions struct {
 	cleanupPeriod  time.Duration
 }
 
-// defaultClaimerOptions returns sensible defaults for claimer configuration.
-func defaultClaimerOptions() *claimerOptions {
-	return &claimerOptions{
-		prefix:         "claim:",
+// defaultStateOptions returns sensible defaults for state manager configuration.
+func defaultStateOptions() *stateOptions {
+	return &stateOptions{
+		prefix:         "state:",
 		ttl:            5 * time.Minute,
 		completionTTL:  24 * time.Hour,
 		cleanupEnabled: true,
@@ -203,42 +222,42 @@ func defaultClaimerOptions() *claimerOptions {
 	}
 }
 
-// WithClaimerPrefix sets the key prefix for claim entries.
+// WithPrefix sets the key prefix for state entries.
 //
-// Use different prefixes to create isolated claim namespaces:
-//   - Per-service: "order-service:claim:"
-//   - Per-environment: "prod:claim:"
-//   - Per-worker-group: "processors:claim:"
+// Use different prefixes to create isolated state namespaces:
+//   - Per-service: "order-service:state:"
+//   - Per-environment: "prod:state:"
+//   - Per-worker-group: "processors:state:"
 //
-// Default: "claim:"
-func WithClaimerPrefix(prefix string) ClaimerOption {
-	return func(o *claimerOptions) {
+// Default: "state:"
+func WithPrefix(prefix string) Option {
+	return func(o *stateOptions) {
 		o.prefix = prefix
 	}
 }
 
-// WithClaimerTTL sets the default TTL for claims.
+// WithStateTTL sets the default TTL for processing states.
 //
 // The TTL should be longer than your handler's maximum execution time.
-// If a worker crashes, other workers can claim the message after TTL expires.
+// If a worker crashes, other workers can acquire the message after TTL expires.
 //
 // Default: 5 minutes
-func WithClaimerTTL(ttl time.Duration) ClaimerOption {
-	return func(o *claimerOptions) {
+func WithStateTTL(ttl time.Duration) Option {
+	return func(o *stateOptions) {
 		if ttl > 0 {
 			o.ttl = ttl
 		}
 	}
 }
 
-// WithCompletionTTL sets how long to remember completed messages.
+// WithCompletedTTL sets how long to remember completed messages.
 //
 // After a message is completed, its ID is remembered for this duration
 // to prevent reprocessing if the same message is delivered again.
 //
 // Default: 24 hours
-func WithCompletionTTL(ttl time.Duration) ClaimerOption {
-	return func(o *claimerOptions) {
+func WithCompletedTTL(ttl time.Duration) Option {
+	return func(o *stateOptions) {
 		if ttl > 0 {
 			o.completionTTL = ttl
 		}
@@ -248,8 +267,8 @@ func WithCompletionTTL(ttl time.Duration) ClaimerOption {
 // WithCleanup enables or disables automatic cleanup of expired entries.
 //
 // Default: enabled with 1 hour period
-func WithCleanup(enabled bool, period time.Duration) ClaimerOption {
-	return func(o *claimerOptions) {
+func WithCleanup(enabled bool, period time.Duration) Option {
+	return func(o *stateOptions) {
 		o.cleanupEnabled = enabled
 		if period > 0 {
 			o.cleanupPeriod = period
