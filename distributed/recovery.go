@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/rbaliyan/event/v3/backoff"
 )
 
 // StaleResetter is an optional interface that state managers can implement
@@ -48,11 +50,13 @@ type StaleResetter interface {
 //	// Or run once for manual recovery
 //	reset, err := runner.RecoverOnce(ctx)
 type RecoveryRunner struct {
-	sm            StateManager
-	staleTimeout  time.Duration
-	checkInterval time.Duration
-	batchLimit    int
-	logger        *slog.Logger
+	sm               StateManager
+	staleTimeout     time.Duration
+	checkInterval    time.Duration
+	batchLimit       int
+	logger           *slog.Logger
+	backoff          backoff.Strategy
+	consecutiveErrors int
 }
 
 // RecoveryOption configures a RecoveryRunner.
@@ -109,6 +113,31 @@ func WithRecoveryLogger(logger *slog.Logger) RecoveryOption {
 	}
 }
 
+// WithBackoff sets a backoff strategy for handling recovery errors.
+//
+// When a recovery attempt fails, the runner uses this backoff strategy
+// to determine how long to wait before the next attempt. The delay
+// increases with consecutive errors and resets on success.
+//
+// If not set, the runner continues checking at the normal interval
+// regardless of errors.
+//
+// Example:
+//
+//	runner := distributed.NewRecoveryRunner(sm,
+//	    distributed.WithBackoff(&backoff.Exponential{
+//	        Initial:    time.Second,
+//	        Multiplier: 2.0,
+//	        Max:        5 * time.Minute,
+//	        Jitter:     0.1,
+//	    }),
+//	)
+func WithBackoff(strategy backoff.Strategy) RecoveryOption {
+	return func(r *RecoveryRunner) {
+		r.backoff = strategy
+	}
+}
+
 // NewRecoveryRunner creates a new stale state recovery runner.
 //
 // Parameters:
@@ -135,6 +164,10 @@ func NewRecoveryRunner(sm StateManager, opts ...RecoveryOption) *RecoveryRunner 
 // The loop runs until the context is cancelled. It periodically checks for
 // stale states and resets them.
 //
+// If a backoff strategy is configured and recovery fails, the runner waits
+// an additional delay before the next attempt. The delay increases with
+// consecutive errors and resets on success.
+//
 // Example:
 //
 //	ctx, cancel := context.WithCancel(context.Background())
@@ -154,13 +187,37 @@ func (r *RecoveryRunner) Run(ctx context.Context) {
 			if err != nil {
 				if r.logger != nil {
 					r.logger.Warn("stale state recovery failed",
-						"error", err)
+						"error", err,
+						"consecutive_errors", r.consecutiveErrors+1)
 				}
-			} else if reset > 0 {
-				if r.logger != nil {
-					r.logger.Info("reset stale states",
-						"count", reset,
-						"stale_timeout", r.staleTimeout)
+
+				// Apply backoff on error if configured
+				if r.backoff != nil {
+					backoffDelay := r.backoff.NextDelay(r.consecutiveErrors)
+					r.consecutiveErrors++
+
+					if backoffDelay > 0 {
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(backoffDelay):
+							// Continue after backoff delay
+						}
+					}
+				}
+			} else {
+				// Reset consecutive errors on success
+				r.consecutiveErrors = 0
+				if r.backoff != nil {
+					r.backoff.Reset()
+				}
+
+				if reset > 0 {
+					if r.logger != nil {
+						r.logger.Info("reset stale states",
+							"count", reset,
+							"stale_timeout", r.staleTimeout)
+					}
 				}
 			}
 		}
