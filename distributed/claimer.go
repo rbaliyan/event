@@ -152,6 +152,32 @@ type MessageClaimer interface {
 	//
 	// Returns error if the release fails (log but don't affect error propagation).
 	Release(ctx context.Context, messageID string) error
+
+	// ListOrphanedClaims returns message IDs of claims that appear orphaned.
+	//
+	// An orphaned claim is one that has been in "pending" state for longer than
+	// the specified staleTimeout. This typically indicates that the worker
+	// processing the message has crashed or become unresponsive.
+	//
+	// This method enables active orphan recovery: instead of waiting for claims
+	// to expire via TTL (passive), a background goroutine can periodically check
+	// for orphans and release them for faster failover.
+	//
+	// Parameters:
+	//   - ctx: Context for cancellation and timeouts
+	//   - staleTimeout: Duration after which a pending claim is considered orphaned.
+	//     Should be longer than expected handler execution time but shorter than claim TTL.
+	//   - limit: Maximum number of orphaned claims to return (0 = no limit)
+	//
+	// Returns:
+	//   - List of message IDs that are orphaned
+	//   - error if the query fails
+	//
+	// Example staleTimeout values:
+	//   - Handler timeout 30s → staleTimeout 1-2 minutes
+	//   - Handler timeout 1m → staleTimeout 2-3 minutes
+	//   - No timeout → staleTimeout based on expected max processing time
+	ListOrphanedClaims(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error)
 }
 
 // ClaimerOption configures a claimer implementation.

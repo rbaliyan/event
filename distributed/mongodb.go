@@ -513,5 +513,101 @@ func (c *MongoClaimer) Indexes() []mongo.IndexModel {
 	}
 }
 
+// ListOrphanedClaims returns message IDs of claims that have been pending
+// for longer than staleTimeout.
+//
+// This enables active orphan recovery: detecting crashed workers faster than
+// waiting for TTL expiration.
+//
+// MongoDB query:
+//
+//	find({state: "pending", updated_at: {$lt: now - staleTimeout}})
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - staleTimeout: How long a claim can be pending before considered orphaned
+//   - limit: Maximum number of orphans to return (0 = no limit)
+//
+// Returns list of message IDs that are orphaned.
+func (c *MongoClaimer) ListOrphanedClaims(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error) {
+	cutoff := time.Now().Add(-staleTimeout)
+
+	filter := bson.M{
+		"state":      "pending",
+		"updated_at": bson.M{"$lt": cutoff},
+	}
+
+	opts := options.Find().SetProjection(bson.M{"_id": 1})
+	if limit > 0 {
+		opts.SetLimit(int64(limit))
+	}
+
+	cursor, err := c.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongodb find orphans: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var orphans []string
+	for cursor.Next(ctx) {
+		var doc struct {
+			ID string `bson:"_id"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+		orphans = append(orphans, doc.ID)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("mongodb cursor: %w", err)
+	}
+
+	return orphans, nil
+}
+
+// ReleaseOrphans releases all orphaned claims, allowing them to be reclaimed.
+//
+// This is a convenience method that combines ListOrphanedClaims and Release.
+// It's useful for batch cleanup of stale claims.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - staleTimeout: How long a claim can be pending before considered orphaned
+//   - limit: Maximum number of orphans to release (0 = no limit)
+//
+// Returns the number of claims released.
+func (c *MongoClaimer) ReleaseOrphans(ctx context.Context, staleTimeout time.Duration, limit int) (int64, error) {
+	cutoff := time.Now().Add(-staleTimeout)
+
+	filter := bson.M{
+		"state":      "pending",
+		"updated_at": bson.M{"$lt": cutoff},
+	}
+
+	if c.capped {
+		// Capped collections don't support deletes, update state instead
+		now := time.Now()
+		update := bson.M{
+			"$set": bson.M{
+				"state":      "released",
+				"expires_at": now,
+				"updated_at": now,
+			},
+		}
+		result, err := c.collection.UpdateMany(ctx, filter, update)
+		if err != nil {
+			return 0, fmt.Errorf("mongodb update orphans: %w", err)
+		}
+		return result.ModifiedCount, nil
+	}
+
+	result, err := c.collection.DeleteMany(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("mongodb delete orphans: %w", err)
+	}
+	return result.DeletedCount, nil
+}
+
 // Compile-time interface check
 var _ MessageClaimer = (*MongoClaimer)(nil)

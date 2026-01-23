@@ -18,6 +18,7 @@ const (
 type claimEntry struct {
 	state     claimState
 	expiresAt time.Time
+	updatedAt time.Time
 }
 
 // MemoryClaimer implements MessageClaimer using in-memory storage.
@@ -138,6 +139,7 @@ func (c *MemoryClaimer) TryClaim(_ context.Context, messageID string, ttl time.D
 	c.claims[messageID] = &claimEntry{
 		state:     claimPending,
 		expiresAt: now.Add(ttl),
+		updatedAt: now,
 	}
 
 	return true, nil
@@ -157,9 +159,11 @@ func (c *MemoryClaimer) Complete(_ context.Context, messageID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	now := time.Now()
 	if entry, exists := c.claims[messageID]; exists {
 		entry.state = claimCompleted
-		entry.expiresAt = time.Now().Add(c.completionTTL)
+		entry.expiresAt = now.Add(c.completionTTL)
+		entry.updatedAt = now
 	}
 
 	return nil
@@ -225,6 +229,64 @@ func (c *MemoryClaimer) cleanupExpired() {
 			delete(c.claims, id)
 		}
 	}
+}
+
+// ListOrphanedClaims returns message IDs of claims that have been pending
+// for longer than staleTimeout.
+//
+// Parameters:
+//   - ctx: Context (unused but required for interface)
+//   - staleTimeout: How long a claim can be pending before considered orphaned
+//   - limit: Maximum number of orphans to return (0 = no limit)
+//
+// Returns list of message IDs that are orphaned.
+func (c *MemoryClaimer) ListOrphanedClaims(_ context.Context, staleTimeout time.Duration, limit int) ([]string, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	cutoff := time.Now().Add(-staleTimeout)
+	var orphans []string
+
+	for id, entry := range c.claims {
+		if entry.state == claimPending && entry.updatedAt.Before(cutoff) {
+			orphans = append(orphans, id)
+			if limit > 0 && len(orphans) >= limit {
+				break
+			}
+		}
+	}
+
+	return orphans, nil
+}
+
+// ReleaseOrphans releases all orphaned claims, allowing them to be reclaimed.
+//
+// This is a convenience method that combines ListOrphanedClaims and Release.
+//
+// Parameters:
+//   - ctx: Context (unused but required for interface)
+//   - staleTimeout: How long a claim can be pending before considered orphaned
+//   - limit: Maximum number of orphans to release (0 = no limit)
+//
+// Returns the number of claims released.
+func (c *MemoryClaimer) ReleaseOrphans(_ context.Context, staleTimeout time.Duration, limit int) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cutoff := time.Now().Add(-staleTimeout)
+	var released int64
+
+	for id, entry := range c.claims {
+		if entry.state == claimPending && entry.updatedAt.Before(cutoff) {
+			delete(c.claims, id)
+			released++
+			if limit > 0 && released >= int64(limit) {
+				break
+			}
+		}
+	}
+
+	return released, nil
 }
 
 // Compile-time interface check
