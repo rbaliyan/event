@@ -100,6 +100,7 @@ type event struct {
 // subscription implements transport.Subscription
 type subscription struct {
 	*base.Subscription
+	ev              *event // Parent event for cleanup on close
 	eventName       string
 	consumerID      string
 	store           Store
@@ -280,12 +281,17 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	}
 
 	subID := transport.NewID()
+	consumerID := subOpts.ConsumerID
+	if consumerID == "" {
+		consumerID = subID
+	}
 	subCtx, cancel := context.WithCancel(ctx)
 
 	sub := &subscription{
 		Subscription:    base.NewSubscription(subID, bufSize, 0),
+		ev:              ev,
 		eventName:       name,
-		consumerID:      subID,
+		consumerID:      consumerID,
 		store:           t.store,
 		checkpointStore: t.checkpointStore,
 		codec:           t.codec,
@@ -295,7 +301,7 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 
 	// Load checkpoint if store available
 	if t.checkpointStore != nil {
-		checkpoint, err := t.checkpointStore.Load(ctx, name, subID)
+		checkpoint, err := t.checkpointStore.Load(ctx, name, consumerID)
 		if err != nil {
 			t.logger.Warn("failed to load checkpoint", "error", err)
 		} else {
@@ -390,6 +396,10 @@ func (s *subscription) setCheckpoint(cp string) {
 
 func (s *subscription) Close(ctx context.Context) error {
 	return s.Subscription.Close(func() error {
+		if s.ev != nil {
+			s.ev.subscribers.Delete(s.ID())
+			atomic.AddInt64(&s.ev.subCount, -1)
+		}
 		if s.cancel != nil {
 			s.cancel()
 		}

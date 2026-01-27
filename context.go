@@ -52,13 +52,18 @@ func ContextSource(ctx context.Context) string {
 	return ""
 }
 
-// ContextMetadata get event metadata stored in context
+// ContextMetadata get event metadata stored in context.
+// Returns a copy of the metadata map to prevent mutation of internal state.
 func ContextMetadata(ctx context.Context) map[string]string {
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
-	if ok {
-		return s.metadata
+	if !ok || s.metadata == nil {
+		return nil
 	}
-	return nil
+	copied := make(map[string]string, len(s.metadata))
+	for k, v := range s.metadata {
+		copied[k] = v
+	}
+	return copied
 }
 
 // ContextLogger get event Logger stored in context

@@ -95,18 +95,30 @@ type DeduplicationStore interface {
 	MarkSeen(ctx context.Context, messageID string) error
 }
 
+// CloseableDeduplicationStore extends DeduplicationStore with a Close method
+// for stores that use background resources (goroutines, timers).
+type CloseableDeduplicationStore interface {
+	DeduplicationStore
+	// Close stops background cleanup resources. Call when the store is no longer needed.
+	Close()
+}
+
 // inMemoryDeduplicationStore is a simple in-memory deduplication store with TTL
 type inMemoryDeduplicationStore struct {
-	mu      sync.RWMutex
-	seen    map[string]time.Time
-	ttl     time.Duration
-	maxSize int
+	mu       sync.RWMutex
+	seen     map[string]time.Time
+	ttl      time.Duration
+	maxSize  int
+	stopCh   chan struct{}
 }
 
 // NewInMemoryDeduplicationStore creates a new in-memory deduplication store.
 // ttl: how long to remember a message ID (default: 1 hour)
 // maxSize: maximum number of entries to store (default: 10000, 0 = unlimited)
-func NewInMemoryDeduplicationStore(ttl time.Duration, maxSize int) DeduplicationStore {
+//
+// Call Close() when the store is no longer needed to stop the background
+// cleanup goroutine.
+func NewInMemoryDeduplicationStore(ttl time.Duration, maxSize int) CloseableDeduplicationStore {
 	if ttl <= 0 {
 		ttl = time.Hour
 	}
@@ -118,6 +130,7 @@ func NewInMemoryDeduplicationStore(ttl time.Duration, maxSize int) Deduplication
 		seen:    make(map[string]time.Time),
 		ttl:     ttl,
 		maxSize: maxSize,
+		stopCh:  make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
@@ -178,19 +191,34 @@ func (s *inMemoryDeduplicationStore) MarkSeen(ctx context.Context, messageID str
 	return nil
 }
 
+// Close stops the background cleanup goroutine.
+func (s *inMemoryDeduplicationStore) Close() {
+	select {
+	case <-s.stopCh:
+		// Already closed
+	default:
+		close(s.stopCh)
+	}
+}
+
 func (s *inMemoryDeduplicationStore) cleanup() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.mu.Lock()
-		now := time.Now()
-		for id, seenAt := range s.seen {
-			if now.Sub(seenAt) > s.ttl {
-				delete(s.seen, id)
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			now := time.Now()
+			for id, seenAt := range s.seen {
+				if now.Sub(seenAt) > s.ttl {
+					delete(s.seen, id)
+				}
 			}
+			s.mu.Unlock()
 		}
-		s.mu.Unlock()
 	}
 }
 

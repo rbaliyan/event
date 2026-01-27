@@ -119,11 +119,19 @@ func WithClaimInterval(interval, minIdle time.Duration) Option {
 // =============================================================================
 // Redis Streams does NOT provide native deduplication, DLQ, or poison detection.
 // These features must be implemented via external stores. Inject stores here
-// to enable these reliability features.
+// to enable these reliability features at the transport level.
+//
+// NOTE: These interfaces are structurally identical to the bus-level
+// event.IdempotencyStore and event.PoisonDetector interfaces.
+// They are redefined here to avoid import cycles (transport cannot import event).
+// Prefer using bus-level middleware (event.WithIdempotency, event.WithPoisonDetection)
+// which work across all transports. Use these transport-level options only when
+// you need transport-specific reliability behavior that differs from bus defaults.
 //
 // Compare with NATS JetStream which provides these features natively.
 
-// IdempotencyStore checks for duplicate messages.
+// IdempotencyStore checks for duplicate messages at the transport level.
+// Structurally identical to event.IdempotencyStore; prefer bus-level middleware.
 type IdempotencyStore interface {
 	IsDuplicate(ctx context.Context, messageID string) (bool, error)
 	MarkProcessed(ctx context.Context, messageID string) error
@@ -132,7 +140,8 @@ type IdempotencyStore interface {
 // DLQHandler is called when a message fails processing after max retries.
 type DLQHandler func(ctx context.Context, eventName string, msgID string, payload []byte, err error) error
 
-// PoisonDetector tracks and quarantines repeatedly failing messages.
+// PoisonDetector tracks and quarantines repeatedly failing messages at the transport level.
+// Structurally identical to event.PoisonDetector; prefer bus-level middleware.
 type PoisonDetector interface {
 	Check(ctx context.Context, messageID string) (bool, error)
 	RecordFailure(ctx context.Context, messageID string) (bool, error)

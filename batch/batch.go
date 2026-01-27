@@ -73,6 +73,8 @@ import (
 )
 
 // MetadataContentType is the metadata key for payload encoding.
+// Duplicated from the event package to avoid import cycles
+// (batch imports transport, event imports transport).
 const MetadataContentType = "Content-Type"
 
 // Handler processes a batch of messages.

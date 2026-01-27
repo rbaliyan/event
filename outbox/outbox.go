@@ -153,7 +153,15 @@ type Message struct {
 	LastError   string
 }
 
-// Store defines the interface for outbox storage.
+// Store defines the interface for SQL-based outbox storage with relay support.
+//
+// This interface uses *sql.Tx to ensure atomicity between business data writes
+// and outbox inserts within the same database transaction. For non-SQL databases
+// (MongoDB, Redis), use the dedicated store implementations which handle
+// transactions through their own mechanisms.
+//
+// For bus-level integration (automatic routing to outbox inside transactions),
+// see event.OutboxStore which uses a context-based API without SQL dependency.
 //
 // Implementations must be safe for concurrent use. The store is responsible
 // for persisting messages and tracking their publish status.
@@ -162,17 +170,6 @@ type Message struct {
 //   - PostgresStore: For PostgreSQL databases
 //   - RedisStore: For Redis (see redis.go)
 //   - MongoStore: For MongoDB (see mongodb.go)
-//
-// Example custom implementation:
-//
-//	type MySQLStore struct {
-//	    db *sql.DB
-//	}
-//
-//	func (s *MySQLStore) Insert(ctx context.Context, tx *sql.Tx, msg *Message) error {
-//	    _, err := tx.ExecContext(ctx, "INSERT INTO outbox ...")
-//	    return err
-//	}
 type Store interface {
 	// Insert adds a message to the outbox within a transaction.
 	//

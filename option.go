@@ -12,14 +12,15 @@ import (
 // MetadataContentType is the metadata key for payload encoding.
 const MetadataContentType = "Content-Type"
 
-// DeliveryMode determines how messages are distributed to subscribers
-type DeliveryMode int
+// DeliveryMode determines how messages are distributed to subscribers.
+// This is an alias for transport.DeliveryMode.
+type DeliveryMode = transport.DeliveryMode
 
 const (
 	// Broadcast delivers message to ALL subscribers (pub/sub fan-out)
-	Broadcast DeliveryMode = iota
+	Broadcast = transport.Broadcast
 	// WorkerPool delivers message to ONE subscriber (load balancing across workers)
-	WorkerPool
+	WorkerPool = transport.WorkerPool
 )
 
 // Default event configuration values
@@ -198,17 +199,8 @@ func newSubscribeOptions[T any](opts ...SubscribeOption[T]) *subscribeOptions[T]
 
 // transportOptions converts event subscribe options to transport subscribe options
 func (o *subscribeOptions[T]) transportOptions() []transport.SubscribeOption {
-	// Convert event-level DeliveryMode to transport-level
-	var transportMode transport.DeliveryMode
-	switch o.mode {
-	case WorkerPool:
-		transportMode = transport.WorkerPool
-	default:
-		transportMode = transport.Broadcast
-	}
-
 	opts := []transport.SubscribeOption{
-		transport.WithDeliveryMode(transportMode),
+		transport.WithDeliveryMode(o.mode),
 	}
 
 	if o.workerGroup != "" {

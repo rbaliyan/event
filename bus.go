@@ -226,14 +226,9 @@ func (s *Status) IsHealthy() bool {
 	return s.Code == StatusHealthy
 }
 
-// ConsumerLag contains information about consumer lag for an event
-type ConsumerLag struct {
-	Event           string        `json:"event"`
-	ConsumerGroup   string        `json:"consumer_group,omitempty"`
-	Lag             int64         `json:"lag"`              // Number of unprocessed messages
-	OldestPending   time.Duration `json:"oldest_pending"`   // Age of oldest unacknowledged message
-	PendingMessages int64         `json:"pending_messages"` // Messages delivered but not yet acked
-}
+// ConsumerLag is an alias for transport.ConsumerLag containing
+// information about consumer lag for an event.
+type ConsumerLag = transport.ConsumerLag
 
 // busOptions holds configuration for bus (unexported)
 type busOptions struct {
@@ -510,11 +505,6 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		name = DefaultBusName
 	}
 
-	// Check if bus already exists
-	if _, exists := busRegistry.Load(name); exists {
-		return nil, fmt.Errorf("%w: %q", ErrBusExists, name)
-	}
-
 	// Transport is required - use WithBusTransport() to set it
 	// For channel transport: NewBus(name, WithBusTransport(channel.New()))
 	transport := o.transport
@@ -619,13 +609,25 @@ func (b *Bus) Get(name string) any {
 	return b.events[name]
 }
 
-// Close stops the bus and all registered events
+// Close stops the bus and all registered events.
+// Events are shut down before the transport to allow clean subscription cleanup.
 func (b *Bus) Close(ctx context.Context) error {
 	if atomic.CompareAndSwapInt32(&b.status, busRunning, busStopped) {
 		// Unregister from global registry
 		busRegistry.Delete(b.name)
 
+		// Signal all subscriber goroutines to stop
 		close(b.shutdownChan)
+
+		// Unregister all events from transport (while transport is still open)
+		b.eventMutex.RLock()
+		for name := range b.events {
+			if err := b.transport.UnregisterEvent(ctx, name); err != nil {
+				b.logger.Warn("failed to unregister event during shutdown", "event", name, "error", err)
+			}
+		}
+		b.eventMutex.RUnlock()
+
 		// Close the bus transport
 		if b.transport != nil {
 			b.transport.Close(ctx)
@@ -779,23 +781,7 @@ func (b *Bus) ConsumerLag(ctx context.Context) ([]ConsumerLag, error) {
 	}
 
 	if lm, ok := b.transport.(transport.LagMonitor); ok {
-		transportLags, err := lm.ConsumerLag(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		// Convert transport lags to bus lags
-		result := make([]ConsumerLag, len(transportLags))
-		for i, tl := range transportLags {
-			result[i] = ConsumerLag{
-				Event:           tl.Event,
-				ConsumerGroup:   tl.ConsumerGroup,
-				Lag:             tl.Lag,
-				OldestPending:   tl.OldestPending,
-				PendingMessages: tl.PendingMessages,
-			}
-		}
-		return result, nil
+		return lm.ConsumerLag(ctx)
 	}
 
 	// Transport doesn't support lag monitoring
@@ -990,7 +976,7 @@ func Unregister[T any](ctx context.Context, bus *Bus, event Event[T]) error {
 	}
 
 	// Check if event is bound to this bus
-	if impl.bus != bus {
+	if impl.getBus() != bus {
 		return ErrEventNotBound
 	}
 

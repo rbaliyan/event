@@ -184,6 +184,12 @@ type SubscribeOptions struct {
 	// BufferSize overrides the default message channel buffer size.
 	// Zero uses the transport's default buffer size.
 	BufferSize int
+
+	// ConsumerID sets a stable identifier for the consumer.
+	// Used by store-backed transports (persistent, composite) for checkpoint
+	// resume across restarts. If empty, a random ID is generated (checkpoints
+	// will not survive restarts).
+	ConsumerID string
 }
 
 // SubscribeOption is a functional option for configuring subscriptions
@@ -282,6 +288,22 @@ func WithDeliveryMode(mode DeliveryMode) SubscribeOption {
 func WithWorkerGroup(group string) SubscribeOption {
 	return func(o *SubscribeOptions) {
 		o.WorkerGroup = group
+	}
+}
+
+// WithConsumerID sets a stable consumer identifier for checkpoint resume.
+// Store-backed transports (persistent, composite) use this to persist and
+// restore consumer position across restarts.
+//
+// If not set, a random ID is generated and checkpoints will not survive restarts.
+//
+// Example:
+//
+//	sub, err := transport.Subscribe(ctx, "orders",
+//	    transport.WithConsumerID("order-processor-1"))
+func WithConsumerID(id string) SubscribeOption {
+	return func(o *SubscribeOptions) {
+		o.ConsumerID = id
 	}
 }
 
@@ -434,6 +456,7 @@ func (h *LevelHandler) WithGroup(name string) slog.Handler {
 // Jitter adds randomness to a duration to prevent thundering herd.
 // Returns a duration between d*(1-factor) and d*(1+factor).
 // Factor should be between 0 and 1 (e.g., 0.3 for +/-30% jitter).
+// Uses math/rand global source which is auto-seeded and concurrency-safe since Go 1.20.
 func Jitter(d time.Duration, factor float64) time.Duration {
 	if factor <= 0 || factor > 1 {
 		return d

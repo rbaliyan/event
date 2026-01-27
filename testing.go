@@ -2,16 +2,22 @@ package event
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
 )
 
+// testBusCounter ensures unique bus names across parallel tests.
+var testBusCounter uint64
+
 // TestBus creates a new bus configured for testing.
 // The transport parameter is required - use channel.New() for in-memory testing.
 // Has recovery/tracing/metrics disabled for simpler testing.
+// Each call generates a unique bus name, safe for parallel tests.
 // Panics if transport is nil (test setup error).
 //
 // Example:
@@ -19,7 +25,8 @@ import (
 //	import "github.com/rbaliyan/event/v3/transport/channel"
 //	bus := event.TestBus(channel.New())
 func TestBus(t transport.Transport) *Bus {
-	bus, err := NewBus("test-bus",
+	n := atomic.AddUint64(&testBusCounter, 1)
+	bus, err := NewBus(fmt.Sprintf("test-bus-%d", n),
 		WithTransport(t),
 		WithRecovery(false),
 		WithTracing(false),

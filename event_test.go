@@ -983,7 +983,7 @@ func TestGracefulShutdown(t *testing.T) {
 
 // TestDiscardEvent verifies discardEvent works correctly
 func TestDiscardEvent(t *testing.T) {
-	e := Discard[string]("test")
+	e := Discard[string]()
 
 	if e.Name() != "" {
 		t.Errorf("expected empty name, got %s", e.Name())
@@ -2098,7 +2098,7 @@ func TestAsyncHandlerWithContextCopy(t *testing.T) {
 	ctx := context.WithValue(context.Background(), customKey, "custom-value")
 
 	// Create a simple event for testing
-	e := Discard[any]("test")
+	e := Discard[any]()
 
 	// Call the async handler directly
 	asyncHandler(ctx, e, nil)

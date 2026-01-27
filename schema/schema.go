@@ -68,12 +68,20 @@ type SchemaChangeEvent struct {
 // SchemaChangedEventName is the internal event name for schema change notifications.
 const SchemaChangedEventName = "__schema.changed"
 
-// SchemaProvider abstracts schema storage.
-// Implemented by transports (with retention) or database stores.
-type SchemaProvider interface {
+// SchemaReader provides read-only access to event schemas.
+// The Bus only needs this interface to load schemas during event registration.
+// Use this when you only need to read schemas (e.g., subscriber-side).
+type SchemaReader interface {
 	// Get retrieves a schema by event name.
 	// Returns nil, nil if not found.
 	Get(ctx context.Context, eventName string) (*EventSchema, error)
+}
+
+// SchemaProvider abstracts schema storage with full read/write capabilities.
+// Implemented by transports (with retention) or database stores.
+// Extends SchemaReader with write, watch, and lifecycle operations.
+type SchemaProvider interface {
+	SchemaReader
 
 	// Set stores a schema and notifies subscribers.
 	// Version must be >= existing version (no downgrades).

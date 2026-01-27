@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -91,7 +90,7 @@ type eventImpl[T any] struct {
 	status       int32
 	name         string
 	size         int64
-	bus          *Bus
+	bus          atomic.Pointer[Bus]
 	subTimeout   time.Duration
 	onError      func(*Bus, string, error)                                        // for panic recovery only
 	maxRetries   int                                                              // max retry attempts (0 = unlimited)
@@ -107,6 +106,11 @@ func (e *eventImpl[T]) String() string {
 // Name event name
 func (e *eventImpl[T]) Name() string {
 	return e.name
+}
+
+// getBus returns the bus pointer atomically.
+func (e *eventImpl[T]) getBus() *Bus {
+	return e.bus.Load()
 }
 
 // codec returns the payload codec, defaulting to JSON if not set.
@@ -125,10 +129,9 @@ func (e *eventImpl[T]) Subscribers() int64 {
 // Bind binds the event to a bus. Called by bus.Register().
 // Returns error if already bound to another bus.
 func (e *eventImpl[T]) Bind(bus *Bus) error {
-	if e.bus != nil {
+	if !e.bus.CompareAndSwap(nil, bus) {
 		return ErrAlreadyBound
 	}
-	e.bus = bus
 	atomic.StoreInt32(&e.status, 1) // mark as active/bound
 	return nil
 }
@@ -139,7 +142,7 @@ func (e *eventImpl[T]) Unbind() bool {
 	if !atomic.CompareAndSwapInt32(&e.status, 1, 0) {
 		return false // Already unbound
 	}
-	e.bus = nil
+	e.bus.Store(nil)
 	return true
 }
 
@@ -185,26 +188,25 @@ func (e *eventImpl[T]) WithTimeout(handler Handler[T]) Handler[T] {
 
 // WithRecovery enable recovery for handlers
 func (e *eventImpl[T]) WithRecovery(handler Handler[T]) Handler[T] {
-	if !e.bus.recoveryEnabled {
+	bus := e.getBus()
+	if !bus.recoveryEnabled {
 		return handler
 	}
 	return func(ctx context.Context, ev Event[T], data T) (err error) {
 		logger := ContextLogger(ctx)
 		if logger == nil {
-			logger = e.bus.logger.With("event", e.name)
+			logger = bus.logger.With("event", e.name)
 		}
 		defer func() {
-			_, file, l, _ := runtime.Caller(0)
 			if r := recover(); r != nil {
+				stack := debug.Stack()
 				logger.Error("panic recovered in event handler",
 					"event", ev.Name(),
-					"line", l,
-					"file", file,
 					"error", r,
-					"stack", string(debug.Stack()),
+					"stack", string(stack),
 				)
 				if e.onError != nil {
-					e.onError(e.bus, e.name, fmt.Errorf("[%s]panic in %s:%d with : %v", e.name, file, l, r))
+					e.onError(bus, e.name, fmt.Errorf("[%s]panic: %v", e.name, r))
 				}
 				// Panic treated as retriable error
 				err = fmt.Errorf("panic: %v", r)
@@ -216,12 +218,12 @@ func (e *eventImpl[T]) WithRecovery(handler Handler[T]) Handler[T] {
 
 // Publish sends data to subscribers
 func (e *eventImpl[T]) Publish(ctx context.Context, eventData T) error {
-	// Check for nil event or unregistered
-	if e == nil || e.bus == nil {
+	// Check if closed
+	if e == nil || atomic.LoadInt32(&e.status) != 1 {
 		return ErrEventNotBound
 	}
-	// Check if closed
-	if atomic.LoadInt32(&e.status) != 1 {
+	bus := e.getBus()
+	if bus == nil {
 		return ErrEventNotBound
 	}
 
@@ -250,7 +252,7 @@ func (e *eventImpl[T]) Publish(ctx context.Context, eventData T) error {
 	metadata[MetadataContentType] = codec.ContentType()
 
 	// Delegate to bus.Send which handles metrics and tracing
-	return e.bus.Send(ctx, e.name, id, payloadBytes, metadata)
+	return bus.Send(ctx, e.name, id, payloadBytes, metadata)
 }
 
 // classifyResult determines how to handle the handler result.
@@ -282,12 +284,12 @@ func classifyResult(err error, retryCount, maxRetries int) (result HandlerResult
 
 // Subscribe registers a handler to receive published data
 func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts ...SubscribeOption[T]) error {
-	// Check for nil event or unregistered
-	if e == nil || e.bus == nil {
+	// Check if closed
+	if e == nil || atomic.LoadInt32(&e.status) != 1 {
 		return ErrEventNotBound
 	}
-	// Check if closed
-	if atomic.LoadInt32(&e.status) != 1 {
+	bus := e.getBus()
+	if bus == nil {
 		return ErrEventNotBound
 	}
 
@@ -299,13 +301,13 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 		return ErrInvalidSubscribeOptions
 	}
 
-	logger := e.bus.logger.With("event", e.name)
+	logger := bus.logger.With("event", e.name)
 
 	// Convert event-level options to transport options
 	transportOpts := subOpts.transportOptions()
 
 	// Subscribe via bus.Recv which handles metrics
-	sub, err := e.bus.Recv(ctx, e.name, transportOpts...)
+	sub, err := bus.Recv(ctx, e.name, transportOpts...)
 	if err != nil {
 		return err
 	}
@@ -331,25 +333,25 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 	// Otherwise, fall back to bus-level stores (if configured).
 	if e.schema.loaded {
 		// Schema-controlled middleware: only apply if schema enables it AND store is configured
-		if e.schema.enableIdempotency && e.bus.idempotencyStore != nil {
-			wrappedHandler = IdempotencyMiddleware[T](e.bus.idempotencyStore)(wrappedHandler)
+		if e.schema.enableIdempotency && bus.idempotencyStore != nil {
+			wrappedHandler = IdempotencyMiddleware[T](bus.idempotencyStore)(wrappedHandler)
 		}
-		if e.schema.enablePoison && e.bus.poisonDetector != nil {
-			wrappedHandler = PoisonMiddleware[T](e.bus.poisonDetector)(wrappedHandler)
+		if e.schema.enablePoison && bus.poisonDetector != nil {
+			wrappedHandler = PoisonMiddleware[T](bus.poisonDetector)(wrappedHandler)
 		}
-		if e.schema.enableMonitor && e.bus.monitorStore != nil {
-			wrappedHandler = MonitorMiddleware[T](e.bus.monitorStore)(wrappedHandler)
+		if e.schema.enableMonitor && bus.monitorStore != nil {
+			wrappedHandler = MonitorMiddleware[T](bus.monitorStore)(wrappedHandler)
 		}
 	} else {
 		// No schema: fall back to bus-level middleware (if stores are configured)
-		if e.bus.idempotencyStore != nil {
-			wrappedHandler = IdempotencyMiddleware[T](e.bus.idempotencyStore)(wrappedHandler)
+		if bus.idempotencyStore != nil {
+			wrappedHandler = IdempotencyMiddleware[T](bus.idempotencyStore)(wrappedHandler)
 		}
-		if e.bus.poisonDetector != nil {
-			wrappedHandler = PoisonMiddleware[T](e.bus.poisonDetector)(wrappedHandler)
+		if bus.poisonDetector != nil {
+			wrappedHandler = PoisonMiddleware[T](bus.poisonDetector)(wrappedHandler)
 		}
-		if e.bus.monitorStore != nil {
-			wrappedHandler = MonitorMiddleware[T](e.bus.monitorStore)(wrappedHandler)
+		if bus.monitorStore != nil {
+			wrappedHandler = MonitorMiddleware[T](bus.monitorStore)(wrappedHandler)
 		}
 	}
 
@@ -361,7 +363,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 		}()
 		for {
 			select {
-			case <-e.bus.shutdownChan:
+			case <-bus.shutdownChan:
 				logger.Info("shutdown subscriber remove", "event", e.Name(), "subscriber_id", subID)
 				return
 
@@ -383,7 +385,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 						"error", decodeErrMsg)
 
 					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
+						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
 						if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
 							// DLQ storage failed for decode error - acknowledge anyway to prevent infinite loop
 							// Decode errors won't succeed on retry, so retrying is futile
@@ -413,7 +415,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 						"content_type", contentType)
 
 					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
+						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
 						dlqErr := e.dlqHandler(dlqCtx, msg, fmt.Errorf("unknown content type: %s", contentType))
 						if dlqErr != nil {
 							// DLQ storage failed for content type error - acknowledge anyway to prevent infinite loop
@@ -436,7 +438,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 						"error", err)
 
 					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
+						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
 						if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
 							// DLQ storage failed for decode error - acknowledge anyway to prevent infinite loop
 							// Decode errors won't succeed on retry, so retrying is futile
@@ -452,7 +454,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 				}
 
 				// Update context values and call handler
-				handlerCtx := contextWithInfo(msg.Context(), msg.ID(), e.name, e.bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, e.bus, subOpts.mode)
+				handlerCtx := contextWithInfo(msg.Context(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
 				err := wrappedHandler(handlerCtx, e, typedData)
 
 				// Classify result and determine action
@@ -530,7 +532,8 @@ func (e Events[T]) Publish(ctx context.Context, data T) error {
 	return errors.Join(errs...)
 }
 
-// Discard creates an event that discards all published data
-func Discard[T any](_ string, _ ...Option) Event[T] {
+// Discard creates a no-op event that discards all published data.
+// Useful as a default or placeholder when an event should be inactive.
+func Discard[T any]() Event[T] {
 	return discardEvent[T]{}
 }
