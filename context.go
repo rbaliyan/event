@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -211,4 +213,16 @@ func ContextWithEventFromContext(to, from context.Context) context.Context {
 // NewContext copy context data to a new context
 func NewContext(ctx context.Context) context.Context {
 	return ContextWithEventFromContext(context.Background(), ctx)
+}
+
+// detachedContext returns a context.Background() with OpenTelemetry trace context
+// preserved from the original context. Use this for DLQ handlers where the message
+// context may be cancelled but trace correlation should be retained.
+func detachedContext(ctx context.Context) context.Context {
+	bg := context.Background()
+	spanCtx := oteltrace.SpanContextFromContext(ctx)
+	if spanCtx.IsValid() {
+		bg = oteltrace.ContextWithSpanContext(bg, spanCtx)
+	}
+	return bg
 }

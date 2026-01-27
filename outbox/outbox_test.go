@@ -269,7 +269,12 @@ func TestRelayPublishFailure(t *testing.T) {
 	}
 
 	relay := NewRelay(store, tr)
-	relay.PublishOnce(ctx)
+	err := relay.PublishOnce(ctx)
+
+	// PublishOnce should return an error
+	if err == nil {
+		t.Error("expected PublishOnce to return an error")
+	}
 
 	// Message should be marked as failed
 	store.mu.Lock()

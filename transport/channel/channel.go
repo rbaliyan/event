@@ -295,15 +295,21 @@ func (t *Transport) sendToSubscriber(ctx context.Context, sub *subscription, msg
 		}
 	}
 
-	// No timeout - try non-blocking first, then block
+	// No timeout - try non-blocking first, then block with a generous ceiling
+	// to prevent permanently blocked publisher goroutines. The 30s ceiling is
+	// intentionally large — it indicates a severely backed-up subscriber rather
+	// than normal flow control. For guaranteed delivery, use Redis/NATS/Kafka.
 	select {
 	case <-sub.ClosedCh():
 		return transport.ErrSubscriptionClosed
 	case sub.Ch() <- msg:
 		return nil
 	default:
-		// Channel full - block until ready (blocking mode)
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
 		select {
+		case <-timer.C:
+			return transport.ErrPublishTimeout
 		case <-sub.ClosedCh():
 			return transport.ErrSubscriptionClosed
 		case sub.Ch() <- msg:

@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -199,11 +200,12 @@ func (r *Relay) Start(ctx context.Context) error {
 
 // publishPending fetches and publishes pending messages.
 // This is the main processing loop that runs on each poll tick.
-func (r *Relay) publishPending(ctx context.Context) {
+// Returns the number of messages that failed to publish.
+func (r *Relay) publishPending(ctx context.Context) (failures int) {
 	messages, err := r.store.GetPending(ctx, r.batchSize)
 	if err != nil {
 		r.logger.Error("failed to get pending messages", "error", err)
-		return
+		return 1
 	}
 
 	for _, msg := range messages {
@@ -215,6 +217,7 @@ func (r *Relay) publishPending(ctx context.Context) {
 			if markErr := r.store.MarkFailed(ctx, msg.ID, err); markErr != nil {
 				r.logger.Error("failed to mark message as failed", "error", markErr)
 			}
+			failures++
 			continue
 		}
 
@@ -229,6 +232,7 @@ func (r *Relay) publishPending(ctx context.Context) {
 			"event", msg.EventName,
 			"event_id", msg.EventID)
 	}
+	return failures
 }
 
 // publishMessage publishes a single message to the transport
@@ -290,6 +294,8 @@ func (r *Relay) cleanup(ctx context.Context) {
 //	    w.Write([]byte("ok"))
 //	}
 func (r *Relay) PublishOnce(ctx context.Context) error {
-	r.publishPending(ctx)
+	if failures := r.publishPending(ctx); failures > 0 {
+		return fmt.Errorf("failed to publish %d message(s)", failures)
+	}
 	return nil
 }

@@ -107,15 +107,25 @@ func (p *ConsistentHashPartitioner) Partition(key string, numPartitions int) int
 		return 0
 	}
 
+	// Try read lock first (fast path — no rebuild needed)
+	p.mu.RLock()
+	if len(p.ring) == numPartitions*p.replicas && len(p.ring) > 0 {
+		hash := p.hash(key)
+		idx := p.search(hash)
+		result := p.nodes[p.ring[idx]]
+		p.mu.RUnlock()
+		return result
+	}
+	p.mu.RUnlock()
+
+	// Slow path — need rebuild, hold write lock for entire operation
 	p.mu.Lock()
-	// Rebuild ring if partition count changed
+	defer p.mu.Unlock()
+
+	// Double-check after acquiring write lock
 	if len(p.ring) != numPartitions*p.replicas {
 		p.buildRing(numPartitions)
 	}
-	p.mu.Unlock()
-
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 
 	if len(p.ring) == 0 {
 		return 0
@@ -126,7 +136,8 @@ func (p *ConsistentHashPartitioner) Partition(key string, numPartitions int) int
 	return p.nodes[p.ring[idx]]
 }
 
-// buildRing creates the hash ring for the given number of partitions
+// buildRing creates the hash ring for the given number of partitions.
+// Handles hash collisions by using secondary keys with increasing offsets.
 func (p *ConsistentHashPartitioner) buildRing(numPartitions int) {
 	p.ring = make([]uint32, 0, numPartitions*p.replicas)
 	p.nodes = make(map[uint32]int)
@@ -135,6 +146,14 @@ func (p *ConsistentHashPartitioner) buildRing(numPartitions int) {
 		for j := 0; j < p.replicas; j++ {
 			key := strconv.Itoa(i) + "-" + strconv.Itoa(j)
 			hash := p.hash(key)
+			// Resolve collisions with linear probing
+			for attempt := 0; ; attempt++ {
+				if _, exists := p.nodes[hash]; !exists {
+					break
+				}
+				// Collision — rehash with attempt suffix
+				hash = p.hash(key + "-" + strconv.Itoa(attempt))
+			}
 			p.ring = append(p.ring, hash)
 			p.nodes[hash] = i
 		}

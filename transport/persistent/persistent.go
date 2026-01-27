@@ -396,6 +396,17 @@ func (s *subscription) setCheckpoint(cp string) {
 
 func (s *subscription) Close(ctx context.Context) error {
 	return s.Subscription.Close(func() error {
+		// Save final checkpoint before shutting down
+		if s.checkpointStore != nil {
+			cp := s.getCheckpoint()
+			if cp != "" {
+				if err := s.checkpointStore.Save(ctx, s.eventName, s.consumerID, cp); err != nil {
+					// Log but don't fail close — best-effort save
+					slog.Warn("failed to save final checkpoint on close",
+						"event", s.eventName, "consumer", s.consumerID, "error", err)
+				}
+			}
+		}
 		if s.ev != nil {
 			s.ev.subscribers.Delete(s.ID())
 			atomic.AddInt64(&s.ev.subCount, -1)
@@ -488,12 +499,10 @@ func (s *subscription) pollLoop(ctx context.Context, logger *slog.Logger) {
 
 		// Send to handler - BLOCKING (sequential processing)
 		// This is the key difference from channel transport
-		select {
-		case <-s.ClosedCh():
+		switch s.SendToChannel(wrappedMsg) {
+		case base.SendClosed:
 			return
-		case <-ctx.Done():
-			return
-		case s.Ch() <- wrappedMsg:
+		case base.SendOK:
 			// Message sent to handler, will be acked/nacked when handler returns
 		}
 	}

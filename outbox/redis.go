@@ -270,13 +270,28 @@ func (s *RedisStore) claimPendingMessages(ctx context.Context, count int64) ([]*
 	return messages, nil
 }
 
-// parseStreamMessage parses a Redis stream message
+// parseStreamMessage parses a Redis stream message.
+// Uses checked type assertions to avoid panics on unexpected field types.
 func (s *RedisStore) parseStreamMessage(msg redis.XMessage) (*RedisMessage, error) {
-	m := &RedisMessage{
-		ID:        msg.Values["id"].(string),
-		EventName: msg.Values["event_name"].(string),
-		EventID:   msg.Values["event_id"].(string),
+	m := &RedisMessage{}
+
+	id, ok := msg.Values["id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("missing or invalid 'id' field in stream message %s", msg.ID)
 	}
+	m.ID = id
+
+	eventName, ok := msg.Values["event_name"].(string)
+	if !ok {
+		return nil, fmt.Errorf("missing or invalid 'event_name' field in stream message %s", msg.ID)
+	}
+	m.EventName = eventName
+
+	eventID, ok := msg.Values["event_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("missing or invalid 'event_id' field in stream message %s", msg.ID)
+	}
+	m.EventID = eventID
 
 	if payload, ok := msg.Values["payload"].(string); ok {
 		m.Payload = []byte(payload)

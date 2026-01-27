@@ -182,6 +182,9 @@ func (s *Subscription) SendWithRetryConfig(msg transport.Message, logger *slog.L
 }
 
 // Backoff provides exponential backoff with jitter for retry loops.
+//
+// Backoff is NOT safe for concurrent use. It is designed to be used
+// within a single goroutine (e.g., a poll loop or retry loop).
 type Backoff struct {
 	current time.Duration
 	initial time.Duration

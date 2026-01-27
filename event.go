@@ -193,9 +193,14 @@ func (e *eventImpl[T]) WithRecovery(handler Handler[T]) Handler[T] {
 		return handler
 	}
 	return func(ctx context.Context, ev Event[T], data T) (err error) {
+		// Resolve bus at call time so recovery always uses the current bus
+		currentBus := e.getBus()
+		if currentBus == nil {
+			currentBus = bus // fallback to bus captured at creation time
+		}
 		logger := ContextLogger(ctx)
 		if logger == nil {
-			logger = bus.logger.With("event", e.name)
+			logger = currentBus.logger.With("event", e.name)
 		}
 		defer func() {
 			if r := recover(); r != nil {
@@ -206,7 +211,7 @@ func (e *eventImpl[T]) WithRecovery(handler Handler[T]) Handler[T] {
 					"stack", string(stack),
 				)
 				if e.onError != nil {
-					e.onError(bus, e.name, fmt.Errorf("[%s]panic: %v", e.name, r))
+					e.onError(currentBus, e.name, fmt.Errorf("[%s]panic: %v", e.name, r))
 				}
 				// Panic treated as retriable error
 				err = fmt.Errorf("panic: %v", r)
@@ -385,7 +390,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 						"error", decodeErrMsg)
 
 					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
+						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
 						if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
 							// DLQ storage failed for decode error - acknowledge anyway to prevent infinite loop
 							// Decode errors won't succeed on retry, so retrying is futile
@@ -415,7 +420,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 						"content_type", contentType)
 
 					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
+						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
 						dlqErr := e.dlqHandler(dlqCtx, msg, fmt.Errorf("unknown content type: %s", contentType))
 						if dlqErr != nil {
 							// DLQ storage failed for content type error - acknowledge anyway to prevent infinite loop
@@ -438,7 +443,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 						"error", err)
 
 					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(context.Background(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
+						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
 						if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
 							// DLQ storage failed for decode error - acknowledge anyway to prevent infinite loop
 							// Decode errors won't succeed on retry, so retrying is futile
@@ -505,7 +510,9 @@ func (e Events[T]) Names() []string {
 	return names
 }
 
-// Name event name
+// Name returns a comma-joined display name for all events in the collection.
+// This is intended for logging and diagnostics only — it does not follow the
+// busname://eventname convention used for individual events.
 func (e Events[T]) Name() string {
 	return strings.Join(e.Names(), ",")
 }

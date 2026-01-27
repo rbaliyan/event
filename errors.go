@@ -3,6 +3,7 @@ package event
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Handler result sentinel errors.
@@ -160,11 +161,14 @@ func IsRetryExhausted(err error) bool {
 // CircuitOpenError indicates the circuit breaker is open.
 type CircuitOpenError struct {
 	Name      string
-	OpenUntil string
+	OpenUntil time.Time
 }
 
 func (e *CircuitOpenError) Error() string {
-	return fmt.Sprintf("circuit breaker %q is open until %s", e.Name, e.OpenUntil)
+	if e.OpenUntil.IsZero() {
+		return fmt.Sprintf("circuit breaker %q is open", e.Name)
+	}
+	return fmt.Sprintf("circuit breaker %q is open until %s", e.Name, e.OpenUntil.Format(time.RFC3339))
 }
 
 // IsCircuitOpen checks if an error indicates an open circuit breaker.

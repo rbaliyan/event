@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"runtime"
 	"runtime/debug"
 	"strings"
-	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -107,14 +105,3 @@ func Caller(depth int) string {
 	return ""
 }
 
-// Jitter adds randomness to a duration to prevent thundering herd.
-// Returns a duration between d*(1-factor) and d*(1+factor).
-// Factor should be between 0 and 1 (e.g., 0.3 for +/-30% jitter).
-func Jitter(d time.Duration, factor float64) time.Duration {
-	if factor <= 0 || factor > 1 {
-		return d
-	}
-	// Random value between -factor and +factor
-	jitter := (rand.Float64()*2 - 1) * factor
-	return time.Duration(float64(d) * (1 + jitter))
-}

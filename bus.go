@@ -49,8 +49,12 @@ func GetBus(name string) *Bus {
 }
 
 // GetBusOrError returns a registered bus by name, or an error if the bus
-// doesn't exist or is closed. This is safer than GetBus() when you need
-// to immediately use the bus.
+// doesn't exist or was closed at the time of the check. This is safer than
+// GetBus() when you need to verify the bus exists and is running.
+//
+// Note: The bus could be closed between this check and subsequent use (TOCTOU).
+// All Bus methods (Send, Recv, etc.) return ErrBusClosed if called after close,
+// so callers are safe from crashes but should handle ErrBusClosed on use.
 //
 // Example:
 //
@@ -58,7 +62,7 @@ func GetBus(name string) *Bus {
 //	if err != nil {
 //	    return err // Bus doesn't exist or is closed
 //	}
-//	// Bus is guaranteed to be running at this point
+//	// Bus was running at check time; handle ErrBusClosed on subsequent calls
 func GetBusOrError(name string) (*Bus, error) {
 	v, ok := busRegistry.Load(name)
 	if !ok {
@@ -611,29 +615,39 @@ func (b *Bus) Get(name string) any {
 
 // Close stops the bus and all registered events.
 // Events are shut down before the transport to allow clean subscription cleanup.
+// Returns a joined error if any unregister or transport close operations fail.
 func (b *Bus) Close(ctx context.Context) error {
-	if atomic.CompareAndSwapInt32(&b.status, busRunning, busStopped) {
-		// Unregister from global registry
-		busRegistry.Delete(b.name)
+	if !atomic.CompareAndSwapInt32(&b.status, busRunning, busStopped) {
+		return nil
+	}
 
-		// Signal all subscriber goroutines to stop
-		close(b.shutdownChan)
+	// Unregister from global registry
+	busRegistry.Delete(b.name)
 
-		// Unregister all events from transport (while transport is still open)
-		b.eventMutex.RLock()
-		for name := range b.events {
-			if err := b.transport.UnregisterEvent(ctx, name); err != nil {
-				b.logger.Warn("failed to unregister event during shutdown", "event", name, "error", err)
-			}
-		}
-		b.eventMutex.RUnlock()
+	// Signal all subscriber goroutines to stop
+	close(b.shutdownChan)
 
-		// Close the bus transport
-		if b.transport != nil {
-			b.transport.Close(ctx)
+	var errs []error
+
+	// Unregister all events from transport (while transport is still open)
+	b.eventMutex.RLock()
+	for name := range b.events {
+		if err := b.transport.UnregisterEvent(ctx, name); err != nil {
+			b.logger.Warn("failed to unregister event during shutdown", "event", name, "error", err)
+			errs = append(errs, fmt.Errorf("unregister %s: %w", name, err))
 		}
 	}
-	return nil
+	b.eventMutex.RUnlock()
+
+	// Close the bus transport
+	if b.transport != nil {
+		if err := b.transport.Close(ctx); err != nil {
+			b.logger.Warn("failed to close transport during shutdown", "error", err)
+			errs = append(errs, fmt.Errorf("close transport: %w", err))
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // register adds an event to the bus (internal use)
@@ -926,12 +940,9 @@ func Register[T any](ctx context.Context, bus *Bus, event Event[T]) error {
 		}
 	}
 
-	// Bind event to bus
-	if err := impl.Bind(bus); err != nil {
-		return err
-	}
-
-	// Load schema from provider if configured
+	// Load schema from provider if configured.
+	// Must happen BEFORE Bind() so schema fields are visible to concurrent
+	// Subscribe() calls that check status after Bind() sets it to active.
 	if bus.schemaProvider != nil {
 		schema, err := bus.schemaProvider.Get(ctx, impl.name)
 		if err != nil {
@@ -948,6 +959,12 @@ func Register[T any](ctx context.Context, bus *Bus, event Event[T]) error {
 			bus.logger.Debug("applied schema", "event", impl.name, "version", schema.Version)
 		}
 		// schema == nil means not found, which is fine - use event defaults
+	}
+
+	// Bind event to bus (sets status to active via atomic store,
+	// establishing a happens-before relationship with Subscribe() reads)
+	if err := impl.Bind(bus); err != nil {
+		return err
 	}
 
 	// Register with bus

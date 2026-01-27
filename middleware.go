@@ -3,9 +3,11 @@ package event
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rbaliyan/event/v3/schema"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // IdempotencyStore is a minimal interface for idempotency tracking in middleware.
@@ -114,7 +116,7 @@ type inMemoryDeduplicationStore struct {
 
 // NewInMemoryDeduplicationStore creates a new in-memory deduplication store.
 // ttl: how long to remember a message ID (default: 1 hour)
-// maxSize: maximum number of entries to store (default: 10000, 0 = unlimited)
+// maxSize: maximum number of entries to store (default: 10000)
 //
 // Call Close() when the store is no longer needed to stop the background
 // cleanup goroutine.
@@ -170,19 +172,32 @@ func (s *inMemoryDeduplicationStore) MarkSeen(ctx context.Context, messageID str
 			}
 		}
 
-		// If still at capacity, remove oldest 10%
+		// If still at capacity, remove oldest 10% by finding the oldest entries
 		if len(s.seen) >= s.maxSize {
 			toRemove := s.maxSize / 10
 			if toRemove == 0 {
 				toRemove = 1
 			}
-			count := 0
-			for id := range s.seen {
-				delete(s.seen, id)
-				count++
-				if count >= toRemove {
-					break
+			// Collect entries and sort by time to find the oldest
+			type entry struct {
+				id     string
+				seenAt time.Time
+			}
+			entries := make([]entry, 0, len(s.seen))
+			for id, seenAt := range s.seen {
+				entries = append(entries, entry{id, seenAt})
+			}
+			// Partial sort: find the toRemove oldest entries
+			// Simple selection: iterate and find oldest toRemove entries
+			for i := 0; i < toRemove && i < len(entries); i++ {
+				minIdx := i
+				for j := i + 1; j < len(entries); j++ {
+					if entries[j].seenAt.Before(entries[minIdx].seenAt) {
+						minIdx = j
+					}
 				}
+				entries[i], entries[minIdx] = entries[minIdx], entries[i]
+				delete(s.seen, entries[i].id)
 			}
 		}
 	}
@@ -282,6 +297,8 @@ const (
 
 // CircuitBreaker provides circuit breaker functionality for event handlers.
 // When failures exceed a threshold, the circuit opens and requests fail fast.
+// In half-open state, only one probe request is allowed at a time to prevent
+// overwhelming a recovering service.
 type CircuitBreaker struct {
 	mu sync.RWMutex
 
@@ -291,10 +308,11 @@ type CircuitBreaker struct {
 	timeout          time.Duration // how long to wait before trying half-open
 
 	// state (unexported to prevent external modification)
-	state         CircuitState
-	failures      int
-	successes     int
-	lastStateTime time.Time
+	state          CircuitState
+	failures       int
+	successes      int
+	lastStateTime  time.Time
+	halfOpenProbes int32 // atomic counter for concurrent half-open probes
 }
 
 // NewCircuitBreaker creates a new circuit breaker.
@@ -328,6 +346,17 @@ func (cb *CircuitBreaker) State() CircuitState {
 	return cb.state
 }
 
+// OpenUntil returns the time when the circuit breaker will transition to half-open.
+// Returns zero time if the circuit is not open.
+func (cb *CircuitBreaker) OpenUntil() time.Time {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+	if cb.state == CircuitOpen {
+		return cb.lastStateTime.Add(cb.timeout)
+	}
+	return time.Time{}
+}
+
 // Allow checks if a request should be allowed.
 // Returns true if the request can proceed, false if it should fail fast.
 func (cb *CircuitBreaker) Allow() bool {
@@ -347,6 +376,11 @@ func (cb *CircuitBreaker) Allow() bool {
 		}
 		return false
 	case CircuitHalfOpen:
+		// Limit concurrent probes in half-open state to prevent thundering herd
+		if atomic.AddInt32(&cb.halfOpenProbes, 1) > int32(cb.successThreshold) {
+			atomic.AddInt32(&cb.halfOpenProbes, -1)
+			return false
+		}
 		return true
 	default:
 		return true
@@ -361,10 +395,12 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	cb.failures = 0
 
 	if cb.state == CircuitHalfOpen {
+		atomic.AddInt32(&cb.halfOpenProbes, -1)
 		cb.successes++
 		if cb.successes >= cb.successThreshold {
 			cb.state = CircuitClosed
 			cb.successes = 0
+			atomic.StoreInt32(&cb.halfOpenProbes, 0)
 			cb.lastStateTime = time.Now()
 		}
 	}
@@ -382,8 +418,10 @@ func (cb *CircuitBreaker) RecordFailure() {
 		cb.state = CircuitOpen
 		cb.lastStateTime = time.Now()
 	} else if cb.state == CircuitHalfOpen {
+		atomic.AddInt32(&cb.halfOpenProbes, -1)
 		// Any failure in half-open goes back to open
 		cb.state = CircuitOpen
+		atomic.StoreInt32(&cb.halfOpenProbes, 0)
 		cb.lastStateTime = time.Now()
 	}
 }
@@ -403,7 +441,10 @@ func CircuitBreakerMiddleware[T any](cb *CircuitBreaker) Middleware[T] {
 				ContextLogger(ctx).Warn("circuit breaker open, failing fast",
 					"event", ev.Name(),
 					"state", cb.State())
-				return &CircuitOpenError{Name: ev.Name()}
+				return &CircuitOpenError{
+					Name:      ev.Name(),
+					OpenUntil: cb.OpenUntil(),
+				}
 			}
 
 			// Execute handler
@@ -537,7 +578,7 @@ func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 			eventName := ContextName(ctx)
 			busID := ContextSource(ctx)
 			metadata := ContextMetadata(ctx)
-			workerPool := ContextDeliveryMode(ctx) == 1 // transport.WorkerPool
+			workerPool := ContextDeliveryMode(ctx) == WorkerPool
 
 			// For WorkerPool mode, subscription ID is not part of the key
 			subIDForEntry := subscriptionID
@@ -545,9 +586,12 @@ func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 				subIDForEntry = ""
 			}
 
-			// Extract trace context
+			// Extract trace context from OpenTelemetry span
 			var traceID, spanID string
-			// Note: trace extraction happens in monitor package middleware for full OTEL support
+			if span := trace.SpanContextFromContext(ctx); span.IsValid() {
+				traceID = span.TraceID().String()
+				spanID = span.SpanID().String()
+			}
 
 			// Record start (best effort)
 			if err := store.RecordStart(ctx, eventID, subIDForEntry, eventName, busID,
