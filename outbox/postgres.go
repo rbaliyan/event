@@ -143,11 +143,16 @@ func (s *PostgresStore) Insert(ctx context.Context, tx *sql.Tx, msg *Message) er
 	return err
 }
 
-// GetPending retrieves pending messages for publishing.
+// GetPending retrieves pending and failed messages for publishing.
 //
-// Returns messages with StatusPending, ordered by creation time (oldest first).
-// Uses FOR UPDATE SKIP LOCKED to prevent concurrent relays from processing
-// the same messages.
+// Returns messages with StatusPending or StatusFailed, ordered by creation
+// time (oldest first). Uses FOR UPDATE SKIP LOCKED to prevent concurrent
+// relays from processing the same messages.
+//
+// IMPORTANT: This method runs outside an explicit transaction, so the row
+// locks from FOR UPDATE SKIP LOCKED are released when the query completes.
+// For proper transactional safety with concurrent relays, use ProcessPending
+// instead.
 //
 // Parameters:
 //   - ctx: Context for cancellation and deadlines
@@ -158,16 +163,97 @@ func (s *PostgresStore) GetPending(ctx context.Context, limit int) ([]*Message, 
 	query := fmt.Sprintf(`
 		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count
 		FROM %s
-		WHERE status = $1
+		WHERE status IN ($1, $2)
 		ORDER BY created_at
-		LIMIT $2
+		LIMIT $3
 		FOR UPDATE SKIP LOCKED
 	`, s.tableName)
 
-	rows, err := s.db.QueryContext(ctx, query, StatusPending, limit)
+	rows, err := s.db.QueryContext(ctx, query, StatusPending, StatusFailed, limit)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
+
+	return s.scanMessages(rows)
+}
+
+// ProcessPending retrieves pending and failed messages within a transaction
+// and calls fn for each message. The transaction holds row locks via
+// FOR UPDATE SKIP LOCKED, preventing concurrent relays from processing
+// the same messages.
+//
+// The callback fn receives each message and should publish it. If fn returns
+// nil, the message is marked as published. If fn returns an error, the message
+// is marked as failed with the error recorded. All updates happen within the
+// same transaction.
+//
+// This is the recommended method for relay implementations. Use GetPending
+// only when you need to manage the transaction lifecycle yourself.
+//
+// Parameters:
+//   - ctx: Context for cancellation and deadlines
+//   - limit: Maximum number of messages to process
+//   - fn: Callback for each message; nil return marks published, error marks failed
+//
+// Returns error if the transaction fails. Individual message failures are
+// recorded but do not abort the transaction.
+func (s *PostgresStore) ProcessPending(ctx context.Context, limit int, fn func(msg *Message) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	query := fmt.Sprintf(`
+		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count
+		FROM %s
+		WHERE status IN ($1, $2)
+		ORDER BY created_at
+		LIMIT $3
+		FOR UPDATE SKIP LOCKED
+	`, s.tableName)
+
+	rows, err := tx.QueryContext(ctx, query, StatusPending, StatusFailed, limit)
+	if err != nil {
+		return fmt.Errorf("query pending: %w", err)
+	}
+
+	messages, err := s.scanMessages(rows)
+	if err != nil {
+		return fmt.Errorf("scan messages: %w", err)
+	}
+
+	publishQuery := fmt.Sprintf(`
+		UPDATE %s SET status = $1, published_at = $2 WHERE id = $3
+	`, s.tableName)
+
+	failQuery := fmt.Sprintf(`
+		UPDATE %s SET status = $1, last_error = $2, retry_count = retry_count + 1 WHERE id = $3
+	`, s.tableName)
+
+	now := time.Now()
+	for _, msg := range messages {
+		if fnErr := fn(msg); fnErr != nil {
+			var errMsg string
+			if fnErr != nil {
+				errMsg = fnErr.Error()
+			}
+			if _, execErr := tx.ExecContext(ctx, failQuery, StatusFailed, errMsg, msg.ID); execErr != nil {
+				return fmt.Errorf("mark failed id=%d: %w", msg.ID, execErr)
+			}
+			continue
+		}
+		if _, execErr := tx.ExecContext(ctx, publishQuery, StatusPublished, now, msg.ID); execErr != nil {
+			return fmt.Errorf("mark published id=%d: %w", msg.ID, execErr)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// scanMessages reads rows into Message structs and closes the rows.
+func (s *PostgresStore) scanMessages(rows *sql.Rows) ([]*Message, error) {
 	defer rows.Close()
 
 	var messages []*Message
@@ -234,7 +320,11 @@ func (s *PostgresStore) MarkFailed(ctx context.Context, id int64, err error) err
 		WHERE id = $3
 	`, s.tableName)
 
-	_, dbErr := s.db.ExecContext(ctx, query, StatusFailed, err.Error(), id)
+	var errMsg string
+	if err != nil {
+		errMsg = err.Error()
+	}
+	_, dbErr := s.db.ExecContext(ctx, query, StatusFailed, errMsg, id)
 	return dbErr
 }
 

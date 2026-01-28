@@ -201,6 +201,34 @@ func (r *Relay) Start(ctx context.Context) error {
 // This is the main processing loop that runs on each poll tick.
 // Returns the number of messages that failed to publish.
 func (r *Relay) publishPending(ctx context.Context) (failures int) {
+	// Use ProcessPending for stores that support transactional processing
+	// (PostgresStore). This holds row locks for the duration of processing,
+	// preventing concurrent relays from picking up the same messages.
+	if ps, ok := r.store.(interface {
+		ProcessPending(ctx context.Context, limit int, fn func(msg *Message) error) error
+	}); ok {
+		if err := ps.ProcessPending(ctx, r.batchSize, func(msg *Message) error {
+			if err := r.publishMessage(ctx, msg); err != nil {
+				r.logger.Error("failed to publish message",
+					"id", msg.ID,
+					"event", msg.EventName,
+					"error", err)
+				failures++
+				return err
+			}
+			r.logger.Debug("published outbox message",
+				"id", msg.ID,
+				"event", msg.EventName,
+				"event_id", msg.EventID)
+			return nil
+		}); err != nil {
+			r.logger.Error("failed to process pending messages", "error", err)
+			return failures + 1
+		}
+		return failures
+	}
+
+	// Fallback for stores without ProcessPending
 	messages, err := r.store.GetPending(ctx, r.batchSize)
 	if err != nil {
 		r.logger.Error("failed to get pending messages", "error", err)

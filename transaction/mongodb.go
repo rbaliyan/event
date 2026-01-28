@@ -3,6 +3,7 @@ package transaction
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -30,27 +31,40 @@ import (
 //	    return err
 //	})
 type MongoTransaction struct {
-	session mongo.Session
-	ctx     mongo.SessionContext
+	session   mongo.Session
+	ctx       mongo.SessionContext
+	closeOnce sync.Once
 }
 
-// Commit commits the MongoDB transaction.
+// Commit commits the MongoDB transaction and ends the session.
 //
 // After calling Commit, the transaction is closed and the session
-// should not be used for further operations.
+// should not be used for further operations. The session is automatically
+// ended to prevent resource leaks.
 //
 // Returns an error if the commit fails. MongoDB may automatically
 // retry transient errors.
 func (t *MongoTransaction) Commit() error {
-	return t.session.CommitTransaction(t.ctx)
+	err := t.session.CommitTransaction(t.ctx)
+	t.endSession()
+	return err
 }
 
-// Rollback rolls back the MongoDB transaction.
+// Rollback rolls back the MongoDB transaction and ends the session.
 //
 // After calling Rollback, the transaction is aborted and no changes
-// are persisted. The session should not be used for further operations.
+// are persisted. The session is automatically ended to prevent resource leaks.
 func (t *MongoTransaction) Rollback() error {
-	return t.session.AbortTransaction(t.ctx)
+	err := t.session.AbortTransaction(t.ctx)
+	t.endSession()
+	return err
+}
+
+// endSession ends the MongoDB session exactly once.
+func (t *MongoTransaction) endSession() {
+	t.closeOnce.Do(func() {
+		t.session.EndSession(t.ctx)
+	})
 }
 
 // Session returns the MongoDB session.

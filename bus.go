@@ -981,6 +981,7 @@ func Register[T any](ctx context.Context, bus *Bus, event Event[T]) error {
 
 	// Register with bus
 	if err := bus.register(impl.name, impl, eventType); err != nil {
+		impl.Unbind() // rollback: restore event to unbound state
 		return err
 	}
 
