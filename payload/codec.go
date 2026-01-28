@@ -15,6 +15,11 @@
 //	event := New[Order]("orders", WithPayloadCodec(payload.MsgPack{}))
 package payload
 
+// MetadataContentType is the metadata key for payload encoding format.
+// Both the event package and batch package use this to determine which
+// codec to use for encoding/decoding payloads.
+const MetadataContentType = "Content-Type"
+
 // Codec encodes/decodes event payload data.
 // Implementations must be safe for concurrent use.
 type Codec interface {

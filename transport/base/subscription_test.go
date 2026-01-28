@@ -9,11 +9,10 @@ import (
 
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.opentelemetry.io/otel/trace"
 )
 
 func testMessage(id, payload string) transport.Message {
-	return message.New(id, "test-source", []byte(payload), nil, trace.SpanContext{})
+	return message.New(id, "test-source", []byte(payload), nil)
 }
 
 func TestNewSubscription(t *testing.T) {

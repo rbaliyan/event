@@ -16,11 +16,6 @@ func TestConstant(t *testing.T) {
 	}
 }
 
-func TestConstant_Reset(t *testing.T) {
-	strategy := &Constant{Delay: time.Second}
-	strategy.Reset() // Should not panic
-}
-
 func TestLinear(t *testing.T) {
 	strategy := &Linear{
 		Initial: 100 * time.Millisecond,
@@ -61,11 +56,6 @@ func TestLinear_NoMax(t *testing.T) {
 	if delay != expected {
 		t.Errorf("expected %v, got %v", expected, delay)
 	}
-}
-
-func TestLinear_Reset(t *testing.T) {
-	strategy := &Linear{Initial: time.Second, Step: time.Second}
-	strategy.Reset() // Should not panic
 }
 
 func TestExponential(t *testing.T) {
@@ -146,11 +136,6 @@ func TestExponential_WithJitter(t *testing.T) {
 			t.Errorf("delay %v out of expected range [%v, %v]", delay, minExpected, maxExpected)
 		}
 	}
-}
-
-func TestExponential_Reset(t *testing.T) {
-	strategy := &Exponential{Initial: time.Second}
-	strategy.Reset() // Should not panic
 }
 
 func TestDefault(t *testing.T) {

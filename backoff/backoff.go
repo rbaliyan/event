@@ -58,10 +58,6 @@ type Strategy interface {
 	// NextDelay returns the delay for the given attempt (0-indexed).
 	// Attempt 0 is the first retry, not the initial attempt.
 	NextDelay(attempt int) time.Duration
-
-	// Reset resets the strategy state if any.
-	// Most strategies are stateless and this is a no-op.
-	Reset()
 }
 
 // Constant returns a fixed delay for all attempts.
@@ -82,9 +78,6 @@ type Constant struct {
 func (c *Constant) NextDelay(_ int) time.Duration {
 	return c.Delay
 }
-
-// Reset is a no-op for Constant strategy.
-func (c *Constant) Reset() {}
 
 // Linear returns a delay that increases linearly with each attempt.
 //
@@ -118,9 +111,6 @@ func (l *Linear) NextDelay(attempt int) time.Duration {
 	}
 	return delay
 }
-
-// Reset is a no-op for Linear strategy.
-func (l *Linear) Reset() {}
 
 // Exponential returns a delay that grows exponentially with each attempt.
 //
@@ -185,9 +175,6 @@ func (e *Exponential) NextDelay(attempt int) time.Duration {
 
 	return time.Duration(delay)
 }
-
-// Reset is a no-op for Exponential strategy.
-func (e *Exponential) Reset() {}
 
 // Default returns the recommended exponential backoff strategy.
 //

@@ -185,6 +185,12 @@ func (s *Subscription) SendWithRetryConfig(msg transport.Message, logger *slog.L
 //
 // Backoff is NOT safe for concurrent use. It is designed to be used
 // within a single goroutine (e.g., a poll loop or retry loop).
+//
+// This is distinct from backoff.Strategy which is a stateless interface
+// for calculating delays from an attempt number. Backoff is a stateful
+// helper that tracks its own current delay and provides convenience
+// methods like Wait() for transport consumer loops. Both serve different
+// use cases: Strategy for general retry logic, Backoff for transport internals.
 type Backoff struct {
 	current time.Duration
 	initial time.Duration

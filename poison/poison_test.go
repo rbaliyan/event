@@ -420,12 +420,21 @@ func TestError(t *testing.T) {
 }
 
 func TestDefaultOptions(t *testing.T) {
-	opts := DefaultOptions()
+	// Verify defaults by creating a detector and checking behavior
+	store := NewMemoryStore()
+	detector := NewDetector(store)
 
-	if opts.Threshold != 5 {
-		t.Errorf("expected threshold 5, got %d", opts.Threshold)
+	// Default threshold is 5: 4 failures should not quarantine
+	ctx := context.Background()
+	for i := 0; i < 4; i++ {
+		poisoned, _ := detector.RecordFailure(ctx, "test-defaults")
+		if poisoned {
+			t.Fatalf("expected not poisoned after %d failures, but was", i+1)
+		}
 	}
-	if opts.QuarantineTime != time.Hour {
-		t.Errorf("expected quarantine time 1h, got %v", opts.QuarantineTime)
+	// 5th failure should quarantine
+	poisoned, _ := detector.RecordFailure(ctx, "test-defaults")
+	if !poisoned {
+		t.Fatal("expected poisoned after 5 failures")
 	}
 }

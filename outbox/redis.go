@@ -13,7 +13,6 @@ import (
 	"github.com/rbaliyan/event/v3/transport/codec"
 	"github.com/rbaliyan/event/v3/transport/message"
 	"github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel/trace"
 )
 
 /*
@@ -631,7 +630,6 @@ func (r *RedisRelay) publishMessage(ctx context.Context, msg *RedisMessage) erro
 		"outbox",
 		msg.Payload,
 		msg.Metadata,
-		trace.SpanContext{},
 	)
 
 	return r.transport.Publish(ctx, msg.EventName, transportMsg)

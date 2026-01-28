@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -131,13 +132,13 @@ func (s *inMemoryDeduplicationStore) MarkSeen(ctx context.Context, messageID str
 			}
 		}
 
-		// If still at capacity, remove oldest 10% by finding the oldest entries
+		// If still at capacity, remove oldest 10% using slices.SortFunc (O(n log n))
+		// instead of O(n*k) selection sort.
 		if len(s.seen) >= s.maxSize {
 			toRemove := s.maxSize / 10
 			if toRemove == 0 {
 				toRemove = 1
 			}
-			// Collect entries and sort by time to find the oldest
 			type entry struct {
 				id     string
 				seenAt time.Time
@@ -146,16 +147,10 @@ func (s *inMemoryDeduplicationStore) MarkSeen(ctx context.Context, messageID str
 			for id, seenAt := range s.seen {
 				entries = append(entries, entry{id, seenAt})
 			}
-			// Partial sort: find the toRemove oldest entries
-			// Simple selection: iterate and find oldest toRemove entries
+			slices.SortFunc(entries, func(a, b entry) int {
+				return a.seenAt.Compare(b.seenAt)
+			})
 			for i := 0; i < toRemove && i < len(entries); i++ {
-				minIdx := i
-				for j := i + 1; j < len(entries); j++ {
-					if entries[j].seenAt.Before(entries[minIdx].seenAt) {
-						minIdx = j
-					}
-				}
-				entries[i], entries[minIdx] = entries[minIdx], entries[i]
 				delete(s.seen, entries[i].id)
 			}
 		}

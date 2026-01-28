@@ -629,15 +629,21 @@ func (b *Bus) Close(ctx context.Context) error {
 
 	var errs []error
 
-	// Unregister all events from transport (while transport is still open)
+	// Collect event names under lock, then unregister without holding it.
+	// This avoids holding RLock during potentially slow transport operations.
 	b.eventMutex.RLock()
+	names := make([]string, 0, len(b.events))
 	for name := range b.events {
+		names = append(names, name)
+	}
+	b.eventMutex.RUnlock()
+
+	for _, name := range names {
 		if err := b.transport.UnregisterEvent(ctx, name); err != nil {
 			b.logger.Warn("failed to unregister event during shutdown", "event", name, "error", err)
 			errs = append(errs, fmt.Errorf("unregister %s: %w", name, err))
 		}
 	}
-	b.eventMutex.RUnlock()
 
 	// Close the bus transport
 	if b.transport != nil {
@@ -654,6 +660,12 @@ func (b *Bus) Close(ctx context.Context) error {
 func (b *Bus) register(name string, ev any, eventType reflect.Type) error {
 	b.eventMutex.Lock()
 	defer b.eventMutex.Unlock()
+
+	// Re-check under lock: Close() sets status before acquiring eventMutex,
+	// so this prevents registering events after bus shutdown.
+	if !b.Running() {
+		return ErrBusClosed
+	}
 
 	if existing, ok := b.events[name]; ok {
 		// Check if types match
@@ -868,7 +880,7 @@ func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payloa
 	}
 
 	// Create message
-	msg := message.New(eventID, b.ID(), payload, meta, spanCtx)
+	msg := message.New(eventID, b.ID(), payload, meta, message.WithSpanContext(spanCtx))
 
 	// Send via transport
 	return b.transport.Publish(ctx, eventName, msg)

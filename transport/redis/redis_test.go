@@ -13,7 +13,6 @@ import (
 	"github.com/rbaliyan/event/v3/transport/codec"
 	"github.com/rbaliyan/event/v3/transport/message"
 	"github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // mockRedisClient implements Client for testing
@@ -207,7 +206,7 @@ func (m *mockRedisClient) Close() error {
 
 // testMessage creates a test message
 func testMessage(source, payload string) message.Message {
-	return message.New(transport.NewID(), source, []byte(payload), nil, trace.SpanContext{})
+	return message.New(transport.NewID(), source, []byte(payload), nil)
 }
 
 func TestNew(t *testing.T) {

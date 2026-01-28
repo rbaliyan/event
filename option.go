@@ -10,7 +10,8 @@ import (
 )
 
 // MetadataContentType is the metadata key for payload encoding.
-const MetadataContentType = "Content-Type"
+// Canonical definition is in payload.MetadataContentType.
+const MetadataContentType = payload.MetadataContentType
 
 // DeliveryMode determines how messages are distributed to subscribers.
 // This is an alias for transport.DeliveryMode.

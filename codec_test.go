@@ -7,14 +7,13 @@ import (
 
 	"github.com/rbaliyan/event/v3/transport/codec"
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.opentelemetry.io/otel/trace"
 )
 
 func TestJSONCodecEncode(t *testing.T) {
 	// Use the default codec
 	c := codec.Default()
 
-	msg := message.New("test-id", "test-source", []byte("hello world"), map[string]string{"key": "value"}, trace.SpanContext{})
+	msg := message.New("test-id", "test-source", []byte("hello world"), map[string]string{"key": "value"})
 
 	data, err := c.Encode(msg)
 	if err != nil {
@@ -92,7 +91,6 @@ func TestJSONCodecRoundTrip(t *testing.T) {
 		"round-trip-source",
 		payloadBytes,
 		map[string]string{"env": "test", "version": "1.0"},
-		trace.SpanContext{},
 	)
 
 	// Encode
@@ -147,7 +145,7 @@ func TestJSONCodecDecodeInvalidJSON(t *testing.T) {
 func TestJSONCodecEncodeNilMetadata(t *testing.T) {
 	c := codec.Default()
 
-	msg := message.New("test-id", "test-source", []byte("data"), nil, trace.SpanContext{})
+	msg := message.New("test-id", "test-source", []byte("data"), nil)
 
 	data, err := c.Encode(msg)
 	if err != nil {

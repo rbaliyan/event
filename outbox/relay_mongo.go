@@ -8,7 +8,6 @@ import (
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // RelayMode defines how the relay watches for new messages.
@@ -294,7 +293,6 @@ func (r *MongoRelay) publishMessage(ctx context.Context, msg *MongoMessage) erro
 		"outbox",
 		msg.Payload,
 		msg.Metadata,
-		trace.SpanContext{},
 	)
 
 	return r.transport.Publish(ctx, msg.EventName, transportMsg)

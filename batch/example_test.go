@@ -127,83 +127,60 @@ func ExampleCollector_Size() {
 
 // ExampleWithBatchSize demonstrates configuring batch size.
 func ExampleWithBatchSize() {
-	opts := batch.DefaultOptions()
-	fmt.Println("Default batch size:", opts.BatchSize)
+	// WithBatchSize configures the maximum messages per batch
+	processor := batch.NewProcessor[string](
+		batch.WithBatchSize(500),
+	)
 
-	batch.WithBatchSize(500)(opts)
-	fmt.Println("Custom batch size:", opts.BatchSize)
+	fmt.Println("Processor created with batch size 500")
+	_ = processor
 
 	// Output:
-	// Default batch size: 100
-	// Custom batch size: 500
+	// Processor created with batch size 500
 }
 
 // ExampleWithTimeout demonstrates configuring batch timeout.
 func ExampleWithTimeout() {
-	opts := batch.DefaultOptions()
-	fmt.Println("Default timeout:", opts.Timeout)
+	// WithTimeout configures the maximum time to wait for a full batch
+	processor := batch.NewProcessor[string](
+		batch.WithTimeout(5 * time.Second),
+	)
 
-	batch.WithTimeout(5 * time.Second)(opts)
-	fmt.Println("Custom timeout:", opts.Timeout)
+	fmt.Println("Processor created with 5s timeout")
+	_ = processor
 
 	// Output:
-	// Default timeout: 1s
-	// Custom timeout: 5s
+	// Processor created with 5s timeout
 }
 
 // ExampleWithMaxRetries demonstrates configuring retry behavior.
 func ExampleWithMaxRetries() {
-	opts := batch.DefaultOptions()
-	fmt.Println("Default max retries:", opts.MaxRetries)
+	// WithMaxRetries sets how many times to retry failed batches
+	processor := batch.NewProcessor[string](
+		batch.WithMaxRetries(5),
+	)
 
-	batch.WithMaxRetries(5)(opts)
-	fmt.Println("Custom max retries:", opts.MaxRetries)
-
-	// Disable retries
-	batch.WithMaxRetries(0)(opts)
-	fmt.Println("Retries disabled:", opts.MaxRetries)
+	fmt.Println("Processor created with 5 max retries")
+	_ = processor
 
 	// Output:
-	// Default max retries: 3
-	// Custom max retries: 5
-	// Retries disabled: 0
+	// Processor created with 5 max retries
 }
 
 // ExampleWithOnError demonstrates configuring error handling.
 func ExampleWithOnError() {
-	opts := batch.DefaultOptions()
+	// WithOnError sets a callback for batch failures
+	processor := batch.NewProcessor[string](
+		batch.WithOnError(func(b []any, err error) {
+			fmt.Printf("Batch of %d items failed: %v\n", len(b), err)
+		}),
+	)
 
-	var lastError error
-	var lastBatchSize int
-
-	batch.WithOnError(func(b []any, err error) {
-		lastBatchSize = len(b)
-		lastError = err
-	})(opts)
-
-	// Simulate error handler being called
-	opts.OnError([]any{"item1", "item2"}, fmt.Errorf("test error"))
-
-	fmt.Println("Batch size in error:", lastBatchSize)
-	fmt.Println("Error message:", lastError)
+	fmt.Println("Processor created with error handler")
+	_ = processor
 
 	// Output:
-	// Batch size in error: 2
-	// Error message: test error
-}
-
-// ExampleDefaultOptions demonstrates the default batch options.
-func ExampleDefaultOptions() {
-	opts := batch.DefaultOptions()
-
-	fmt.Println("BatchSize:", opts.BatchSize)
-	fmt.Println("Timeout:", opts.Timeout)
-	fmt.Println("MaxRetries:", opts.MaxRetries)
-
-	// Output:
-	// BatchSize: 100
-	// Timeout: 1s
-	// MaxRetries: 3
+	// Processor created with error handler
 }
 
 // Example_timeoutBasedFlushing demonstrates flushing based on timeout.

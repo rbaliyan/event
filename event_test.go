@@ -16,7 +16,6 @@ import (
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/channel"
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // randomString generates a random alphanumeric string of length n.
@@ -1022,7 +1021,7 @@ func TestTransportErrorHandler(t *testing.T) {
 	_ = sub // Don't read from this subscription
 
 	// Try to publish - should timeout because subscriber isn't reading
-	msg := message.New("test", "source", []byte("data"), nil, trace.SpanContext{})
+	msg := message.New("test", "source", []byte("data"), nil)
 	go func() {
 		tr.Publish(context.Background(), "test", msg)
 	}()
@@ -1242,7 +1241,7 @@ func TestTransportCloseWithSubscriptions(t *testing.T) {
 	}
 
 	// Publish a message
-	msg := message.New("test-msg", "source", []byte("data"), nil, trace.SpanContext{})
+	msg := message.New("test-msg", "source", []byte("data"), nil)
 	if err := tr.Publish(context.Background(), "test-event", msg); err != nil {
 		t.Fatalf("publish failed: %v", err)
 	}
@@ -1721,7 +1720,7 @@ func TestTransportPublishTimeout(t *testing.T) {
 	defer sub.Close(context.Background())
 
 	// Try to publish - should timeout since subscriber isn't reading
-	msg := message.New("timeout-test", "source", []byte("data"), nil, trace.SpanContext{})
+	msg := message.New("timeout-test", "source", []byte("data"), nil)
 	go func() {
 		tr.Publish(context.Background(), "test-event", msg)
 	}()
@@ -1830,7 +1829,7 @@ func TestBroadcastMultipleSubscribers(t *testing.T) {
 	defer sub2.Close(context.Background())
 
 	// Publish a message
-	msg := message.New("test-msg", "source", []byte("data"), nil, trace.SpanContext{})
+	msg := message.New("test-msg", "source", []byte("data"), nil)
 	if err := tr.Publish(context.Background(), "test-event", msg); err != nil {
 		t.Fatalf("publish failed: %v", err)
 	}

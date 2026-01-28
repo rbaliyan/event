@@ -11,98 +11,98 @@ import (
 )
 
 func TestDefaultOptions(t *testing.T) {
-	opts := DefaultOptions()
+	opts := defaultOptions()
 
-	if opts.BatchSize != 100 {
-		t.Errorf("expected batch size 100, got %d", opts.BatchSize)
+	if opts.batchSize != 100 {
+		t.Errorf("expected batch size 100, got %d", opts.batchSize)
 	}
-	if opts.Timeout != time.Second {
-		t.Errorf("expected timeout 1s, got %v", opts.Timeout)
+	if opts.timeout != time.Second {
+		t.Errorf("expected timeout 1s, got %v", opts.timeout)
 	}
-	if opts.MaxRetries != 3 {
-		t.Errorf("expected max retries 3, got %d", opts.MaxRetries)
+	if opts.maxRetries != 3 {
+		t.Errorf("expected max retries 3, got %d", opts.maxRetries)
 	}
-	if opts.OnError == nil {
-		t.Error("expected OnError to be set")
+	if opts.onError == nil {
+		t.Error("expected onError to be set")
 	}
 }
 
 func TestWithBatchSize(t *testing.T) {
-	opts := DefaultOptions()
+	opts := defaultOptions()
 
 	WithBatchSize(50)(opts)
-	if opts.BatchSize != 50 {
-		t.Errorf("expected batch size 50, got %d", opts.BatchSize)
+	if opts.batchSize != 50 {
+		t.Errorf("expected batch size 50, got %d", opts.batchSize)
 	}
 
 	// Zero should be ignored
 	WithBatchSize(0)(opts)
-	if opts.BatchSize != 50 {
-		t.Errorf("expected batch size 50, got %d", opts.BatchSize)
+	if opts.batchSize != 50 {
+		t.Errorf("expected batch size 50, got %d", opts.batchSize)
 	}
 
 	// Negative should be ignored
 	WithBatchSize(-1)(opts)
-	if opts.BatchSize != 50 {
-		t.Errorf("expected batch size 50, got %d", opts.BatchSize)
+	if opts.batchSize != 50 {
+		t.Errorf("expected batch size 50, got %d", opts.batchSize)
 	}
 }
 
 func TestWithTimeout(t *testing.T) {
-	opts := DefaultOptions()
+	opts := defaultOptions()
 
 	WithTimeout(5 * time.Second)(opts)
-	if opts.Timeout != 5*time.Second {
-		t.Errorf("expected timeout 5s, got %v", opts.Timeout)
+	if opts.timeout != 5*time.Second {
+		t.Errorf("expected timeout 5s, got %v", opts.timeout)
 	}
 
 	// Zero should be ignored
 	WithTimeout(0)(opts)
-	if opts.Timeout != 5*time.Second {
-		t.Errorf("expected timeout 5s, got %v", opts.Timeout)
+	if opts.timeout != 5*time.Second {
+		t.Errorf("expected timeout 5s, got %v", opts.timeout)
 	}
 }
 
 func TestWithMaxRetries(t *testing.T) {
-	opts := DefaultOptions()
+	opts := defaultOptions()
 
 	WithMaxRetries(5)(opts)
-	if opts.MaxRetries != 5 {
-		t.Errorf("expected max retries 5, got %d", opts.MaxRetries)
+	if opts.maxRetries != 5 {
+		t.Errorf("expected max retries 5, got %d", opts.maxRetries)
 	}
 
 	// Zero should be allowed
 	WithMaxRetries(0)(opts)
-	if opts.MaxRetries != 0 {
-		t.Errorf("expected max retries 0, got %d", opts.MaxRetries)
+	if opts.maxRetries != 0 {
+		t.Errorf("expected max retries 0, got %d", opts.maxRetries)
 	}
 
 	// Negative should be ignored
 	WithMaxRetries(-1)(opts)
-	if opts.MaxRetries != 0 {
-		t.Errorf("expected max retries 0, got %d", opts.MaxRetries)
+	if opts.maxRetries != 0 {
+		t.Errorf("expected max retries 0, got %d", opts.maxRetries)
 	}
 }
 
 func TestWithOnError(t *testing.T) {
-	opts := DefaultOptions()
+	opts := defaultOptions()
 	called := false
 
 	WithOnError(func(batch []any, err error) {
 		called = true
 	})(opts)
 
-	opts.OnError(nil, nil)
+	opts.onError(nil, nil)
 	if !called {
-		t.Error("expected OnError to be called")
+		t.Error("expected onError to be called")
 	}
 
 	// Nil should be ignored
-	opts.OnError = nil
+	prev := opts.onError
 	WithOnError(nil)(opts)
-	if opts.OnError != nil {
-		t.Error("expected OnError to remain nil")
-	}
+	// onError should still be the previous function (nil is ignored)
+	opts.onError(nil, nil)
+	_ = prev
 }
 
 func TestCollector(t *testing.T) {
@@ -194,11 +194,11 @@ func TestProcessor(t *testing.T) {
 			WithTimeout(2*time.Second),
 		)
 
-		if processor.opts.BatchSize != 50 {
-			t.Errorf("expected batch size 50, got %d", processor.opts.BatchSize)
+		if processor.opts.batchSize != 50 {
+			t.Errorf("expected batch size 50, got %d", processor.opts.batchSize)
 		}
-		if processor.opts.Timeout != 2*time.Second {
-			t.Errorf("expected timeout 2s, got %v", processor.opts.Timeout)
+		if processor.opts.timeout != 2*time.Second {
+			t.Errorf("expected timeout 2s, got %v", processor.opts.timeout)
 		}
 	})
 
@@ -227,14 +227,14 @@ type mockMessage struct {
 	err     error
 }
 
-func (m *mockMessage) ID() string                    { return "mock-id" }
-func (m *mockMessage) Source() string                { return "mock-source" }
-func (m *mockMessage) Payload() any                  { return m.payload }
-func (m *mockMessage) Metadata() map[string]string   { return nil }
-func (m *mockMessage) Context() context.Context      { return context.Background() }
-func (m *mockMessage) RetryCount() int               { return 0 }
-func (m *mockMessage) Timestamp() time.Time          { return time.Now() }
-func (m *mockMessage) SpanContext() any              { return nil }
+func (m *mockMessage) ID() string                  { return "mock-id" }
+func (m *mockMessage) Source() string               { return "mock-source" }
+func (m *mockMessage) Payload() any                 { return m.payload }
+func (m *mockMessage) Metadata() map[string]string  { return nil }
+func (m *mockMessage) Context() context.Context     { return context.Background() }
+func (m *mockMessage) RetryCount() int              { return 0 }
+func (m *mockMessage) Timestamp() time.Time         { return time.Now() }
+func (m *mockMessage) SpanContext() any             { return nil }
 func (m *mockMessage) Ack(err error) error {
 	m.acked = true
 	m.err = err
@@ -249,7 +249,7 @@ func TestOptionsErrorHandler(t *testing.T) {
 	var capturedBatch []any
 	var capturedErr error
 
-	opts := DefaultOptions()
+	opts := defaultOptions()
 	WithOnError(func(batch []any, err error) {
 		capturedBatch = batch
 		capturedErr = err
@@ -258,7 +258,7 @@ func TestOptionsErrorHandler(t *testing.T) {
 	testBatch := []any{"a", "b", "c"}
 	testErr := errors.New("test error")
 
-	opts.OnError(testBatch, testErr)
+	opts.onError(testBatch, testErr)
 
 	if len(capturedBatch) != 3 {
 		t.Errorf("expected batch length 3, got %d", len(capturedBatch))

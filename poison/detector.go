@@ -39,31 +39,27 @@ type Detector struct {
 	quarantineTime time.Duration // How long to quarantine
 }
 
-// Options configures the Detector behavior.
-type Options struct {
+// options configures the Detector behavior.
+type options struct {
 	// Threshold is the number of failures before a message is quarantined.
 	// Default: 5
-	Threshold int
+	threshold int
 
 	// QuarantineTime is how long quarantined messages are blocked.
 	// Default: 1 hour
-	QuarantineTime time.Duration
+	quarantineTime time.Duration
 }
 
-// DefaultOptions returns default detector options.
-//
-// Defaults:
-//   - Threshold: 5 failures
-//   - QuarantineTime: 1 hour
-func DefaultOptions() *Options {
-	return &Options{
-		Threshold:      5,
-		QuarantineTime: time.Hour,
+// defaultOptions returns default detector options.
+func defaultOptions() *options {
+	return &options{
+		threshold:      5,
+		quarantineTime: time.Hour,
 	}
 }
 
-// Option is a function that modifies Options.
-type Option func(*Options)
+// Option is a function that modifies detector options.
+type Option func(*options)
 
 // WithThreshold sets the number of failures required before quarantine.
 //
@@ -78,9 +74,9 @@ type Option func(*Options)
 //	// Quarantine after 3 failures
 //	detector := poison.NewDetector(store, poison.WithThreshold(3))
 func WithThreshold(threshold int) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		if threshold > 0 {
-			o.Threshold = threshold
+			o.threshold = threshold
 		}
 	}
 }
@@ -97,9 +93,9 @@ func WithThreshold(threshold int) Option {
 //	// Block poison messages for 24 hours
 //	detector := poison.NewDetector(store, poison.WithQuarantineTime(24 * time.Hour))
 func WithQuarantineTime(d time.Duration) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		if d > 0 {
-			o.QuarantineTime = d
+			o.quarantineTime = d
 		}
 	}
 }
@@ -118,15 +114,15 @@ func WithQuarantineTime(d time.Duration) Option {
 //	    poison.WithQuarantineTime(time.Hour),
 //	)
 func NewDetector(store Store, opts ...Option) *Detector {
-	o := DefaultOptions()
+	o := defaultOptions()
 	for _, opt := range opts {
 		opt(o)
 	}
 
 	return &Detector{
 		store:          store,
-		threshold:      o.Threshold,
-		quarantineTime: o.QuarantineTime,
+		threshold:      o.threshold,
+		quarantineTime: o.quarantineTime,
 	}
 }
 

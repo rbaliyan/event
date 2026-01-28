@@ -8,7 +8,6 @@ import (
 
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // Relay polls the outbox and publishes messages to the transport.
@@ -243,7 +242,6 @@ func (r *Relay) publishMessage(ctx context.Context, msg *Message) error {
 		"outbox",
 		msg.Payload,
 		msg.Metadata,
-		trace.SpanContext{},
 	)
 
 	return r.transport.Publish(ctx, msg.EventName, transportMsg)

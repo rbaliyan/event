@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.opentelemetry.io/otel/trace"
 )
 
 func TestJSONCodec(t *testing.T) {
@@ -22,7 +21,7 @@ func TestJSONCodec(t *testing.T) {
 	})
 
 	t.Run("Encode and Decode simple payload", func(t *testing.T) {
-		msg := message.New("id-1", "source-1", []byte("hello"), nil, trace.SpanContext{})
+		msg := message.New("id-1", "source-1", []byte("hello"), nil)
 
 		data, err := codec.Encode(msg)
 		if err != nil {
@@ -49,7 +48,7 @@ func TestJSONCodec(t *testing.T) {
 
 	t.Run("Encode and Decode with metadata", func(t *testing.T) {
 		metadata := map[string]string{"key": "value", "env": "test"}
-		msg := message.New("id-2", "source-2", []byte("data"), metadata, trace.SpanContext{})
+		msg := message.New("id-2", "source-2", []byte("data"), metadata)
 
 		data, err := codec.Encode(msg)
 		if err != nil {
@@ -70,7 +69,7 @@ func TestJSONCodec(t *testing.T) {
 	})
 
 	t.Run("Encode and Decode with retry count", func(t *testing.T) {
-		msg := message.NewWithRetry("id-3", "source-3", []byte("data"), nil, trace.SpanContext{}, 5)
+		msg := message.New("id-3", "source-3", []byte("data"), nil, message.WithRetryCount(5))
 
 		data, err := codec.Encode(msg)
 		if err != nil {
@@ -100,7 +99,7 @@ func TestJSONCodec(t *testing.T) {
 			t.Fatalf("failed to marshal order: %v", err)
 		}
 
-		msg := message.New("id-4", "source-4", orderBytes, nil, trace.SpanContext{})
+		msg := message.New("id-4", "source-4", orderBytes, nil)
 
 		data, err := codec.Encode(msg)
 		if err != nil {
@@ -133,7 +132,7 @@ func TestJSONCodec(t *testing.T) {
 	})
 
 	t.Run("Encode with nil metadata", func(t *testing.T) {
-		msg := message.New("id-5", "source-5", []byte("data"), nil, trace.SpanContext{})
+		msg := message.New("id-5", "source-5", []byte("data"), nil)
 
 		data, err := codec.Encode(msg)
 		if err != nil {

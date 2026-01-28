@@ -6,7 +6,6 @@ import (
 	"maps"
 
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // JSON implements Codec using JSON serialization.
@@ -59,13 +58,12 @@ func (c JSON) Decode(data []byte) (Message, error) {
 		maps.Copy(metadata, jm.Metadata)
 	}
 
-	return message.NewWithRetry(
+	return message.New(
 		jm.ID,
 		jm.Source,
 		jm.Payload,
 		metadata,
-		trace.SpanContext{},
-		jm.RetryCount,
+		message.WithRetryCount(jm.RetryCount),
 	), nil
 }
 

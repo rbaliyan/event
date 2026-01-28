@@ -13,7 +13,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // ResumeTokenStore defines the interface for persisting Change Stream resume tokens.
@@ -356,7 +355,6 @@ func (r *ChangeStreamRelay) publishMessage(ctx context.Context, msg *MongoMessag
 		"outbox",
 		msg.Payload,
 		msg.Metadata,
-		trace.SpanContext{},
 	)
 
 	return r.transport.Publish(ctx, msg.EventName, transportMsg)

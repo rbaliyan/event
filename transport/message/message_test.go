@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"testing"
 	"time"
-
-	"go.opentelemetry.io/otel/trace"
 )
 
 func TestMessageNew(t *testing.T) {
 	metadata := map[string]string{"key": "value"}
-	msg := New("id-1", "source-1", []byte("payload"), metadata, trace.SpanContext{})
+	msg := New("id-1", "source-1", []byte("payload"), metadata)
 
 	if msg.ID() != "id-1" {
 		t.Errorf("expected id-1, got %s", msg.ID())
@@ -33,7 +31,7 @@ func TestMessageNew(t *testing.T) {
 }
 
 func TestMessageNewWithRetry(t *testing.T) {
-	msg := NewWithRetry("id-1", "source-1", []byte("payload"), nil, trace.SpanContext{}, 3)
+	msg := New("id-1", "source-1", []byte("payload"), nil, WithRetryCount(3))
 
 	if msg.RetryCount() != 3 {
 		t.Errorf("expected retry count 3, got %d", msg.RetryCount())
@@ -45,7 +43,7 @@ func TestMessageNewWithRetry(t *testing.T) {
 
 func TestMessageNewWithTimestamp(t *testing.T) {
 	ts := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
-	msg := NewWithTimestamp("id-1", "source-1", []byte("payload"), nil, trace.SpanContext{}, ts)
+	msg := New("id-1", "source-1", []byte("payload"), nil, WithTimestamp(ts))
 
 	if !msg.Timestamp().Equal(ts) {
 		t.Errorf("expected %v, got %v", ts, msg.Timestamp())
@@ -59,7 +57,7 @@ func TestMessageNewWithAck(t *testing.T) {
 		return nil
 	}
 
-	msg := NewWithAck("id-1", "source-1", []byte("payload"), nil, 2, ackFn)
+	msg := New("id-1", "source-1", []byte("payload"), nil, WithRetryCount(2), WithAckFunc(ackFn))
 
 	if msg.RetryCount() != 2 {
 		t.Errorf("expected retry count 2, got %d", msg.RetryCount())
@@ -80,7 +78,7 @@ func TestMessageNewFull(t *testing.T) {
 		return nil
 	}
 
-	msg := NewFull("id-1", "source-1", []byte("payload"), metadata, ts, 5, ackFn)
+	msg := New("id-1", "source-1", []byte("payload"), metadata, WithTimestamp(ts), WithRetryCount(5), WithAckFunc(ackFn))
 
 	if msg.ID() != "id-1" {
 		t.Errorf("expected id-1, got %s", msg.ID())
@@ -108,7 +106,7 @@ func TestMessageNewFull(t *testing.T) {
 }
 
 func TestMessageAckWithNilFunction(t *testing.T) {
-	msg := New("id-1", "source-1", []byte("payload"), nil, trace.SpanContext{})
+	msg := New("id-1", "source-1", []byte("payload"), nil)
 
 	// Should not panic
 	err := msg.Ack(nil)
@@ -118,7 +116,7 @@ func TestMessageAckWithNilFunction(t *testing.T) {
 }
 
 func TestMessageContext(t *testing.T) {
-	msg := New("id-1", "source-1", []byte("payload"), nil, trace.SpanContext{})
+	msg := New("id-1", "source-1", []byte("payload"), nil)
 
 	ctx := msg.Context()
 	if ctx == nil {
@@ -127,7 +125,7 @@ func TestMessageContext(t *testing.T) {
 }
 
 func TestMessageNilMetadata(t *testing.T) {
-	msg := New("id-1", "source-1", []byte("payload"), nil, trace.SpanContext{})
+	msg := New("id-1", "source-1", []byte("payload"), nil)
 
 	if msg.Metadata() != nil {
 		t.Error("expected nil metadata")

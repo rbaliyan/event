@@ -35,6 +35,14 @@ import (
 // EventSchema defines processing configuration for an event.
 // Publishers register schemas; subscribers auto-load them.
 // This ensures all workers processing the same event have consistent settings.
+//
+// EventSchema serves two purposes:
+//   - Configuration: Processing behavior (timeouts, retries, feature flags)
+//   - Identity: Event name, version, and description metadata
+//
+// These are deliberately combined into a single type because they are always
+// stored, transmitted, and applied together. Splitting would add indirection
+// without practical benefit since subscribers need all fields on registration.
 type EventSchema struct {
 	// Identity
 	Name        string `json:"name" bson:"_id"`

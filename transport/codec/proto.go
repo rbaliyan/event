@@ -5,7 +5,6 @@ import (
 	"maps"
 
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -51,13 +50,12 @@ func (c Proto) Decode(data []byte) (Message, error) {
 		maps.Copy(metadata, pm.Metadata)
 	}
 
-	return message.NewWithRetry(
+	return message.New(
 		pm.Id,
 		pm.Source,
 		pm.Payload,
 		metadata,
-		trace.SpanContext{},
-		int(pm.RetryCount),
+		message.WithRetryCount(int(pm.RetryCount)),
 	), nil
 }
 

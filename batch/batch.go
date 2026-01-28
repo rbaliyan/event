@@ -73,9 +73,8 @@ import (
 )
 
 // MetadataContentType is the metadata key for payload encoding.
-// Duplicated from the event package to avoid import cycles
-// (batch imports transport, event imports transport).
-const MetadataContentType = "Content-Type"
+// Defined canonically in payload.MetadataContentType.
+const MetadataContentType = payload.MetadataContentType
 
 // Handler processes a batch of messages.
 //
@@ -90,55 +89,26 @@ const MetadataContentType = "Content-Type"
 //	}
 type Handler[T any] func(ctx context.Context, batch []T) error
 
-// Options configures batch processing behavior.
-//
-// Use the With* functions to configure options:
-//
-//	processor := batch.NewProcessor[Order](
-//	    batch.WithBatchSize(100),
-//	    batch.WithTimeout(time.Second),
-//	    batch.WithMaxRetries(3),
-//	)
-type Options struct {
-	// BatchSize is the maximum number of messages in a batch.
-	// When this limit is reached, the batch is flushed immediately.
-	// Default: 100
-	BatchSize int
-
-	// Timeout is the maximum time to wait for a full batch.
-	// If the timeout expires before BatchSize is reached, the batch
-	// is flushed with whatever messages have accumulated.
-	// Default: 1 second
-	Timeout time.Duration
-
-	// MaxRetries is the maximum number of retries for failed batches.
-	// Set to 0 to disable retries.
-	// Default: 3
-	MaxRetries int
-
-	// OnError is called when a batch fails after all retries.
-	// Use for logging, metrics, or custom error handling.
-	OnError func(batch []any, err error)
+// options configures batch processing behavior.
+type options struct {
+	batchSize  int
+	timeout    time.Duration
+	maxRetries int
+	onError    func(batch []any, err error)
 }
 
-// DefaultOptions returns the default batch options.
-//
-// Defaults:
-//   - BatchSize: 100
-//   - Timeout: 1 second
-//   - MaxRetries: 3
-//   - OnError: no-op function
-func DefaultOptions() *Options {
-	return &Options{
-		BatchSize:  100,
-		Timeout:    time.Second,
-		MaxRetries: 3,
-		OnError:    func(batch []any, err error) {},
+// defaultOptions returns the default batch options.
+func defaultOptions() *options {
+	return &options{
+		batchSize:  100,
+		timeout:    time.Second,
+		maxRetries: 3,
+		onError:    func(batch []any, err error) {},
 	}
 }
 
-// Option is a function that modifies Options.
-type Option func(*Options)
+// Option configures batch processing behavior.
+type Option func(*options)
 
 // WithBatchSize sets the maximum number of messages per batch.
 //
@@ -150,9 +120,9 @@ type Option func(*Options)
 //	// Process up to 500 messages at a time
 //	processor := batch.NewProcessor[Order](batch.WithBatchSize(500))
 func WithBatchSize(size int) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		if size > 0 {
-			o.BatchSize = size
+			o.batchSize = size
 		}
 	}
 }
@@ -167,9 +137,9 @@ func WithBatchSize(size int) Option {
 //	// Flush after 5 seconds even if batch isn't full
 //	processor := batch.NewProcessor[Order](batch.WithTimeout(5 * time.Second))
 func WithTimeout(timeout time.Duration) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		if timeout > 0 {
-			o.Timeout = timeout
+			o.timeout = timeout
 		}
 	}
 }
@@ -184,9 +154,9 @@ func WithTimeout(timeout time.Duration) Option {
 //	// Retry failed batches up to 5 times
 //	processor := batch.NewProcessor[Order](batch.WithMaxRetries(5))
 func WithMaxRetries(retries int) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		if retries >= 0 {
-			o.MaxRetries = retries
+			o.maxRetries = retries
 		}
 	}
 }
@@ -208,9 +178,9 @@ func WithMaxRetries(retries int) Option {
 //	    }),
 //	)
 func WithOnError(fn func(batch []any, err error)) Option {
-	return func(o *Options) {
+	return func(o *options) {
 		if fn != nil {
-			o.OnError = fn
+			o.onError = fn
 		}
 	}
 }
@@ -235,7 +205,7 @@ func WithOnError(fn func(batch []any, err error)) Option {
 //	    return db.BulkInsert(ctx, orders)
 //	})
 type Processor[T any] struct {
-	opts *Options
+	opts *options
 }
 
 // NewProcessor creates a new batch processor with the given options.
@@ -247,7 +217,7 @@ type Processor[T any] struct {
 //	    batch.WithTimeout(time.Second),
 //	)
 func NewProcessor[T any](opts ...Option) *Processor[T] {
-	o := DefaultOptions()
+	o := defaultOptions()
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -289,9 +259,9 @@ func (p *Processor[T]) Process(
 	messages <-chan transport.Message,
 	handler Handler[T],
 ) error {
-	batch := make([]transport.Message, 0, p.opts.BatchSize)
-	data := make([]T, 0, p.opts.BatchSize)
-	timer := time.NewTimer(p.opts.Timeout)
+	batch := make([]transport.Message, 0, p.opts.batchSize)
+	data := make([]T, 0, p.opts.batchSize)
+	timer := time.NewTimer(p.opts.timeout)
 	defer timer.Stop()
 
 	flush := func() {
@@ -299,7 +269,21 @@ func (p *Processor[T]) Process(
 			return
 		}
 
-		err := handler(ctx, data)
+		var err error
+		for attempt := 0; attempt <= p.opts.maxRetries; attempt++ {
+			if err = handler(ctx, data); err == nil {
+				break
+			}
+		}
+
+		if err != nil {
+			// All retries exhausted, report via OnError
+			anyBatch := make([]any, len(data))
+			for i, d := range data {
+				anyBatch[i] = d
+			}
+			p.opts.onError(anyBatch, err)
+		}
 
 		// Ack/Nack all messages in batch
 		for _, msg := range batch {
@@ -309,7 +293,7 @@ func (p *Processor[T]) Process(
 		// Reset batch
 		batch = batch[:0]
 		data = data[:0]
-		timer.Reset(p.opts.Timeout)
+		timer.Reset(p.opts.timeout)
 	}
 
 	for {
@@ -320,7 +304,7 @@ func (p *Processor[T]) Process(
 
 		case <-timer.C:
 			flush()
-			timer.Reset(p.opts.Timeout)
+			timer.Reset(p.opts.timeout)
 
 		case msg, ok := <-messages:
 			if !ok {
@@ -341,13 +325,13 @@ func (p *Processor[T]) Process(
 			var typed T
 			if err := codec.Decode(msg.Payload(), &typed); err != nil {
 				_ = msg.Ack(err) // Nack with decode error
-				p.opts.OnError([]any{msg}, err)
+				p.opts.onError([]any{msg}, err)
 				continue
 			}
 			batch = append(batch, msg)
 			data = append(data, typed)
 
-			if len(batch) >= p.opts.BatchSize {
+			if len(batch) >= p.opts.batchSize {
 				flush()
 			}
 		}

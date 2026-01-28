@@ -6,7 +6,6 @@ import (
 
 	"github.com/rbaliyan/event/v3/transport/message"
 	"github.com/vmihailenco/msgpack/v5"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // MsgPack implements Codec using MessagePack serialization.
@@ -60,13 +59,12 @@ func (c MsgPack) Decode(data []byte) (Message, error) {
 		maps.Copy(metadata, mm.Metadata)
 	}
 
-	return message.NewWithRetry(
+	return message.New(
 		mm.ID,
 		mm.Source,
 		mm.Payload,
 		metadata,
-		trace.SpanContext{},
-		mm.RetryCount,
+		message.WithRetryCount(mm.RetryCount),
 	), nil
 }
 

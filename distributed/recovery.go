@@ -3,6 +3,7 @@ package distributed
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/rbaliyan/event/v3/backoff"
@@ -55,8 +56,8 @@ type RecoveryRunner struct {
 	checkInterval    time.Duration
 	batchLimit       int
 	logger           *slog.Logger
-	backoff          backoff.Strategy
-	consecutiveErrors int
+	backoff            backoff.Strategy
+	consecutiveErrors  atomic.Int32
 }
 
 // RecoveryOption configures a RecoveryRunner.
@@ -185,16 +186,16 @@ func (r *RecoveryRunner) Run(ctx context.Context) {
 		case <-ticker.C:
 			reset, err := r.RecoverOnce(ctx)
 			if err != nil {
+				errCount := int(r.consecutiveErrors.Add(1))
 				if r.logger != nil {
 					r.logger.Warn("stale state recovery failed",
 						"error", err,
-						"consecutive_errors", r.consecutiveErrors+1)
+						"consecutive_errors", errCount)
 				}
 
 				// Apply backoff on error if configured
 				if r.backoff != nil {
-					backoffDelay := r.backoff.NextDelay(r.consecutiveErrors)
-					r.consecutiveErrors++
+					backoffDelay := r.backoff.NextDelay(errCount - 1)
 
 					if backoffDelay > 0 {
 						select {
@@ -207,10 +208,7 @@ func (r *RecoveryRunner) Run(ctx context.Context) {
 				}
 			} else {
 				// Reset consecutive errors on success
-				r.consecutiveErrors = 0
-				if r.backoff != nil {
-					r.backoff.Reset()
-				}
+				r.consecutiveErrors.Store(0)
 
 				if reset > 0 {
 					if r.logger != nil {

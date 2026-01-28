@@ -59,70 +59,42 @@ func (m *message) Ack(err error) error {
 	return nil
 }
 
-// New creates a new message with current timestamp
-func New(id, source string, payload []byte, metadata map[string]string, spanCtx trace.SpanContext) Message {
-	return &message{
+// Option configures message creation.
+type Option func(*message)
+
+// WithSpanContext sets the trace span context.
+func WithSpanContext(sc trace.SpanContext) Option {
+	return func(m *message) { m.span = sc }
+}
+
+// WithRetryCount sets the retry count.
+func WithRetryCount(n int) Option {
+	return func(m *message) { m.retryCount = n }
+}
+
+// WithTimestamp sets a specific timestamp instead of time.Now().
+func WithTimestamp(t time.Time) Option {
+	return func(m *message) { m.timestamp = t }
+}
+
+// WithAckFunc sets the acknowledgment function.
+func WithAckFunc(fn func(error) error) Option {
+	return func(m *message) { m.ackFn = fn }
+}
+
+// New creates a new message. Timestamp defaults to time.Now() unless overridden with WithTimestamp.
+func New(id, source string, payload []byte, metadata map[string]string, opts ...Option) Message {
+	m := &message{
 		id:        id,
 		source:    source,
 		payload:   payload,
 		metadata:  metadata,
 		timestamp: time.Now(),
-		span:      spanCtx,
 	}
-}
-
-// NewWithRetry creates a new message with retry count
-func NewWithRetry(id, source string, payload []byte, metadata map[string]string, spanCtx trace.SpanContext, retryCount int) Message {
-	return &message{
-		id:         id,
-		source:     source,
-		payload:    payload,
-		metadata:   metadata,
-		timestamp:  time.Now(),
-		span:       spanCtx,
-		retryCount: retryCount,
+	for _, opt := range opts {
+		opt(m)
 	}
-}
-
-// NewWithTimestamp creates a new message with a specific timestamp.
-// Use this when reconstructing messages from storage where the original timestamp is known.
-func NewWithTimestamp(id, source string, payload []byte, metadata map[string]string, spanCtx trace.SpanContext, timestamp time.Time) Message {
-	return &message{
-		id:        id,
-		source:    source,
-		payload:   payload,
-		metadata:  metadata,
-		timestamp: timestamp,
-		span:      spanCtx,
-	}
-}
-
-// NewWithAck creates a new message with retry count and ack function.
-// This is used by transports that need custom acknowledgment behavior.
-func NewWithAck(id, source string, payload []byte, metadata map[string]string, retryCount int, ackFn func(error) error) Message {
-	return &message{
-		id:         id,
-		source:     source,
-		payload:    payload,
-		metadata:   metadata,
-		timestamp:  time.Now(),
-		retryCount: retryCount,
-		ackFn:      ackFn,
-	}
-}
-
-// NewFull creates a new message with all fields specified.
-// This is the most flexible constructor for advanced use cases.
-func NewFull(id, source string, payload []byte, metadata map[string]string, timestamp time.Time, retryCount int, ackFn func(error) error) Message {
-	return &message{
-		id:         id,
-		source:     source,
-		payload:    payload,
-		metadata:   metadata,
-		timestamp:  timestamp,
-		retryCount: retryCount,
-		ackFn:      ackFn,
-	}
+	return m
 }
 
 // Compile-time interface check

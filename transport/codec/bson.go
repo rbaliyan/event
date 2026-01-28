@@ -48,14 +48,13 @@ func (c BSON) Decode(data []byte) (Message, error) {
 		return nil, errors.Join(ErrDecodeFailure, err)
 	}
 
-	return message.NewFull(
+	return message.New(
 		env.ID,
 		env.Source,
 		env.Payload,
 		env.Metadata,
-		env.Timestamp,
-		env.RetryCount,
-		nil, // No ack function - will be set by transport
+		message.WithTimestamp(env.Timestamp),
+		message.WithRetryCount(env.RetryCount),
 	), nil
 }
 

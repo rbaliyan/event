@@ -389,18 +389,18 @@ func DefaultCodec() Codec {
 
 // NewMessage creates a new message
 func NewMessage(id, source string, payload []byte, metadata map[string]string, spanCtx trace.SpanContext) Message {
-	return message.New(id, source, payload, metadata, spanCtx)
+	return message.New(id, source, payload, metadata, message.WithSpanContext(spanCtx))
 }
 
 // NewMessageWithRetry creates a new message with retry count
 func NewMessageWithRetry(id, source string, payload []byte, metadata map[string]string, spanCtx trace.SpanContext, retryCount int) Message {
-	return message.NewWithRetry(id, source, payload, metadata, spanCtx, retryCount)
+	return message.New(id, source, payload, metadata, message.WithSpanContext(spanCtx), message.WithRetryCount(retryCount))
 }
 
 // NewMessageWithAck creates a new message with retry count and ack function.
 // This is used by transports that need custom acknowledgment behavior.
 func NewMessageWithAck(id, source string, payload []byte, metadata map[string]string, retryCount int, ackFn func(error) error) Message {
-	return message.NewWithAck(id, source, payload, metadata, retryCount, ackFn)
+	return message.New(id, source, payload, metadata, message.WithRetryCount(retryCount), message.WithAckFunc(ackFn))
 }
 
 // ID generation
