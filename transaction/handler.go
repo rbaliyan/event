@@ -248,14 +248,8 @@ func (h *TransactionalHandler[T]) Handle(ctx context.Context, data T) error {
 	key := h.keyFunc(data)
 
 	return h.txManager.Execute(ctx, func(tx Transaction) error {
-		// Get SQL transaction if available
-		sqlTx, ok := tx.(SQLTransactionProvider)
-		if !ok {
-			return fmt.Errorf("transaction does not support SQL operations")
-		}
-
 		// Check if already processed (within transaction)
-		isDuplicate, err := h.store.IsDuplicateTx(ctx, sqlTx.Tx(), key)
+		isDuplicate, err := h.store.IsDuplicateTx(ctx, tx, key)
 		if err != nil {
 			return fmt.Errorf("idempotency check failed: %w", err)
 		}
@@ -269,6 +263,6 @@ func (h *TransactionalHandler[T]) Handle(ctx context.Context, data T) error {
 		}
 
 		// Mark as processed (within same transaction)
-		return h.store.MarkProcessedTx(ctx, sqlTx.Tx(), key)
+		return h.store.MarkProcessedTx(ctx, tx, key)
 	})
 }

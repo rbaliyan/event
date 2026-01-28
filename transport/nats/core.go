@@ -138,20 +138,16 @@ func WithCoreErrorHandler(fn func(error)) CoreOption {
 // can be injected to add deduplication, DLQ, and poison detection.
 
 // IdempotencyStore checks for duplicate messages.
-type IdempotencyStore interface {
-	IsDuplicate(ctx context.Context, messageID string) (bool, error)
-	MarkProcessed(ctx context.Context, messageID string) error
-}
+// This is an alias of transport.IdempotencyStore.
+type IdempotencyStore = transport.IdempotencyStore
 
 // DLQHandler is called when a message fails processing.
-type DLQHandler func(ctx context.Context, eventName string, msgID string, payload []byte, err error) error
+// This is an alias of transport.DLQHandler.
+type DLQHandler = transport.DLQHandler
 
 // PoisonDetector tracks and quarantines repeatedly failing messages.
-type PoisonDetector interface {
-	Check(ctx context.Context, messageID string) (bool, error)
-	RecordFailure(ctx context.Context, messageID string) (bool, error)
-	RecordSuccess(ctx context.Context, messageID string) error
-}
+// This is an alias of transport.PoisonDetector.
+type PoisonDetector = transport.PoisonDetector
 
 // WithIdempotencyStore sets a store for deduplication.
 //

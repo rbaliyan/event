@@ -88,7 +88,6 @@ package idempotency
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
 )
@@ -248,19 +247,20 @@ type TransactionalStore interface {
 
 	// IsDuplicateTx checks for duplicate within a database transaction.
 	//
-	// The tx parameter should be a *sql.Tx for SQL databases or the
-	// appropriate transaction type for other databases.
+	// The tx parameter is the active database transaction. Implementations
+	// should type-assert to the expected type (e.g., *sql.Tx for SQL databases,
+	// mongo.SessionContext for MongoDB).
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and deadlines
-	//   - tx: The active database transaction (e.g., *sql.Tx)
+	//   - tx: The active database transaction
 	//   - messageID: The unique message identifier to check
 	//
 	// Returns:
 	//   - (true, nil): Message already processed
 	//   - (false, nil): Message is new
 	//   - (false, error): Check failed
-	IsDuplicateTx(ctx context.Context, tx *sql.Tx, messageID string) (bool, error)
+	IsDuplicateTx(ctx context.Context, tx any, messageID string) (bool, error)
 
 	// MarkProcessedTx marks a message as processed within a database transaction.
 	//
@@ -268,9 +268,12 @@ type TransactionalStore interface {
 	// to ensure atomicity. If the transaction rolls back, the idempotency
 	// marker is also rolled back, allowing the message to be reprocessed.
 	//
+	// The tx parameter is the active database transaction. Implementations
+	// should type-assert to the expected type.
+	//
 	// Parameters:
 	//   - ctx: Context for cancellation and deadlines
-	//   - tx: The active database transaction (e.g., *sql.Tx)
+	//   - tx: The active database transaction
 	//   - messageID: The unique message identifier to mark
-	MarkProcessedTx(ctx context.Context, tx *sql.Tx, messageID string) error
+	MarkProcessedTx(ctx context.Context, tx any, messageID string) error
 }

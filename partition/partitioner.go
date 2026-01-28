@@ -49,6 +49,7 @@ package partition
 
 import (
 	"hash/fnv"
+	"sync/atomic"
 )
 
 // Partitioner determines which partition a message should be routed to.
@@ -114,8 +115,8 @@ func (p *RoundRobinPartitioner) Partition(key string, numPartitions int) int {
 	if numPartitions <= 0 {
 		return 0
 	}
-	p.counter++
-	return int(p.counter % uint64(numPartitions))
+	n := atomic.AddUint64(&p.counter, 1)
+	return int(n % uint64(numPartitions))
 }
 
 // KeyExtractor extracts a partition key from data

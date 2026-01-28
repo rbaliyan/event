@@ -7,70 +7,29 @@ import (
 	"time"
 
 	"github.com/rbaliyan/event/v3/schema"
+	"github.com/rbaliyan/event/v3/transport"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // IdempotencyStore is a minimal interface for idempotency tracking in middleware.
 //
-// This interface is satisfied by idempotency.Store from the idempotency package,
-// which provides additional methods like MarkProcessedWithTTL and Remove.
-// The minimal interface allows flexibility in implementation while ensuring
-// compatibility with the IdempotencyMiddleware.
+// This is an alias of transport.IdempotencyStore, the canonical definition.
 //
 // Implementations:
 //   - idempotency.NewMemoryStore(): In-memory store for single-instance deployments
 //   - idempotency.NewRedisStore(): Distributed store for multi-instance deployments
 //   - idempotency.NewPostgresStore(): SQL-based store with transaction support
-//
-// Example:
-//
-//	store := idempotency.NewPostgresStore(db)
-//	ev.Subscribe(ctx, handler, event.WithMiddleware(
-//	    event.IdempotencyMiddleware[Order](store),
-//	))
-type IdempotencyStore interface {
-	// IsDuplicate checks if a message ID has already been processed.
-	// Returns true if the message should be skipped (already processed).
-	IsDuplicate(ctx context.Context, messageID string) (bool, error)
+type IdempotencyStore = transport.IdempotencyStore
 
-	// MarkProcessed marks a message ID as successfully processed.
-	MarkProcessed(ctx context.Context, messageID string) error
-}
-
-// PoisonDetector is an interface for detecting and quarantining poison messages.
+// PoisonDetector detects and quarantines repeatedly failing messages.
 //
-// Poison messages are messages that repeatedly fail processing and waste
-// resources by being retried indefinitely. This interface allows middleware
-// to check, record failures, and quarantine problematic messages.
-//
-// This interface is implemented by poison.Detector from the poison package.
-// The Detector wraps a poison.Store and handles threshold checking and
-// quarantine management.
+// This is an alias of transport.PoisonDetector, the canonical definition.
 //
 // Implementations:
 //   - poison.NewDetector(poison.NewMemoryStore()): In-memory for single-instance
 //   - poison.NewDetector(poison.NewRedisStore(client)): Distributed detection
 //   - poison.NewDetector(poison.NewPostgresStore(db)): SQL-based detection
-//
-// Example:
-//
-//	store := poison.NewMemoryStore()
-//	detector := poison.NewDetector(store, poison.WithThreshold(5))
-//	ev.Subscribe(ctx, handler, event.WithMiddleware(
-//	    event.PoisonMiddleware[Order](detector),
-//	))
-type PoisonDetector interface {
-	// Check checks if a message is currently quarantined.
-	// Returns true if the message is quarantined and should be skipped.
-	Check(ctx context.Context, messageID string) (bool, error)
-
-	// RecordFailure records a processing failure for a message.
-	// Returns true if the message was just quarantined (threshold reached).
-	RecordFailure(ctx context.Context, messageID string) (bool, error)
-
-	// RecordSuccess records a successful processing and clears the failure count.
-	RecordSuccess(ctx context.Context, messageID string) error
-}
+type PoisonDetector = transport.PoisonDetector
 
 // DeduplicationStore is an interface for storing seen message IDs.
 //

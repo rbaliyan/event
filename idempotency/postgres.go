@@ -251,7 +251,12 @@ func (s *PostgresStore) IsDuplicate(ctx context.Context, messageID string) (bool
 //
 //	    return store.MarkProcessedTx(ctx, sqlTx, msgID)
 //	})
-func (s *PostgresStore) IsDuplicateTx(ctx context.Context, tx *sql.Tx, messageID string) (bool, error) {
+func (s *PostgresStore) IsDuplicateTx(ctx context.Context, tx any, messageID string) (bool, error) {
+	sqlTx, err := extractSQLTx(tx)
+	if err != nil {
+		return false, err
+	}
+
 	query := fmt.Sprintf(`
 		SELECT EXISTS(
 			SELECT 1 FROM %s
@@ -260,7 +265,7 @@ func (s *PostgresStore) IsDuplicateTx(ctx context.Context, tx *sql.Tx, messageID
 	`, s.table)
 
 	var exists bool
-	err := tx.QueryRowContext(ctx, query, messageID).Scan(&exists)
+	err = sqlTx.QueryRowContext(ctx, query, messageID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("query idempotency: %w", err)
 	}
@@ -349,8 +354,12 @@ func (s *PostgresStore) MarkProcessedWithTTL(ctx context.Context, messageID stri
 //	    // Mark as processed in same transaction
 //	    return store.MarkProcessedTx(ctx, sqlTx, msgID)
 //	})
-func (s *PostgresStore) MarkProcessedTx(ctx context.Context, tx *sql.Tx, messageID string) error {
-	return s.MarkProcessedWithTTLTx(ctx, tx, messageID, s.ttl)
+func (s *PostgresStore) MarkProcessedTx(ctx context.Context, tx any, messageID string) error {
+	sqlTx, err := extractSQLTx(tx)
+	if err != nil {
+		return err
+	}
+	return s.MarkProcessedWithTTLTx(ctx, sqlTx, messageID, s.ttl)
 }
 
 // MarkProcessedWithTTLTx marks a message ID as processed with custom TTL within a transaction.
@@ -455,6 +464,20 @@ func (s *PostgresStore) CreateTable(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// extractSQLTx extracts a *sql.Tx from a transaction value.
+// Accepts *sql.Tx directly or any type with a Tx() *sql.Tx method
+// (e.g., transaction.SQLTransactionProvider).
+func extractSQLTx(tx any) (*sql.Tx, error) {
+	switch v := tx.(type) {
+	case *sql.Tx:
+		return v, nil
+	case interface{ Tx() *sql.Tx }:
+		return v.Tx(), nil
+	default:
+		return nil, fmt.Errorf("expected *sql.Tx or SQLTransactionProvider, got %T", tx)
+	}
 }
 
 // Compile-time checks

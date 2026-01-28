@@ -482,6 +482,64 @@ func (s *subscription) sendWithRetry(msg transport.Message, msgID string, logger
 	return s.Subscription.SendWithRetry(msg, logger, "msg_id", msgID, "stream", s.stream)
 }
 
+// processRedisMessage decodes a Redis stream message and sends it to the subscription channel.
+// retryCount overrides the retry count from the decoded message when >= 0.
+// Returns true if processing should continue, false if the subscription was closed.
+func (s *subscription) processRedisMessage(xmsg redis.XMessage, retryCount int, logger *slog.Logger) bool {
+	data, ok := xmsg.Values["data"].(string)
+	msgID := xmsg.ID
+
+	if !ok {
+		logger.Error("invalid message format", "id", xmsg.ID)
+		errorMsg := transport.NewDecodeErrorMessage(
+			msgID, nil, transport.ErrDecodeFailure,
+			func(err error) error {
+				if err == nil {
+					return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
+				}
+				return nil
+			},
+		)
+		return s.sendWithRetry(errorMsg, msgID, logger)
+	}
+
+	decoded, err := s.codec.Decode([]byte(data))
+	if err != nil {
+		logger.Error("failed to decode message", "error", err, "id", xmsg.ID)
+		errorMsg := transport.NewDecodeErrorMessage(
+			msgID, []byte(data), err,
+			func(ackErr error) error {
+				if ackErr == nil {
+					return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
+				}
+				return nil
+			},
+		)
+		return s.sendWithRetry(errorMsg, msgID, logger)
+	}
+
+	rc := decoded.RetryCount()
+	if retryCount >= 0 {
+		rc = retryCount
+	}
+
+	wrappedMsg := transport.NewMessageWithAck(
+		decoded.ID(),
+		decoded.Source(),
+		decoded.Payload(),
+		decoded.Metadata(),
+		rc,
+		func(err error) error {
+			if err == nil {
+				return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
+			}
+			return nil
+		},
+	)
+
+	return s.sendWithRetry(wrappedMsg, msgID, logger)
+}
+
 func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration, logger *slog.Logger) {
 	// First, process any pending messages (PEL) that weren't acknowledged
 	s.processPendingMessages(ctx, logger)
@@ -540,62 +598,7 @@ func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration,
 				default:
 				}
 
-				data, ok := xmsg.Values["data"].(string)
-				msgID := xmsg.ID
-
-				// Handle missing or invalid data format
-				if !ok {
-					logger.Error("invalid message format", "id", xmsg.ID)
-					// Send decode error to channel for DLQ routing
-					errorMsg := transport.NewDecodeErrorMessage(
-						msgID, nil, transport.ErrDecodeFailure,
-						func(err error) error {
-							if err == nil {
-								return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
-							}
-							return nil
-						},
-					)
-					if !s.sendWithRetry(errorMsg, msgID, logger) {
-						return
-					}
-					continue
-				}
-
-				decoded, err := s.codec.Decode([]byte(data))
-				if err != nil {
-					logger.Error("failed to decode message", "error", err, "id", xmsg.ID)
-					// Send decode error to channel for DLQ routing
-					errorMsg := transport.NewDecodeErrorMessage(
-						msgID, []byte(data), err,
-						func(ackErr error) error {
-							if ackErr == nil {
-								return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
-							}
-							return nil
-						},
-					)
-					if !s.sendWithRetry(errorMsg, msgID, logger) {
-						return
-					}
-					continue
-				}
-
-				wrappedMsg := transport.NewMessageWithAck(
-					decoded.ID(),
-					decoded.Source(),
-					decoded.Payload(),
-					decoded.Metadata(),
-					decoded.RetryCount(),
-					func(err error) error {
-						if err == nil {
-							return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
-						}
-						return nil
-					},
-				)
-
-				if !s.sendWithRetry(wrappedMsg, msgID, logger) {
+				if !s.processRedisMessage(xmsg, -1, logger) {
 					return
 				}
 			}
@@ -662,66 +665,8 @@ func (s *subscription) processPendingMessages(ctx context.Context, logger *slog.
 				default:
 				}
 
-				data, ok := xmsg.Values["data"].(string)
-				msgID := xmsg.ID
-
-				// Get retry count from pending info (Redis delivery count)
-				retryCount := int(deliveryCounts[msgID])
-
-				// Handle missing or invalid data format
-				if !ok {
-					logger.Error("invalid message format in pending", "id", xmsg.ID)
-					// Send decode error to channel for DLQ routing
-					errorMsg := transport.NewDecodeErrorMessage(
-						msgID, nil, transport.ErrDecodeFailure,
-						func(err error) error {
-							if err == nil {
-								return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
-							}
-							return nil
-						},
-					)
-					if !s.sendWithRetry(errorMsg, msgID, logger) {
-						return
-					}
-					continue
-				}
-
-				decoded, err := s.codec.Decode([]byte(data))
-				if err != nil {
-					logger.Error("failed to decode pending message", "error", err, "id", xmsg.ID)
-					// Send decode error to channel for DLQ routing
-					errorMsg := transport.NewDecodeErrorMessage(
-						msgID, []byte(data), err,
-						func(ackErr error) error {
-							if ackErr == nil {
-								return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
-							}
-							return nil
-						},
-					)
-					if !s.sendWithRetry(errorMsg, msgID, logger) {
-						return
-					}
-					continue
-				}
-
-				// Use Redis delivery count as the retry count (more accurate than encoded value)
-				wrappedMsg := transport.NewMessageWithAck(
-					decoded.ID(),
-					decoded.Source(),
-					decoded.Payload(),
-					decoded.Metadata(),
-					retryCount,
-					func(err error) error {
-						if err == nil {
-							return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
-						}
-						return nil
-					},
-				)
-
-				if !s.sendWithRetry(wrappedMsg, msgID, logger) {
+				retryCount := int(deliveryCounts[xmsg.ID])
+				if !s.processRedisMessage(xmsg, retryCount, logger) {
 					return
 				}
 			}
@@ -808,69 +753,11 @@ func (s *subscription) claimOnce(ctx context.Context, logger *slog.Logger) {
 		default:
 		}
 
-		data, ok := xmsg.Values["data"].(string)
-		msgID := xmsg.ID
-
-		// Get retry count from pending info (Redis delivery count)
-		retryCount := int(deliveryCounts[msgID])
-
-		// Handle missing or invalid data format
-		if !ok {
-			logger.Error("invalid message format in claimed message", "id", xmsg.ID)
-			// Send decode error to channel for DLQ routing
-			errorMsg := transport.NewDecodeErrorMessage(
-				msgID, nil, transport.ErrDecodeFailure,
-				func(err error) error {
-					if err == nil {
-						return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
-					}
-					return nil
-				},
-			)
-			if !s.sendWithRetry(errorMsg, msgID, logger) {
-				return
-			}
-			continue
-		}
-
-		decoded, err := s.codec.Decode([]byte(data))
-		if err != nil {
-			logger.Error("failed to decode claimed message", "error", err, "id", xmsg.ID)
-			// Send decode error to channel for DLQ routing
-			errorMsg := transport.NewDecodeErrorMessage(
-				msgID, []byte(data), err,
-				func(ackErr error) error {
-					if ackErr == nil {
-						return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
-					}
-					return nil
-				},
-			)
-			if !s.sendWithRetry(errorMsg, msgID, logger) {
-				return
-			}
-			continue
-		}
-
-		// Use Redis delivery count as the retry count (more accurate than encoded value)
-		wrappedMsg := transport.NewMessageWithAck(
-			decoded.ID(),
-			decoded.Source(),
-			decoded.Payload(),
-			decoded.Metadata(),
-			retryCount,
-			func(err error) error {
-				if err == nil {
-					return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
-				}
-				return nil
-			},
-		)
-
-		if !s.sendWithRetry(wrappedMsg, msgID, logger) {
+		retryCount := int(deliveryCounts[xmsg.ID])
+		if !s.processRedisMessage(xmsg, retryCount, logger) {
 			return
 		}
-		logger.Debug("successfully reprocessed claimed message", "msg_id", msgID)
+		logger.Debug("successfully reprocessed claimed message", "msg_id", xmsg.ID)
 	}
 }
 

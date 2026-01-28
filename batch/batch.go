@@ -339,10 +339,13 @@ func (p *Processor[T]) Process(
 				continue
 			}
 			var typed T
-			if err := codec.Decode(msg.Payload(), &typed); err == nil {
-				batch = append(batch, msg)
-				data = append(data, typed)
+			if err := codec.Decode(msg.Payload(), &typed); err != nil {
+				_ = msg.Ack(err) // Nack with decode error
+				p.opts.OnError([]any{msg}, err)
+				continue
 			}
+			batch = append(batch, msg)
+			data = append(data, typed)
 
 			if len(batch) >= p.opts.BatchSize {
 				flush()

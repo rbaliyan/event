@@ -1,10 +1,10 @@
 package redis
 
 import (
-	"context"
 	"log/slog"
 	"time"
 
+	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/codec"
 )
 
@@ -131,22 +131,16 @@ func WithClaimInterval(interval, minIdle time.Duration) Option {
 // Compare with NATS JetStream which provides these features natively.
 
 // IdempotencyStore checks for duplicate messages at the transport level.
-// Structurally identical to event.IdempotencyStore; prefer bus-level middleware.
-type IdempotencyStore interface {
-	IsDuplicate(ctx context.Context, messageID string) (bool, error)
-	MarkProcessed(ctx context.Context, messageID string) error
-}
+// This is an alias of transport.IdempotencyStore; prefer bus-level middleware.
+type IdempotencyStore = transport.IdempotencyStore
 
 // DLQHandler is called when a message fails processing after max retries.
-type DLQHandler func(ctx context.Context, eventName string, msgID string, payload []byte, err error) error
+// This is an alias of transport.DLQHandler.
+type DLQHandler = transport.DLQHandler
 
 // PoisonDetector tracks and quarantines repeatedly failing messages at the transport level.
-// Structurally identical to event.PoisonDetector; prefer bus-level middleware.
-type PoisonDetector interface {
-	Check(ctx context.Context, messageID string) (bool, error)
-	RecordFailure(ctx context.Context, messageID string) (bool, error)
-	RecordSuccess(ctx context.Context, messageID string) error
-}
+// This is an alias of transport.PoisonDetector; prefer bus-level middleware.
+type PoisonDetector = transport.PoisonDetector
 
 // WithIdempotencyStore sets a store for deduplication.
 //

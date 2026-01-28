@@ -453,6 +453,36 @@ func (h *LevelHandler) WithGroup(name string) slog.Handler {
 	return &LevelHandler{level: h.level, handler: h.handler.WithGroup(name)}
 }
 
+// IdempotencyStore provides message deduplication for exactly-once processing.
+// Implementations should be safe for concurrent use.
+//
+// This is the canonical definition; transport implementations (redis, nats, etc.)
+// and the event package reference this interface to avoid duplication.
+type IdempotencyStore interface {
+	// IsDuplicate checks if a message ID has already been processed.
+	IsDuplicate(ctx context.Context, messageID string) (bool, error)
+
+	// MarkProcessed marks a message ID as successfully processed.
+	MarkProcessed(ctx context.Context, messageID string) error
+}
+
+// PoisonDetector tracks and quarantines repeatedly failing messages.
+// Implementations should be safe for concurrent use.
+type PoisonDetector interface {
+	// Check checks if a message is currently quarantined.
+	Check(ctx context.Context, messageID string) (bool, error)
+
+	// RecordFailure records a processing failure for a message.
+	// Returns true if the message was just quarantined (threshold reached).
+	RecordFailure(ctx context.Context, messageID string) (bool, error)
+
+	// RecordSuccess records a successful processing and clears the failure count.
+	RecordSuccess(ctx context.Context, messageID string) error
+}
+
+// DLQHandler is called when a message fails processing after max retries.
+type DLQHandler func(ctx context.Context, eventName string, msgID string, payload []byte, err error) error
+
 // Jitter adds randomness to a duration to prevent thundering herd.
 // Returns a duration between d*(1-factor) and d*(1+factor).
 // Factor should be between 0 and 1 (e.g., 0.3 for +/-30% jitter).
