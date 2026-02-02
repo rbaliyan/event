@@ -354,7 +354,9 @@ func (s *MongoStateManager) Acquire(ctx context.Context, messageID string, ttl t
 	}
 
 	// Check if we actually got the state (status is processing and our expiry)
-	if result.Status == "processing" && result.ExpiresAt.Equal(expiresAt) {
+	// Note: MongoDB stores times with millisecond precision, so we truncate before comparing
+	// to avoid false negatives due to nanosecond differences after round-trip.
+	if result.Status == "processing" && result.ExpiresAt.Truncate(time.Millisecond).Equal(expiresAt.Truncate(time.Millisecond)) {
 		return true, nil
 	}
 
