@@ -53,6 +53,7 @@ type Subscription struct {
 	closed      int32
 	sendTimeout time.Duration
 	wg          sync.WaitGroup
+	chMu        sync.RWMutex // Protects channel close vs send operations
 }
 
 // NewSubscription creates a new base subscription with the given parameters.
@@ -115,8 +116,12 @@ func (s *Subscription) Close(cleanup func() error) error {
 	// Wait for consumer goroutines to exit
 	s.wg.Wait()
 
-	// Close the message channel
+	// Acquire write lock to ensure no SendToChannel is in progress
+	// This prevents a race where Close() closes s.ch while
+	// SendToChannel() is blocked trying to send to it.
+	s.chMu.Lock()
 	close(s.ch)
+	s.chMu.Unlock()
 
 	return cleanupErr
 }
@@ -124,6 +129,16 @@ func (s *Subscription) Close(cleanup func() error) error {
 // SendToChannel sends a message to the channel with optional timeout.
 // Returns SendOK on success, SendClosed if subscription closed, SendTimeout on timeout.
 func (s *Subscription) SendToChannel(msg transport.Message) SendResult {
+	// Acquire read lock to prevent Close() from closing the channel
+	// while we're trying to send to it.
+	s.chMu.RLock()
+	defer s.chMu.RUnlock()
+
+	// Check if already closed (after acquiring lock to ensure visibility)
+	if s.IsClosed() {
+		return SendClosed
+	}
+
 	if s.sendTimeout > 0 {
 		timer := time.NewTimer(s.sendTimeout)
 		defer timer.Stop()
