@@ -85,6 +85,7 @@ import (
 //	})
 type MongoStore struct {
 	collection      *mongo.Collection
+	collectionName  string // Used during construction only
 	ttl             time.Duration
 	cleanupInterval time.Duration
 	stopCleanup     chan struct{}
@@ -122,8 +123,7 @@ func WithMongoTTL(ttl time.Duration) MongoOption {
 func WithMongoCollection(name string) MongoOption {
 	return func(s *MongoStore) {
 		if name != "" {
-			// Store the collection name for later use when we have the database
-			// This is handled during construction
+			s.collectionName = name
 		}
 	}
 }
@@ -176,24 +176,20 @@ type idempotencyEntry struct {
 //	    log.Fatal("failed to create indexes:", err)
 //	}
 func NewMongoStore(db *mongo.Database, opts ...MongoOption) *MongoStore {
-	collectionName := "event_idempotency"
-
-	// First pass to check for custom collection name
-	for _, opt := range opts {
-		s := &MongoStore{}
-		opt(s)
-	}
-
 	s := &MongoStore{
-		collection:      db.Collection(collectionName),
+		collectionName:  "event_idempotency",
 		ttl:             24 * time.Hour,
 		cleanupInterval: time.Hour,
 		stopCleanup:     make(chan struct{}),
 	}
 
+	// Apply options (may override collectionName)
 	for _, opt := range opts {
 		opt(s)
 	}
+
+	// Set the collection using the final collection name
+	s.collection = db.Collection(s.collectionName)
 
 	// Start background cleanup (backup for TTL index)
 	if s.cleanupInterval > 0 {
