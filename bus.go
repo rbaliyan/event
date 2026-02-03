@@ -492,6 +492,9 @@ type Bus struct {
 	strictSchema   bool // If true, fail registration when schema provider errors
 	// Outbox store for transactional event publishing
 	outboxStore OutboxStore
+	// Cached OTel instruments (initialized once during construction)
+	publishedCounter  metric.Int64Counter
+	subscribedCounter metric.Int64Counter
 }
 
 // NewBus creates a new event bus and registers it in the global registry.
@@ -534,6 +537,15 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		schemaProvider:   o.schemaProvider,
 		strictSchema:     o.strictSchema,
 		outboxStore:      o.outboxStore,
+	}
+
+	// Initialize OTel instruments if metrics enabled
+	if bus.metricsEnabled {
+		meter := otel.Meter(name)
+		bus.publishedCounter, _ = meter.Int64Counter("event.published",
+			metric.WithDescription("Total number of events published"))
+		bus.subscribedCounter, _ = meter.Int64Counter("event.subscribed",
+			metric.WithDescription("Total number of subscriptions"))
 	}
 
 	// Register in global registry (use LoadOrStore to handle race condition)
@@ -848,11 +860,8 @@ func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payloa
 	var spanCtx trace.SpanContext
 
 	// Record publish metrics
-	if b.metricsEnabled {
-		meter := otel.Meter(b.name)
-		published, _ := meter.Int64Counter("event.published",
-			metric.WithDescription("Total number of events published"))
-		published.Add(ctx, 1, metric.WithAttributes(attribute.String("event", eventName)))
+	if b.metricsEnabled && b.publishedCounter != nil {
+		b.publishedCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("event", eventName)))
 	}
 
 	// Add tracing
@@ -903,11 +912,8 @@ func (b *Bus) Recv(ctx context.Context, eventName string, opts ...transport.Subs
 	}
 
 	// Record subscription metrics
-	if b.metricsEnabled {
-		meter := otel.Meter(b.name)
-		subscribed, _ := meter.Int64Counter("event.subscribed",
-			metric.WithDescription("Total number of subscriptions"))
-		subscribed.Add(ctx, 1, metric.WithAttributes(attribute.String("event", eventName)))
+	if b.metricsEnabled && b.subscribedCounter != nil {
+		b.subscribedCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("event", eventName)))
 	}
 
 	// Subscribe via transport
