@@ -71,7 +71,6 @@ func NewRelay(store Store, t transport.Transport) *Relay {
 		transport:  t,
 		pollDelay:  100 * time.Millisecond,
 		batchSize:  100,
-		logger:     slog.Default().With("component", "outbox.relay"),
 		cleanupAge: 24 * time.Hour,
 	}
 }
@@ -117,6 +116,7 @@ func (r *Relay) WithBatchSize(size int) *Relay {
 // WithLogger sets a custom logger.
 //
 // The logger is used for error and debug messages during relay operation.
+// If not set, slog.Default() is used.
 //
 // Parameters:
 //   - l: The slog logger to use
@@ -131,6 +131,15 @@ func (r *Relay) WithBatchSize(size int) *Relay {
 func (r *Relay) WithLogger(l *slog.Logger) *Relay {
 	r.logger = l
 	return r
+}
+
+// log returns the configured logger, falling back to slog.Default().
+func (r *Relay) log() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	r.logger = slog.Default().With("component", "outbox.relay")
+	return r.logger
 }
 
 // WithCleanupAge sets how old published messages should be before deletion.
@@ -209,20 +218,20 @@ func (r *Relay) publishPending(ctx context.Context) (failures int) {
 	}); ok {
 		if err := ps.ProcessPending(ctx, r.batchSize, func(msg *Message) error {
 			if err := r.publishMessage(ctx, msg); err != nil {
-				r.logger.Error("failed to publish message",
+				r.log().Error("failed to publish message",
 					"id", msg.ID,
 					"event", msg.EventName,
 					"error", err)
 				failures++
 				return err
 			}
-			r.logger.Debug("published outbox message",
+			r.log().Debug("published outbox message",
 				"id", msg.ID,
 				"event", msg.EventName,
 				"event_id", msg.EventID)
 			return nil
 		}); err != nil {
-			r.logger.Error("failed to process pending messages", "error", err)
+			r.log().Error("failed to process pending messages", "error", err)
 			return failures + 1
 		}
 		return failures
@@ -231,30 +240,30 @@ func (r *Relay) publishPending(ctx context.Context) (failures int) {
 	// Fallback for stores without ProcessPending
 	messages, err := r.store.GetPending(ctx, r.batchSize)
 	if err != nil {
-		r.logger.Error("failed to get pending messages", "error", err)
+		r.log().Error("failed to get pending messages", "error", err)
 		return 1
 	}
 
 	for _, msg := range messages {
 		if err := r.publishMessage(ctx, msg); err != nil {
-			r.logger.Error("failed to publish message",
+			r.log().Error("failed to publish message",
 				"id", msg.ID,
 				"event", msg.EventName,
 				"error", err)
 			if markErr := r.store.MarkFailed(ctx, msg.ID, err); markErr != nil {
-				r.logger.Error("failed to mark message as failed", "error", markErr)
+				r.log().Error("failed to mark message as failed", "error", markErr)
 			}
 			failures++
 			continue
 		}
 
 		if err := r.store.MarkPublished(ctx, msg.ID); err != nil {
-			r.logger.Error("failed to mark message as published",
+			r.log().Error("failed to mark message as published",
 				"id", msg.ID,
 				"error", err)
 		}
 
-		r.logger.Debug("published outbox message",
+		r.log().Debug("published outbox message",
 			"id", msg.ID,
 			"event", msg.EventName,
 			"event_id", msg.EventID)
@@ -279,12 +288,12 @@ func (r *Relay) publishMessage(ctx context.Context, msg *Message) error {
 func (r *Relay) cleanup(ctx context.Context) {
 	deleted, err := r.store.Delete(ctx, r.cleanupAge)
 	if err != nil {
-		r.logger.Error("failed to cleanup old messages", "error", err)
+		r.log().Error("failed to cleanup old messages", "error", err)
 		return
 	}
 
 	if deleted > 0 {
-		r.logger.Info("cleaned up old outbox messages", "count", deleted)
+		r.log().Info("cleaned up old outbox messages", "count", deleted)
 	}
 }
 

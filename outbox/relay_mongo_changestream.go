@@ -113,7 +113,6 @@ func NewChangeStreamRelay(store *MongoStore, t transport.Transport) *ChangeStrea
 	return &ChangeStreamRelay{
 		store:            store,
 		transport:        t,
-		logger:           slog.Default().With("component", "outbox.changestream_relay"),
 		cleanupAge:       24 * time.Hour,
 		stuckDuration:    5 * time.Minute,
 		batchSize:        100,
@@ -122,9 +121,19 @@ func NewChangeStreamRelay(store *MongoStore, t transport.Transport) *ChangeStrea
 }
 
 // WithLogger sets a custom logger.
+// If not set, slog.Default() is used.
 func (r *ChangeStreamRelay) WithLogger(l *slog.Logger) *ChangeStreamRelay {
 	r.logger = l
 	return r
+}
+
+// log returns the configured logger, falling back to slog.Default().
+func (r *ChangeStreamRelay) log() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	r.logger = slog.Default().With("component", "outbox.changestream_relay")
+	return r.logger
 }
 
 // WithCleanupAge sets how old published messages should be before deletion.
@@ -170,10 +179,10 @@ func (r *ChangeStreamRelay) Start(ctx context.Context) error {
 	if r.resumeTokenStore != nil {
 		token, err := r.resumeTokenStore.Load(ctx)
 		if err != nil {
-			r.logger.Warn("failed to load resume token, starting fresh", "error", err)
+			r.log().Warn("failed to load resume token, starting fresh", "error", err)
 		} else if token != nil {
 			r.resumeToken = token
-			r.logger.Info("loaded resume token, resuming from last position")
+			r.log().Info("loaded resume token, resuming from last position")
 		}
 	}
 
@@ -217,7 +226,7 @@ func (r *ChangeStreamRelay) watchLoop(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			r.logger.Error("change stream error, reconnecting", "error", err)
+			r.log().Error("change stream error, reconnecting", "error", err)
 			time.Sleep(time.Second) // Brief pause before reconnecting
 		}
 	}
@@ -248,12 +257,12 @@ func (r *ChangeStreamRelay) watch(ctx context.Context) error {
 	}
 	defer stream.Close(ctx)
 
-	r.logger.Info("change stream started")
+	r.log().Info("change stream started")
 
 	for stream.Next(ctx) {
 		var event changeEvent
 		if err := stream.Decode(&event); err != nil {
-			r.logger.Error("failed to decode change event", "error", err)
+			r.log().Error("failed to decode change event", "error", err)
 			continue
 		}
 
@@ -292,7 +301,7 @@ func (r *ChangeStreamRelay) processDocument(ctx context.Context, msg *MongoMessa
 	// Try to claim the message atomically
 	claimed, err := r.claimMessage(ctx, msg.ID)
 	if err != nil {
-		r.logger.Error("failed to claim message", "id", msg.ID.Hex(), "error", err)
+		r.log().Error("failed to claim message", "id", msg.ID.Hex(), "error", err)
 		return
 	}
 	if !claimed {
@@ -302,25 +311,25 @@ func (r *ChangeStreamRelay) processDocument(ctx context.Context, msg *MongoMessa
 
 	// Publish the message
 	if err := r.publishMessage(ctx, msg); err != nil {
-		r.logger.Error("failed to publish message",
+		r.log().Error("failed to publish message",
 			"id", msg.ID.Hex(),
 			"event", msg.EventName,
 			"error", err)
 		if markErr := r.store.MarkFailed(ctx, msg.ID, err); markErr != nil {
-			r.logger.Error("failed to mark message as failed", "error", markErr)
+			r.log().Error("failed to mark message as failed", "error", markErr)
 		}
 		return
 	}
 
 	// Mark as published
 	if err := r.store.MarkPublished(ctx, msg.ID); err != nil {
-		r.logger.Error("failed to mark message as published",
+		r.log().Error("failed to mark message as published",
 			"id", msg.ID.Hex(),
 			"error", err)
 		return
 	}
 
-	r.logger.Debug("published outbox message",
+	r.log().Debug("published outbox message",
 		"id", msg.ID.Hex(),
 		"event", msg.EventName,
 		"event_id", msg.EventID)
@@ -368,19 +377,19 @@ func (r *ChangeStreamRelay) saveResumeToken(ctx context.Context, token bson.Raw)
 
 	if r.resumeTokenStore != nil {
 		if err := r.resumeTokenStore.Save(ctx, token); err != nil {
-			r.logger.Error("failed to save resume token", "error", err)
+			r.log().Error("failed to save resume token", "error", err)
 		}
 	}
 }
 
 // processExistingPending processes any messages that were pending before startup.
 func (r *ChangeStreamRelay) processExistingPending(ctx context.Context) {
-	r.logger.Info("processing existing pending messages")
+	r.log().Info("processing existing pending messages")
 
 	for {
 		messages, err := r.store.GetPendingMongo(ctx, r.batchSize)
 		if err != nil {
-			r.logger.Error("failed to get pending messages", "error", err)
+			r.log().Error("failed to get pending messages", "error", err)
 			return
 		}
 
@@ -390,37 +399,37 @@ func (r *ChangeStreamRelay) processExistingPending(ctx context.Context) {
 
 		for _, msg := range messages {
 			if err := r.publishMessage(ctx, msg); err != nil {
-				r.logger.Error("failed to publish message",
+				r.log().Error("failed to publish message",
 					"id", msg.ID.Hex(),
 					"event", msg.EventName,
 					"error", err)
 				if markErr := r.store.MarkFailed(ctx, msg.ID, err); markErr != nil {
-					r.logger.Error("failed to mark message as failed", "error", markErr)
+					r.log().Error("failed to mark message as failed", "error", markErr)
 				}
 				continue
 			}
 
 			if err := r.store.MarkPublished(ctx, msg.ID); err != nil {
-				r.logger.Error("failed to mark message as published",
+				r.log().Error("failed to mark message as published",
 					"id", msg.ID.Hex(),
 					"error", err)
 			}
 		}
 	}
 
-	r.logger.Info("finished processing existing pending messages")
+	r.log().Info("finished processing existing pending messages")
 }
 
 // cleanup removes old published messages.
 func (r *ChangeStreamRelay) cleanup(ctx context.Context) {
 	deleted, err := r.store.Delete(ctx, r.cleanupAge)
 	if err != nil {
-		r.logger.Error("failed to cleanup old messages", "error", err)
+		r.log().Error("failed to cleanup old messages", "error", err)
 		return
 	}
 
 	if deleted > 0 {
-		r.logger.Info("cleaned up old outbox messages", "count", deleted)
+		r.log().Info("cleaned up old outbox messages", "count", deleted)
 	}
 }
 
@@ -428,11 +437,11 @@ func (r *ChangeStreamRelay) cleanup(ctx context.Context) {
 func (r *ChangeStreamRelay) recoverStuck(ctx context.Context) {
 	recovered, err := r.store.RecoverStuck(ctx, r.stuckDuration)
 	if err != nil {
-		r.logger.Error("failed to recover stuck messages", "error", err)
+		r.log().Error("failed to recover stuck messages", "error", err)
 		return
 	}
 
 	if recovered > 0 {
-		r.logger.Warn("recovered stuck messages", "count", recovered, "stuck_duration", r.stuckDuration)
+		r.log().Warn("recovered stuck messages", "count", recovered, "stuck_duration", r.stuckDuration)
 	}
 }

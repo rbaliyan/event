@@ -523,7 +523,6 @@ func NewRedisRelay(store *RedisStore, t transport.Transport) *RedisRelay {
 		transport:     t,
 		pollDelay:     100 * time.Millisecond,
 		batchSize:     100,
-		logger:        slog.Default().With("component", "outbox.redis_relay"),
 		stuckDuration: 5 * time.Minute, // Claim messages from crashed consumers after 5 min
 	}
 }
@@ -540,10 +539,20 @@ func (r *RedisRelay) WithBatchSize(size int64) *RedisRelay {
 	return r
 }
 
-// WithLogger sets a custom logger
+// WithLogger sets a custom logger.
+// If not set, slog.Default() is used.
 func (r *RedisRelay) WithLogger(l *slog.Logger) *RedisRelay {
 	r.logger = l
 	return r
+}
+
+// log returns the configured logger, falling back to slog.Default().
+func (r *RedisRelay) log() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
+	}
+	r.logger = slog.Default().With("component", "outbox.redis_relay")
+	return r.logger
 }
 
 // WithStuckDuration sets how long a message can be pending before claiming from other consumers.
@@ -564,7 +573,7 @@ func (r *RedisRelay) Start(ctx context.Context) error {
 		return fmt.Errorf("ensure group: %w", err)
 	}
 
-	r.logger.Info("started redis outbox relay",
+	r.log().Info("started redis outbox relay",
 		"consumer", r.store.consumerName,
 		"group", r.store.groupName)
 
@@ -594,29 +603,29 @@ func (r *RedisRelay) Start(ctx context.Context) error {
 func (r *RedisRelay) publishPending(ctx context.Context) {
 	messages, err := r.store.GetPending(ctx, r.batchSize)
 	if err != nil {
-		r.logger.Error("failed to get pending messages", "error", err)
+		r.log().Error("failed to get pending messages", "error", err)
 		return
 	}
 
 	for _, msg := range messages {
 		if err := r.publishMessage(ctx, msg); err != nil {
-			r.logger.Error("failed to publish message",
+			r.log().Error("failed to publish message",
 				"id", msg.ID,
 				"event", msg.EventName,
 				"error", err)
 			if markErr := r.store.MarkFailed(ctx, msg.StreamID, msg, err); markErr != nil {
-				r.logger.Error("failed to mark message as failed", "error", markErr)
+				r.log().Error("failed to mark message as failed", "error", markErr)
 			}
 			continue
 		}
 
 		if err := r.store.MarkPublished(ctx, msg.StreamID); err != nil {
-			r.logger.Error("failed to mark published",
+			r.log().Error("failed to mark published",
 				"id", msg.ID,
 				"error", err)
 		}
 
-		r.logger.Debug("published outbox message",
+		r.log().Debug("published outbox message",
 			"id", msg.ID,
 			"event", msg.EventName)
 	}
@@ -640,12 +649,12 @@ func (r *RedisRelay) publishMessage(ctx context.Context, msg *RedisMessage) erro
 func (r *RedisRelay) recoverStuck(ctx context.Context) {
 	recovered, err := r.store.RecoverStuck(ctx, r.stuckDuration)
 	if err != nil {
-		r.logger.Error("failed to recover stuck messages", "error", err)
+		r.log().Error("failed to recover stuck messages", "error", err)
 		return
 	}
 
 	if recovered > 0 {
-		r.logger.Warn("recovered stuck messages from other consumers",
+		r.log().Warn("recovered stuck messages from other consumers",
 			"count", recovered,
 			"stuck_duration", r.stuckDuration)
 	}
