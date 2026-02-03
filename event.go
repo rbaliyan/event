@@ -68,7 +68,8 @@ func New[T any](name string, opts ...EventOption) Event[T] {
 		onError:      o.onError,
 		maxRetries:   o.maxRetries,
 		dlqHandler:   o.dlqHandler,
-		payloadCodec: o.payloadCodec,
+		payloadCodec:  o.payloadCodec,
+		messageFilter: o.messageFilter,
 		// bus is set by bus.Register()
 	}
 }
@@ -95,8 +96,9 @@ type eventImpl[T any] struct {
 	onError      func(*Bus, string, error)                                        // for panic recovery only
 	maxRetries   int                                                              // max retry attempts (0 = unlimited)
 	dlqHandler   func(ctx context.Context, msg message.Message, err error) error  // dead letter queue handler (returns error if storage fails)
-	payloadCodec payload.Codec                                                    // payload codec (nil = use JSON default)
-	schema       schemaFlags                                                      // schema-based configuration
+	payloadCodec  payload.Codec                                                   // payload codec (nil = use JSON default)
+	messageFilter func(map[string]string) bool                                    // pre-decode message filter (nil = accept all)
+	schema        schemaFlags                                                     // schema-based configuration
 }
 
 func (e *eventImpl[T]) String() string {
@@ -401,6 +403,12 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 								"decode_error", decodeErrMsg)
 						}
 					}
+					_ = msg.Ack(nil)
+					continue
+				}
+
+				// Apply pre-decode message filter
+				if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
 					_ = msg.Ack(nil)
 					continue
 				}

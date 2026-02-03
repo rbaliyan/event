@@ -39,7 +39,8 @@ type eventOptions struct {
 	onError      func(*Bus, string, error)
 	maxRetries   int                                                             // Max retry attempts (0 = unlimited)
 	dlqHandler   func(ctx context.Context, msg message.Message, err error) error // Dead letter queue handler (returns error if storage fails)
-	payloadCodec payload.Codec                                                   // Payload codec (nil = use JSON default)
+	payloadCodec  payload.Codec                                                  // Payload codec (nil = use JSON default)
+	messageFilter func(map[string]string) bool                                   // Pre-decode message filter (nil = accept all)
 }
 
 // EventOption is an alias for Option (for API clarity)
@@ -153,6 +154,31 @@ func WithPayloadCodec(codec payload.Codec) Option {
 		if codec != nil {
 			o.payloadCodec = codec
 		}
+	}
+}
+
+// WithMessageFilter sets a pre-decode filter that inspects message metadata
+// before payload decoding. Return true to process the message, false to skip it.
+//
+// This is useful when multiple event types share a single bus/transport
+// (e.g., MongoDB change streams watching multiple collections). Without a filter,
+// messages from unrelated collections would fail codec decode and flood the DLQ.
+//
+// The metadata map includes transport-specific keys. For MongoDB change streams:
+//   - "collection": source collection name
+//   - "namespace": "database.collection"
+//   - "operation": insert, update, replace, delete
+//
+// Example:
+//
+//	orderEvent := event.New[Order]("orders",
+//	    event.WithMessageFilter(func(meta map[string]string) bool {
+//	        return meta["collection"] == "orders"
+//	    }),
+//	)
+func WithMessageFilter(filter func(map[string]string) bool) Option {
+	return func(o *eventOptions) {
+		o.messageFilter = filter
 	}
 }
 
