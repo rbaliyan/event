@@ -69,7 +69,8 @@ func New[T any](name string, opts ...EventOption) Event[T] {
 		maxRetries:   o.maxRetries,
 		dlqHandler:   o.dlqHandler,
 		payloadCodec:  o.payloadCodec,
-		messageFilter: o.messageFilter,
+		messageFilter:      o.messageFilter,
+		decodeErrorHandler: o.decodeErrorHandler,
 		// bus is set by bus.Register()
 	}
 }
@@ -97,8 +98,9 @@ type eventImpl[T any] struct {
 	maxRetries   int                                                              // max retry attempts (0 = unlimited)
 	dlqHandler   func(ctx context.Context, msg message.Message, err error) error  // dead letter queue handler (returns error if storage fails)
 	payloadCodec  payload.Codec                                                   // payload codec (nil = use JSON default)
-	messageFilter func(map[string]string) bool                                    // pre-decode message filter (nil = accept all)
-	schema        schemaFlags                                                     // schema-based configuration
+	messageFilter      func(map[string]string) bool                                    // pre-decode message filter (nil = accept all)
+	decodeErrorHandler func(ctx context.Context, msg message.Message, err error) error // decode error handler (nil = default DLQ+ack)
+	schema             schemaFlags                                                     // schema-based configuration
 }
 
 func (e *eventImpl[T]) String() string {
@@ -445,24 +447,53 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 				}
 
 				if err := codec.Decode(msg.Payload(), &typedData); err != nil {
-					logger.Error("decode error received, routing to DLQ",
-						"event", e.Name(),
-						"msg_id", msg.ID(),
-						"error", err)
+					if e.decodeErrorHandler == nil {
+						// Default behavior: route to DLQ and ack
+						logger.Error("decode error received, routing to DLQ",
+							"event", e.Name(),
+							"msg_id", msg.ID(),
+							"error", err)
 
-					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
-						if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
-							// DLQ storage failed for decode error - acknowledge anyway to prevent infinite loop
-							// Decode errors won't succeed on retry, so retrying is futile
-							logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
+						if e.dlqHandler != nil {
+							dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
+							if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
+								logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
+									"event", e.Name(),
+									"msg_id", msg.ID(),
+									"dlq_error", dlqErr,
+									"decode_error", err)
+							}
+						}
+						_ = msg.Ack(nil)
+						continue
+					}
+
+					// Custom decode error handler decides the action
+					decodeCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
+					decodeResult := e.decodeErrorHandler(decodeCtx, msg, err)
+
+					result, sendToDLQ := classifyResult(decodeResult, msg.RetryCount(), e.maxRetries)
+
+					if sendToDLQ && e.dlqHandler != nil {
+						if dlqErr := e.dlqHandler(decodeCtx, msg, err); dlqErr != nil {
+							logger.Error("DLQ handler failed for decode error, message will be retried",
 								"event", e.Name(),
 								"msg_id", msg.ID(),
-								"dlq_error", dlqErr,
+								"error", dlqErr,
 								"decode_error", err)
+							_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
+							continue
 						}
 					}
-					_ = msg.Ack(nil)
+
+					switch result {
+					case ResultAck, ResultReject:
+						_ = msg.Ack(nil)
+					case ResultNack:
+						_ = msg.Ack(err)
+					case ResultDefer:
+						_ = msg.Ack(err)
+					}
 					continue
 				}
 

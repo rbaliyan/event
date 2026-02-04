@@ -40,7 +40,8 @@ type eventOptions struct {
 	maxRetries   int                                                             // Max retry attempts (0 = unlimited)
 	dlqHandler   func(ctx context.Context, msg message.Message, err error) error // Dead letter queue handler (returns error if storage fails)
 	payloadCodec  payload.Codec                                                  // Payload codec (nil = use JSON default)
-	messageFilter func(map[string]string) bool                                   // Pre-decode message filter (nil = accept all)
+	messageFilter      func(map[string]string) bool                                   // Pre-decode message filter (nil = accept all)
+	decodeErrorHandler func(ctx context.Context, msg message.Message, err error) error // Decode error handler (nil = default DLQ+ack)
 }
 
 // EventOption is an alias for Option (for API clarity)
@@ -179,6 +180,39 @@ func WithPayloadCodec(codec payload.Codec) Option {
 func WithMessageFilter(filter func(map[string]string) bool) Option {
 	return func(o *eventOptions) {
 		o.messageFilter = filter
+	}
+}
+
+// WithDecodeErrorHandler sets a handler for codec decode failures during subscription.
+// By default, decode errors route to DLQ (if configured) and acknowledge the message.
+// This handler lets you control the behavior using the same sentinel errors as handlers:
+//
+//   - nil / ErrAck: silently acknowledge and skip (no DLQ)
+//   - ErrReject: send to DLQ if configured, then acknowledge
+//   - ErrNack: retry immediately
+//   - ErrDefer: retry with backoff
+//   - Other errors: treated as ErrDefer (retry with backoff)
+//
+// When maxRetries is configured, retry attempts are tracked and the message is sent
+// to DLQ when retries are exhausted (same behavior as handler errors).
+//
+// This handler only applies to application-level codec.Decode failures (e.g., schema
+// changes, field type mismatches). Transport-level decode errors and unknown content
+// types are always routed to DLQ since they are not schema-related.
+//
+// Example:
+//
+//	event := New[Order]("orders",
+//	    WithDecodeErrorHandler(func(ctx context.Context, msg message.Message, err error) error {
+//	        if isSchemaEvolution(err) {
+//	            return event.ErrDefer // Retry during rolling deployment
+//	        }
+//	        return fmt.Errorf("decode failed: %w", event.ErrReject) // Permanent — DLQ
+//	    }),
+//	)
+func WithDecodeErrorHandler(handler func(ctx context.Context, msg message.Message, err error) error) Option {
+	return func(o *eventOptions) {
+		o.decodeErrorHandler = handler
 	}
 }
 

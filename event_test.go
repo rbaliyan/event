@@ -3422,3 +3422,130 @@ func TestMessageFilter_NilAcceptsAll(t *testing.T) {
 		t.Errorf("expected msg-1, got %s", data)
 	}
 }
+
+func TestWithDecodeErrorHandler(t *testing.T) {
+	handler := func(ctx context.Context, msg message.Message, err error) error {
+		return ErrReject
+	}
+	opts := newEventOptions(WithDecodeErrorHandler(handler))
+	if opts.decodeErrorHandler == nil {
+		t.Fatal("expected decodeErrorHandler to be set")
+	}
+}
+
+func TestWithDecodeErrorHandler_Nil(t *testing.T) {
+	opts := newEventOptions(WithDecodeErrorHandler(nil))
+	if opts.decodeErrorHandler != nil {
+		t.Error("expected nil decodeErrorHandler to be stored as nil")
+	}
+}
+
+func TestDecodeErrorHandler_AckSkipsDLQ(t *testing.T) {
+	bus := mustNewBus(t, "test-decode-ack", WithTransport(channel.New()))
+	defer bus.Close(context.Background())
+
+	var dlqCalled atomic.Bool
+	handlerCalled := make(chan struct{}, 1)
+
+	e := New[string]("test-decode-ack",
+		WithDeadLetterQueue(func(ctx context.Context, msg message.Message, err error) error {
+			dlqCalled.Store(true)
+			return nil
+		}),
+		WithDecodeErrorHandler(func(ctx context.Context, msg message.Message, err error) error {
+			handlerCalled <- struct{}{}
+			return nil // Ack — skip DLQ
+		}),
+	)
+	if err := Register(context.Background(), bus, e); err != nil {
+		t.Fatalf("failed to register event: %v", err)
+	}
+
+	e.Subscribe(context.Background(), func(ctx context.Context, ev Event[string], data string) error {
+		t.Error("handler should not be called on decode error")
+		return nil
+	})
+
+	// Send malformed JSON payload directly via bus
+	metadata := map[string]string{MetadataContentType: "application/json"}
+	if err := bus.Send(context.Background(), "test-decode-ack", "", []byte("{invalid json}"), metadata); err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+
+	if !wait(handlerCalled, waitChTimeoutMS) {
+		t.Fatal("expected decode error handler to be called")
+	}
+
+	// Give time for any async DLQ call
+	time.Sleep(20 * time.Millisecond)
+
+	if dlqCalled.Load() {
+		t.Error("expected DLQ handler NOT to be called when decode error handler returns nil")
+	}
+}
+
+func TestDecodeErrorHandler_RejectSendsToDLQ(t *testing.T) {
+	bus := mustNewBus(t, "test-decode-reject", WithTransport(channel.New()))
+	defer bus.Close(context.Background())
+
+	dlqCalled := make(chan struct{}, 1)
+
+	e := New[string]("test-decode-reject",
+		WithDeadLetterQueue(func(ctx context.Context, msg message.Message, err error) error {
+			dlqCalled <- struct{}{}
+			return nil
+		}),
+		WithDecodeErrorHandler(func(ctx context.Context, msg message.Message, err error) error {
+			return ErrReject // Send to DLQ
+		}),
+	)
+	if err := Register(context.Background(), bus, e); err != nil {
+		t.Fatalf("failed to register event: %v", err)
+	}
+
+	e.Subscribe(context.Background(), func(ctx context.Context, ev Event[string], data string) error {
+		t.Error("handler should not be called on decode error")
+		return nil
+	})
+
+	metadata := map[string]string{MetadataContentType: "application/json"}
+	if err := bus.Send(context.Background(), "test-decode-reject", "", []byte("{invalid json}"), metadata); err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+
+	if !wait(dlqCalled, waitChTimeoutMS) {
+		t.Fatal("expected DLQ handler to be called when decode error handler returns ErrReject")
+	}
+}
+
+func TestDecodeErrorHandler_DefaultBehaviorWhenNotSet(t *testing.T) {
+	bus := mustNewBus(t, "test-decode-default", WithTransport(channel.New()))
+	defer bus.Close(context.Background())
+
+	dlqCalled := make(chan struct{}, 1)
+
+	// No WithDecodeErrorHandler — should use default DLQ+ack behavior
+	e := New[string]("test-decode-default",
+		WithDeadLetterQueue(func(ctx context.Context, msg message.Message, err error) error {
+			dlqCalled <- struct{}{}
+			return nil
+		}),
+	)
+	if err := Register(context.Background(), bus, e); err != nil {
+		t.Fatalf("failed to register event: %v", err)
+	}
+
+	e.Subscribe(context.Background(), func(ctx context.Context, ev Event[string], data string) error {
+		t.Error("handler should not be called on decode error")
+		return nil
+	})
+
+	metadata := map[string]string{MetadataContentType: "application/json"}
+	if err := bus.Send(context.Background(), "test-decode-default", "", []byte("{invalid json}"), metadata); err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+
+	if !wait(dlqCalled, waitChTimeoutMS) {
+		t.Fatal("expected DLQ handler to be called with default behavior (no decode error handler set)")
+	}
+}
