@@ -3,7 +3,7 @@ package payload
 import (
 	"testing"
 
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -327,12 +327,12 @@ func TestBSON(t *testing.T) {
 
 	t.Run("MongoDBTypes", func(t *testing.T) {
 		type BSONDoc struct {
-			ID   primitive.ObjectID `bson:"_id"`
+			ID   bson.ObjectID `bson:"_id"`
 			Name string             `bson:"name"`
 		}
 
 		original := BSONDoc{
-			ID:   primitive.NewObjectID(),
+			ID:   bson.NewObjectID(),
 			Name: "test-doc",
 		}
 

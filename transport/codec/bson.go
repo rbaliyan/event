@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // BSON implements the Codec interface using BSON encoding.

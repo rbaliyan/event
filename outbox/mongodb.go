@@ -10,10 +10,9 @@ import (
 	"github.com/google/uuid"
 	event "github.com/rbaliyan/event/v3"
 	"github.com/rbaliyan/event/v3/transport/codec"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // Compile-time check that MongoStore implements event.OutboxStore
@@ -61,7 +60,7 @@ db.event_outbox.createIndex({ "published_at": 1 }, { sparse: true })
 
 // MongoMessage represents a message document in MongoDB
 type MongoMessage struct {
-	ID          primitive.ObjectID `bson:"_id,omitempty"`
+	ID          bson.ObjectID `bson:"_id,omitempty"`
 	EventName   string             `bson:"event_name"`
 	EventID     string             `bson:"event_id"`
 	Payload     []byte             `bson:"payload"`
@@ -262,24 +261,25 @@ func (s *MongoStore) CreateCapped(ctx context.Context, sizeBytes int64, maxDocs 
 	return nil
 }
 
-// InsertInSession adds a message to the outbox within a MongoDB session/transaction
-func (s *MongoStore) InsertInSession(ctx context.Context, sess mongo.SessionContext, msg *MongoMessage) error {
+// InsertInSession adds a message to the outbox within a MongoDB session/transaction.
+// In MongoDB driver v2, pass the session context directly as ctx.
+func (s *MongoStore) InsertInSession(ctx context.Context, msg *MongoMessage) error {
 	if msg.ID.IsZero() {
-		msg.ID = primitive.NewObjectID()
+		msg.ID = bson.NewObjectID()
 	}
 	if msg.CreatedAt.IsZero() {
 		msg.CreatedAt = time.Now()
 	}
 	msg.Status = StatusPending
 
-	_, err := s.collection.InsertOne(sess, msg)
+	_, err := s.collection.InsertOne(ctx, msg)
 	return err
 }
 
 // Insert adds a message to the outbox (without transaction)
 func (s *MongoStore) Insert(ctx context.Context, msg *MongoMessage) error {
 	if msg.ID.IsZero() {
-		msg.ID = primitive.NewObjectID()
+		msg.ID = bson.NewObjectID()
 	}
 	if msg.CreatedAt.IsZero() {
 		msg.CreatedAt = time.Now()
@@ -300,14 +300,14 @@ func (s *MongoStore) Insert(ctx context.Context, msg *MongoMessage) error {
 //
 // Example:
 //
-//	sess.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (any, error) {
-//	    ctx := event.WithOutboxTx(sessCtx, sessCtx)
+//	sess.WithTransaction(ctx, func(ctx context.Context) (any, error) {
+//	    ctx := event.WithOutboxTx(ctx, ctx)
 //	    // ... business logic ...
 //	    return nil, orderEvent.Publish(ctx, order)  // Routed to Store()
 //	})
 func (s *MongoStore) Store(ctx context.Context, eventName string, eventID string, payload []byte, metadata map[string]string) error {
 	msg := &MongoMessage{
-		ID:        primitive.NewObjectID(),
+		ID:        bson.NewObjectID(),
 		EventName: eventName,
 		EventID:   eventID,
 		Payload:   payload,
@@ -316,10 +316,10 @@ func (s *MongoStore) Store(ctx context.Context, eventName string, eventID string
 		Status:    StatusPending,
 	}
 
-	// Check if we're inside a transaction
+	// Check if we're inside a transaction (context contains session in v2)
 	if session := event.OutboxTx(ctx); session != nil {
-		if sessCtx, ok := session.(mongo.SessionContext); ok {
-			_, err := s.collection.InsertOne(sessCtx, msg)
+		if txCtx, ok := session.(context.Context); ok {
+			_, err := s.collection.InsertOne(txCtx, msg)
 			return err
 		}
 	}
@@ -415,7 +415,7 @@ func (s *MongoStore) claimNextPendingMongo(ctx context.Context) (*MongoMessage, 
 }
 
 // MarkPublished marks a message as successfully published
-func (s *MongoStore) MarkPublished(ctx context.Context, id primitive.ObjectID) error {
+func (s *MongoStore) MarkPublished(ctx context.Context, id bson.ObjectID) error {
 	now := time.Now()
 	update := bson.M{
 		"$set": bson.M{
@@ -460,7 +460,7 @@ func (s *MongoStore) MarkPublishedByEventID(ctx context.Context, eventID string)
 }
 
 // MarkFailed marks a message as failed with an error
-func (s *MongoStore) MarkFailed(ctx context.Context, id primitive.ObjectID, err error) error {
+func (s *MongoStore) MarkFailed(ctx context.Context, id bson.ObjectID, err error) error {
 	update := bson.M{
 		"$set": bson.M{
 			"status":     StatusFailed,
@@ -627,10 +627,10 @@ func (p *MongoPublisher) Store() *MongoStore {
 	return p.store
 }
 
-// PublishInSession stores a message in the outbox within a MongoDB session/transaction
+// PublishInSession stores a message in the outbox within a MongoDB session/transaction.
+// In MongoDB driver v2, pass the session context directly as ctx.
 func (p *MongoPublisher) PublishInSession(
 	ctx context.Context,
-	sess mongo.SessionContext,
 	eventName string,
 	payload any,
 	metadata map[string]string,
@@ -647,16 +647,17 @@ func (p *MongoPublisher) PublishInSession(
 		Metadata:  metadata,
 	}
 
-	return p.store.InsertInSession(ctx, sess, msg)
+	return p.store.InsertInSession(ctx, msg)
 }
 
-// PublishWithTransaction stores a message in the outbox and executes fn within a transaction
+// PublishWithTransaction stores a message in the outbox and executes fn within a transaction.
+// In MongoDB driver v2, the callback receives context.Context with the session embedded.
 func (p *MongoPublisher) PublishWithTransaction(
 	ctx context.Context,
 	eventName string,
 	payload any,
 	metadata map[string]string,
-	fn func(mongo.SessionContext) error,
+	fn func(ctx context.Context) error,
 ) error {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -676,16 +677,16 @@ func (p *MongoPublisher) PublishWithTransaction(
 	}
 	defer sess.EndSession(ctx)
 
-	_, err = sess.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (interface{}, error) {
+	_, err = sess.WithTransaction(ctx, func(ctx context.Context) (interface{}, error) {
 		// Execute user's business logic
 		if fn != nil {
-			if err := fn(sessCtx); err != nil {
+			if err := fn(ctx); err != nil {
 				return nil, err
 			}
 		}
 
 		// Insert outbox message
-		if err := p.store.InsertInSession(ctx, sessCtx, msg); err != nil {
+		if err := p.store.InsertInSession(ctx, msg); err != nil {
 			return nil, fmt.Errorf("insert outbox: %w", err)
 		}
 
@@ -748,9 +749,9 @@ func Transaction(ctx context.Context, client *mongo.Client, fn func(ctx context.
 	}
 	defer sess.EndSession(ctx)
 
-	_, err = sess.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (any, error) {
+	_, err = sess.WithTransaction(ctx, func(ctx context.Context) (any, error) {
 		// Wrap the session context with outbox transaction marker
-		txCtx := event.WithOutboxTx(sessCtx, sessCtx)
+		txCtx := event.WithOutboxTx(ctx, ctx)
 		return nil, fn(txCtx)
 	})
 
@@ -767,18 +768,24 @@ func Transaction(ctx context.Context, client *mongo.Client, fn func(ctx context.
 //	    // Business logic...
 //	    return orderEvent.Publish(ctx, order)
 //	})
-func TransactionWithOptions(ctx context.Context, client *mongo.Client, opts *options.TransactionOptions, fn func(ctx context.Context) error) error {
+func TransactionWithOptions(ctx context.Context, client *mongo.Client, opts *options.TransactionOptionsBuilder, fn func(ctx context.Context) error) error {
 	sess, err := client.StartSession()
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
 	defer sess.EndSession(ctx)
 
-	_, err = sess.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (any, error) {
+	callback := func(ctx context.Context) (any, error) {
 		// Wrap the session context with outbox transaction marker
-		txCtx := event.WithOutboxTx(sessCtx, sessCtx)
+		txCtx := event.WithOutboxTx(ctx, ctx)
 		return nil, fn(txCtx)
-	}, opts)
+	}
+
+	if opts != nil {
+		_, err = sess.WithTransaction(ctx, callback, opts)
+	} else {
+		_, err = sess.WithTransaction(ctx, callback)
+	}
 
 	return err
 }

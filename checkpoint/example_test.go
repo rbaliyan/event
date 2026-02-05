@@ -216,9 +216,9 @@ func Example_mongoStore() {
 	//
 	// In production code:
 	//
-	//   import "go.mongodb.org/mongo-driver/mongo"
+	//   import "go.mongodb.org/mongo-driver/v2/mongo"
 	//
-	//   client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+	//   client, _ := mongo.Connect(options.Client().ApplyURI("mongodb://localhost:27017"))
 	//   collection := client.Database("myapp").Collection("checkpoints")
 	//
 	//   // Basic store

@@ -9,10 +9,9 @@ import (
 
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // ResumeTokenStore defines the interface for persisting Change Stream resume tokens.
@@ -50,7 +49,7 @@ func (s *MongoResumeTokenStore) Save(ctx context.Context, token bson.Raw) error 
 			"updated_at": time.Now(),
 		},
 	}
-	opts := options.Update().SetUpsert(true)
+	opts := options.UpdateOne().SetUpsert(true)
 	_, err := s.collection.UpdateOne(ctx, filter, update, opts)
 	return err
 }
@@ -287,7 +286,7 @@ type changeEvent struct {
 	OperationType string        `bson:"operationType"`
 	FullDocument  *MongoMessage `bson:"fullDocument"`
 	DocumentKey   struct {
-		ID primitive.ObjectID `bson:"_id"`
+		ID bson.ObjectID `bson:"_id"`
 	} `bson:"documentKey"`
 }
 
@@ -336,7 +335,7 @@ func (r *ChangeStreamRelay) processDocument(ctx context.Context, msg *MongoMessa
 }
 
 // claimMessage atomically claims a message for processing.
-func (r *ChangeStreamRelay) claimMessage(ctx context.Context, id primitive.ObjectID) (bool, error) {
+func (r *ChangeStreamRelay) claimMessage(ctx context.Context, id bson.ObjectID) (bool, error) {
 	filter := bson.M{
 		"_id":    id,
 		"status": StatusPending,

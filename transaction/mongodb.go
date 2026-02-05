@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // MongoTransaction wraps a MongoDB session to implement Transaction.
@@ -24,15 +24,15 @@ import (
 //
 //	err := manager.Execute(ctx, func(tx transaction.Transaction) error {
 //	    mongoTx := tx.(transaction.MongoSessionProvider)
-//	    sessCtx := mongoTx.SessionContext()
+//	    ctx := mongoTx.Context()
 //
-//	    // All operations use the session context for transactional consistency
-//	    _, err := collection.InsertOne(sessCtx, doc)
+//	    // All operations use the context for transactional consistency
+//	    _, err := collection.InsertOne(ctx, doc)
 //	    return err
 //	})
 type MongoTransaction struct {
-	session   mongo.Session
-	ctx       mongo.SessionContext
+	session   *mongo.Session
+	ctx       context.Context // In v2, session is embedded in context
 	closeOnce sync.Once
 }
 
@@ -70,22 +70,22 @@ func (t *MongoTransaction) endSession() {
 // Session returns the MongoDB session.
 //
 // Use this for advanced session operations like setting transaction options.
-// For most use cases, use SessionContext() instead.
-func (t *MongoTransaction) Session() mongo.Session {
+// For most use cases, use Context() instead.
+func (t *MongoTransaction) Session() *mongo.Session {
 	return t.session
 }
 
-// SessionContext returns the MongoDB session context.
+// Context returns the context with the session embedded.
 //
 // Use this context for all MongoDB operations within the transaction.
 // Operations using this context will be part of the transaction.
 //
 // Example:
 //
-//	sessCtx := mongoTx.SessionContext()
-//	_, err := collection.InsertOne(sessCtx, doc)
-//	_, err = collection.UpdateOne(sessCtx, filter, update)
-func (t *MongoTransaction) SessionContext() mongo.SessionContext {
+//	ctx := mongoTx.Context()
+//	_, err := collection.InsertOne(ctx, doc)
+//	_, err = collection.UpdateOne(ctx, filter, update)
+func (t *MongoTransaction) Context() context.Context {
 	return t.ctx
 }
 
@@ -174,9 +174,9 @@ func NewMongoManager(client *mongo.Client) *MongoManager {
 //	}
 //
 //	mongoTx := tx.(transaction.MongoSessionProvider)
-//	sessCtx := mongoTx.SessionContext()
+//	ctx := mongoTx.Context()
 //
-//	// Do work with sessCtx...
+//	// Do work with ctx...
 //
 //	if err := tx.Commit(); err != nil {
 //	    tx.Rollback()
@@ -193,12 +193,9 @@ func (m *MongoManager) Begin(ctx context.Context) (Transaction, error) {
 		return nil, fmt.Errorf("start transaction: %w", err)
 	}
 
-	// Create session context
-	sessCtx := mongo.NewSessionContext(ctx, session)
-
 	return &MongoTransaction{
 		session: session,
-		ctx:     sessCtx,
+		ctx:     ctx, // In v2, operations will use session from context
 	}, nil
 }
 
@@ -222,14 +219,14 @@ func (m *MongoManager) Begin(ctx context.Context) (Transaction, error) {
 //
 //	err := manager.Execute(ctx, func(tx transaction.Transaction) error {
 //	    mongoTx := tx.(transaction.MongoSessionProvider)
-//	    sessCtx := mongoTx.SessionContext()
+//	    ctx := mongoTx.Context()
 //
-//	    _, err := orders.InsertOne(sessCtx, order)
+//	    _, err := orders.InsertOne(ctx, order)
 //	    if err != nil {
 //	        return err // Triggers rollback
 //	    }
 //
-//	    _, err = inventory.UpdateOne(sessCtx, filter, update)
+//	    _, err = inventory.UpdateOne(ctx, filter, update)
 //	    return err // Commits on nil, rollbacks on error
 //	})
 func (m *MongoManager) Execute(ctx context.Context, fn func(tx Transaction) error) error {
@@ -239,10 +236,10 @@ func (m *MongoManager) Execute(ctx context.Context, fn func(tx Transaction) erro
 	}
 	defer session.EndSession(ctx)
 
-	_, err = session.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (interface{}, error) {
+	_, err = session.WithTransaction(ctx, func(ctx context.Context) (interface{}, error) {
 		tx := &MongoTransaction{
 			session: session,
-			ctx:     sessCtx,
+			ctx:     ctx,
 		}
 
 		if err := fn(tx); err != nil {
@@ -255,31 +252,31 @@ func (m *MongoManager) Execute(ctx context.Context, fn func(tx Transaction) erro
 	return err
 }
 
-// ExecuteWithSession runs a function within a MongoDB transaction with direct session access.
+// ExecuteWithContext runs a function within a MongoDB transaction with direct context access.
 //
-// This is a convenience method when you only need the SessionContext and
-// don't need the Transaction interface. The session context can be used
+// This is a convenience method when you only need the transaction context and
+// don't need the Transaction interface. The context can be used
 // directly with MongoDB operations.
 //
 // Parameters:
 //   - ctx: Context for cancellation and deadlines
-//   - fn: Function receiving the session context
+//   - fn: Function receiving the transaction context
 //
 // Example:
 //
-//	err := manager.ExecuteWithSession(ctx, func(sessCtx mongo.SessionContext) error {
-//	    _, err := collection.InsertOne(sessCtx, doc)
+//	err := manager.ExecuteWithContext(ctx, func(ctx context.Context) error {
+//	    _, err := collection.InsertOne(ctx, doc)
 //	    return err
 //	})
-func (m *MongoManager) ExecuteWithSession(ctx context.Context, fn func(sessCtx mongo.SessionContext) error) error {
+func (m *MongoManager) ExecuteWithContext(ctx context.Context, fn func(ctx context.Context) error) error {
 	session, err := m.client.StartSession()
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
 	defer session.EndSession(ctx)
 
-	_, err = session.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (interface{}, error) {
-		if err := fn(sessCtx); err != nil {
+	_, err = session.WithTransaction(ctx, func(ctx context.Context) (interface{}, error) {
+		if err := fn(ctx); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -288,10 +285,10 @@ func (m *MongoManager) ExecuteWithSession(ctx context.Context, fn func(sessCtx m
 	return err
 }
 
-// MongoSessionHandler is a function type that handles MongoDB session context.
+// MongoTxHandler is a function type that handles MongoDB transaction context.
 //
 // This is the signature for functions passed to WithTransaction.
-type MongoSessionHandler func(sessCtx mongo.SessionContext) error
+type MongoTxHandler func(ctx context.Context) error
 
 // WithTransaction executes a function within a MongoDB transaction.
 //
@@ -305,19 +302,19 @@ type MongoSessionHandler func(sessCtx mongo.SessionContext) error
 //
 // Example:
 //
-//	err := transaction.WithTransaction(ctx, client, func(sessCtx mongo.SessionContext) error {
-//	    _, err := collection.InsertOne(sessCtx, doc)
+//	err := transaction.WithTransaction(ctx, client, func(ctx context.Context) error {
+//	    _, err := collection.InsertOne(ctx, doc)
 //	    return err
 //	})
-func WithTransaction(ctx context.Context, client *mongo.Client, fn MongoSessionHandler) error {
+func WithTransaction(ctx context.Context, client *mongo.Client, fn MongoTxHandler) error {
 	session, err := client.StartSession()
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
 	defer session.EndSession(ctx)
 
-	_, err = session.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (interface{}, error) {
-		if err := fn(sessCtx); err != nil {
+	_, err = session.WithTransaction(ctx, func(ctx context.Context) (interface{}, error) {
+		if err := fn(ctx); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -339,8 +336,8 @@ func WithTransaction(ctx context.Context, client *mongo.Client, fn MongoSessionH
 //	        return errors.New("not a MongoDB transaction")
 //	    }
 //
-//	    sessCtx := mongoTx.SessionContext()
-//	    _, err := collection.InsertOne(sessCtx, doc)
+//	    ctx := mongoTx.Context()
+//	    _, err := collection.InsertOne(ctx, doc)
 //	    return err
 //	})
 type MongoSessionProvider interface {
@@ -348,11 +345,11 @@ type MongoSessionProvider interface {
 
 	// Session returns the MongoDB session.
 	// Use for advanced session operations.
-	Session() mongo.Session
+	Session() *mongo.Session
 
-	// SessionContext returns the MongoDB session context.
+	// Context returns the transaction context.
 	// Use this for all MongoDB operations within the transaction.
-	SessionContext() mongo.SessionContext
+	Context() context.Context
 }
 
 // Compile-time checks

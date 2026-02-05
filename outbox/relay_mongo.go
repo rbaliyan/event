@@ -7,7 +7,7 @@ import (
 
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // RelayMode defines how the relay watches for new messages.
@@ -342,7 +342,7 @@ func (r *MongoRelay) PublishOnce(ctx context.Context) error {
 
 // MongoMessageWithID is a helper struct for operations that need both ObjectID and int64 ID
 type MongoMessageWithID struct {
-	ObjectID primitive.ObjectID
+	ObjectID bson.ObjectID
 	Message  *Message
 }
 
