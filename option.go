@@ -231,6 +231,104 @@ func WithDecodeErrorHandler(handler func(ctx context.Context, msg message.Messag
 //	}
 type Middleware[T any] func(Handler[T]) Handler[T]
 
+// Chain is a composable middleware chain builder.
+// It provides a fluent API for building middleware chains that can be reused
+// across multiple subscriptions.
+//
+// Middleware execution order:
+// The first middleware added to the chain wraps the outermost layer.
+// Given chain.Use(A).Use(B).Use(C), the execution order is:
+// A.before -> B.before -> C.before -> handler -> C.after -> B.after -> A.after
+//
+// Example:
+//
+//	// Build a reusable middleware chain
+//	chain := event.NewChain[Order]().
+//	    Use(LoggingMiddleware[Order]).
+//	    Use(MetricsMiddleware[Order]).
+//	    Use(RateLimitMiddleware[Order](limiter))
+//
+//	// Use the chain with WithMiddleware
+//	orderEvent.Subscribe(ctx, handler, event.WithMiddlewareChain(chain))
+//
+//	// Or wrap a handler directly
+//	wrappedHandler := chain.Wrap(myHandler)
+type Chain[T any] struct {
+	middleware []Middleware[T]
+}
+
+// NewChain creates a new empty middleware chain.
+func NewChain[T any]() *Chain[T] {
+	return &Chain[T]{
+		middleware: make([]Middleware[T], 0),
+	}
+}
+
+// Use adds middleware to the chain and returns the chain for method chaining.
+// Middleware is applied in the order added: first added wraps the outermost layer.
+func (c *Chain[T]) Use(m Middleware[T]) *Chain[T] {
+	c.middleware = append(c.middleware, m)
+	return c
+}
+
+// UseFunc is a convenience method that converts a handler wrapper function
+// to middleware and adds it to the chain.
+func (c *Chain[T]) UseFunc(fn func(Handler[T]) Handler[T]) *Chain[T] {
+	return c.Use(Middleware[T](fn))
+}
+
+// Append adds all middleware from another chain to this chain.
+// This allows composing chains together.
+func (c *Chain[T]) Append(other *Chain[T]) *Chain[T] {
+	if other != nil {
+		c.middleware = append(c.middleware, other.middleware...)
+	}
+	return c
+}
+
+// Wrap applies the middleware chain to a handler, returning the wrapped handler.
+// The chain is applied in order: first middleware wraps the outermost layer.
+func (c *Chain[T]) Wrap(handler Handler[T]) Handler[T] {
+	if len(c.middleware) == 0 {
+		return handler
+	}
+
+	// Apply middleware in reverse order so first middleware is outermost
+	wrapped := handler
+	for i := len(c.middleware) - 1; i >= 0; i-- {
+		wrapped = c.middleware[i](wrapped)
+	}
+	return wrapped
+}
+
+// Middleware returns the middleware slice for use with WithMiddleware.
+func (c *Chain[T]) Middleware() []Middleware[T] {
+	return c.middleware
+}
+
+// Len returns the number of middleware in the chain.
+func (c *Chain[T]) Len() int {
+	return len(c.middleware)
+}
+
+// WithMiddlewareChain adds all middleware from a chain to the subscription.
+// This is equivalent to calling WithMiddleware with chain.Middleware()...
+//
+// Example:
+//
+//	chain := event.NewChain[Order]().
+//	    Use(LoggingMiddleware[Order]).
+//	    Use(MetricsMiddleware[Order])
+//
+//	orderEvent.Subscribe(ctx, handler, event.WithMiddlewareChain(chain))
+func WithMiddlewareChain[T any](chain *Chain[T]) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		if chain != nil {
+			o.middleware = append(o.middleware, chain.middleware...)
+		}
+	}
+}
+
 // subscribeOptions holds configuration for subscriptions
 type subscribeOptions[T any] struct {
 	mode                  DeliveryMode
