@@ -18,6 +18,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
+	"time"
 )
 
 // Common sentinel errors for the event ecosystem.
@@ -73,26 +75,128 @@ var (
 	ErrCompensationFailed = errors.New("compensation failed")
 )
 
+// RequestContext contains contextual information about a request for debugging.
+// Embed this in error types to provide rich context for logging and monitoring.
+type RequestContext struct {
+	// EventID is the unique identifier of the event being processed.
+	EventID string `json:"event_id,omitempty"`
+
+	// EventName is the name of the event type.
+	EventName string `json:"event_name,omitempty"`
+
+	// TraceID is the distributed tracing ID (OpenTelemetry).
+	TraceID string `json:"trace_id,omitempty"`
+
+	// SpanID is the current span ID (OpenTelemetry).
+	SpanID string `json:"span_id,omitempty"`
+
+	// BusID is the identifier of the event bus.
+	BusID string `json:"bus_id,omitempty"`
+
+	// SubscriptionID identifies the subscriber processing the event.
+	SubscriptionID string `json:"subscription_id,omitempty"`
+
+	// Timestamp is when the error occurred.
+	Timestamp time.Time `json:"timestamp,omitempty"`
+
+	// Extra holds additional context-specific key-value pairs.
+	Extra map[string]string `json:"extra,omitempty"`
+}
+
+// String returns a formatted string representation of the context.
+func (c RequestContext) String() string {
+	if c.IsEmpty() {
+		return ""
+	}
+
+	var parts []string
+	if c.EventID != "" {
+		parts = append(parts, "event_id="+c.EventID)
+	}
+	if c.EventName != "" {
+		parts = append(parts, "event="+c.EventName)
+	}
+	if c.TraceID != "" {
+		parts = append(parts, "trace_id="+c.TraceID)
+	}
+	if c.BusID != "" {
+		parts = append(parts, "bus="+c.BusID)
+	}
+	if c.SubscriptionID != "" {
+		parts = append(parts, "subscription="+c.SubscriptionID)
+	}
+	for k, v := range c.Extra {
+		parts = append(parts, k+"="+v)
+	}
+
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+// IsEmpty returns true if no context fields are set.
+func (c RequestContext) IsEmpty() bool {
+	return c.EventID == "" && c.EventName == "" && c.TraceID == "" &&
+		c.SpanID == "" && c.BusID == "" && c.SubscriptionID == "" && len(c.Extra) == 0
+}
+
+// WithExtra returns a copy of the context with an additional key-value pair.
+func (c RequestContext) WithExtra(key, value string) RequestContext {
+	copy := c
+	if copy.Extra == nil {
+		copy.Extra = make(map[string]string)
+	} else {
+		// Deep copy the map
+		newExtra := make(map[string]string, len(c.Extra)+1)
+		for k, v := range c.Extra {
+			newExtra[k] = v
+		}
+		copy.Extra = newExtra
+	}
+	copy.Extra[key] = value
+	return copy
+}
+
+// ContextualError is an interface for errors that carry request context.
+type ContextualError interface {
+	error
+	// Context returns the request context associated with this error.
+	Context() RequestContext
+}
+
 // NotFoundError wraps ErrNotFound with additional context.
 type NotFoundError struct {
 	Resource string // e.g., "scheduled message", "saga state", "DLQ message"
 	ID       string
+	Ctx      RequestContext
 }
 
 func (e *NotFoundError) Error() string {
+	msg := e.Resource + " not found"
 	if e.ID != "" {
-		return fmt.Sprintf("%s not found: %s", e.Resource, e.ID)
+		msg = fmt.Sprintf("%s not found: %s", e.Resource, e.ID)
 	}
-	return fmt.Sprintf("%s not found", e.Resource)
+	if ctx := e.Ctx.String(); ctx != "" {
+		msg += " " + ctx
+	}
+	return msg
 }
 
 func (e *NotFoundError) Unwrap() error {
 	return ErrNotFound
 }
 
+// Context returns the request context.
+func (e *NotFoundError) Context() RequestContext {
+	return e.Ctx
+}
+
 // NewNotFoundError creates a NotFoundError for the given resource and ID.
 func NewNotFoundError(resource, id string) error {
 	return &NotFoundError{Resource: resource, ID: id}
+}
+
+// NewNotFoundErrorWithContext creates a NotFoundError with request context.
+func NewNotFoundErrorWithContext(resource, id string, ctx RequestContext) error {
+	return &NotFoundError{Resource: resource, ID: id, Ctx: ctx}
 }
 
 // IsNotFound checks if an error indicates a not found condition.
@@ -106,19 +210,31 @@ type VersionConflictError struct {
 	ID              string
 	ExpectedVersion int64
 	ActualVersion   int64
+	Ctx             RequestContext
 }
 
 func (e *VersionConflictError) Error() string {
+	var msg string
 	if e.ID != "" {
-		return fmt.Sprintf("%s %s version conflict: expected %d, got %d",
+		msg = fmt.Sprintf("%s %s version conflict: expected %d, got %d",
 			e.Resource, e.ID, e.ExpectedVersion, e.ActualVersion)
+	} else {
+		msg = fmt.Sprintf("%s version conflict: expected %d, got %d",
+			e.Resource, e.ExpectedVersion, e.ActualVersion)
 	}
-	return fmt.Sprintf("%s version conflict: expected %d, got %d",
-		e.Resource, e.ExpectedVersion, e.ActualVersion)
+	if ctx := e.Ctx.String(); ctx != "" {
+		msg += " " + ctx
+	}
+	return msg
 }
 
 func (e *VersionConflictError) Unwrap() error {
 	return ErrVersionConflict
+}
+
+// Context returns the request context.
+func (e *VersionConflictError) Context() RequestContext {
+	return e.Ctx
 }
 
 // NewVersionConflictError creates a VersionConflictError.
@@ -131,6 +247,17 @@ func NewVersionConflictError(resource, id string, expected, actual int64) error 
 	}
 }
 
+// NewVersionConflictErrorWithContext creates a VersionConflictError with request context.
+func NewVersionConflictErrorWithContext(resource, id string, expected, actual int64, ctx RequestContext) error {
+	return &VersionConflictError{
+		Resource:        resource,
+		ID:              id,
+		ExpectedVersion: expected,
+		ActualVersion:   actual,
+		Ctx:             ctx,
+	}
+}
+
 // IsVersionConflict checks if an error indicates a version conflict.
 func IsVersionConflict(err error) bool {
 	return errors.Is(err, ErrVersionConflict)
@@ -140,22 +267,39 @@ func IsVersionConflict(err error) bool {
 type ValidationError struct {
 	Field   string
 	Message string
+	Ctx     RequestContext
 }
 
 func (e *ValidationError) Error() string {
+	var msg string
 	if e.Field != "" {
-		return fmt.Sprintf("invalid %s: %s", e.Field, e.Message)
+		msg = fmt.Sprintf("invalid %s: %s", e.Field, e.Message)
+	} else {
+		msg = fmt.Sprintf("validation error: %s", e.Message)
 	}
-	return fmt.Sprintf("validation error: %s", e.Message)
+	if ctx := e.Ctx.String(); ctx != "" {
+		msg += " " + ctx
+	}
+	return msg
 }
 
 func (e *ValidationError) Unwrap() error {
 	return ErrInvalidArgument
 }
 
+// Context returns the request context.
+func (e *ValidationError) Context() RequestContext {
+	return e.Ctx
+}
+
 // NewValidationError creates a ValidationError for the given field.
 func NewValidationError(field, message string) error {
 	return &ValidationError{Field: field, Message: message}
+}
+
+// NewValidationErrorWithContext creates a ValidationError with request context.
+func NewValidationErrorWithContext(field, message string, ctx RequestContext) error {
+	return &ValidationError{Field: field, Message: message, Ctx: ctx}
 }
 
 // IsInvalidArgument checks if an error indicates an invalid argument.
@@ -263,17 +407,29 @@ func IsCompensationFailed(err error) bool {
 type MaxRetriesError struct {
 	Attempts int
 	LastErr  error
+	Ctx      RequestContext
 }
 
 func (e *MaxRetriesError) Error() string {
+	var msg string
 	if e.LastErr != nil {
-		return fmt.Sprintf("max retries exceeded after %d attempts: %v", e.Attempts, e.LastErr)
+		msg = fmt.Sprintf("max retries exceeded after %d attempts: %v", e.Attempts, e.LastErr)
+	} else {
+		msg = fmt.Sprintf("max retries exceeded after %d attempts", e.Attempts)
 	}
-	return fmt.Sprintf("max retries exceeded after %d attempts", e.Attempts)
+	if ctx := e.Ctx.String(); ctx != "" {
+		msg += " " + ctx
+	}
+	return msg
 }
 
 func (e *MaxRetriesError) Unwrap() error {
 	return ErrMaxRetriesExceeded
+}
+
+// Context returns the request context.
+func (e *MaxRetriesError) Context() RequestContext {
+	return e.Ctx
 }
 
 // NewMaxRetriesError creates a MaxRetriesError.
@@ -281,24 +437,55 @@ func NewMaxRetriesError(attempts int, lastErr error) error {
 	return &MaxRetriesError{Attempts: attempts, LastErr: lastErr}
 }
 
+// NewMaxRetriesErrorWithContext creates a MaxRetriesError with request context.
+func NewMaxRetriesErrorWithContext(attempts int, lastErr error, ctx RequestContext) error {
+	return &MaxRetriesError{Attempts: attempts, LastErr: lastErr, Ctx: ctx}
+}
+
 // StorageError wraps ErrStorageUnavailable with details.
 type StorageError struct {
 	Operation string // e.g., "save", "load", "delete"
 	Cause     error
+	Ctx       RequestContext
 }
 
 func (e *StorageError) Error() string {
+	var msg string
 	if e.Cause != nil {
-		return fmt.Sprintf("storage unavailable during %s: %v", e.Operation, e.Cause)
+		msg = fmt.Sprintf("storage unavailable during %s: %v", e.Operation, e.Cause)
+	} else {
+		msg = fmt.Sprintf("storage unavailable during %s", e.Operation)
 	}
-	return fmt.Sprintf("storage unavailable during %s", e.Operation)
+	if ctx := e.Ctx.String(); ctx != "" {
+		msg += " " + ctx
+	}
+	return msg
 }
 
 func (e *StorageError) Unwrap() error {
 	return ErrStorageUnavailable
 }
 
+// Context returns the request context.
+func (e *StorageError) Context() RequestContext {
+	return e.Ctx
+}
+
 // NewStorageError creates a StorageError.
 func NewStorageError(operation string, cause error) error {
 	return &StorageError{Operation: operation, Cause: cause}
 }
+
+// NewStorageErrorWithContext creates a StorageError with request context.
+func NewStorageErrorWithContext(operation string, cause error, ctx RequestContext) error {
+	return &StorageError{Operation: operation, Cause: cause, Ctx: ctx}
+}
+
+// Compile-time checks
+var (
+	_ ContextualError = (*NotFoundError)(nil)
+	_ ContextualError = (*VersionConflictError)(nil)
+	_ ContextualError = (*ValidationError)(nil)
+	_ ContextualError = (*MaxRetriesError)(nil)
+	_ ContextualError = (*StorageError)(nil)
+)
