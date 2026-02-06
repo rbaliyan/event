@@ -67,11 +67,11 @@ type CloseableDeduplicationStore interface {
 
 // inMemoryDeduplicationStore is a simple in-memory deduplication store with TTL
 type inMemoryDeduplicationStore struct {
-	mu       sync.RWMutex
-	seen     map[string]time.Time
-	ttl      time.Duration
-	maxSize  int
-	stopCh   chan struct{}
+	mu      sync.RWMutex
+	seen    map[string]time.Time
+	ttl     time.Duration
+	maxSize int
+	stopCh  chan struct{}
 }
 
 // NewInMemoryDeduplicationStore creates a new in-memory deduplication store.

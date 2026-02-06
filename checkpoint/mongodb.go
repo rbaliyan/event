@@ -163,7 +163,7 @@ func (s *MongoStore) List(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var ids []string
 	for cursor.Next(ctx) {
@@ -184,7 +184,7 @@ func (s *MongoStore) GetAll(ctx context.Context) (map[string]time.Time, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	checkpoints := make(map[string]time.Time)
 	for cursor.Next(ctx) {
@@ -216,4 +216,3 @@ func (s *MongoStore) GetCheckpointInfo(ctx context.Context, subscriberID string)
 
 // Compile-time check
 var _ CheckpointStore = (*MongoStore)(nil)
-

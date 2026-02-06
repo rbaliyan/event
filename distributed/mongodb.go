@@ -310,7 +310,7 @@ func (s *MongoStateManager) Acquire(ctx context.Context, messageID string, ttl t
 	filter := bson.M{
 		"_id": messageID,
 		"$or": []bson.M{
-			{"expires_at": bson.M{"$lt": now}}, // Expired state
+			{"expires_at": bson.M{"$lt": now}},   // Expired state
 			{"status": bson.M{"$exists": false}}, // New document (shouldn't happen with upsert, but safe)
 		},
 	}
@@ -495,7 +495,7 @@ func (s *MongoStateManager) ListStale(ctx context.Context, staleTimeout time.Dur
 	if err != nil {
 		return nil, fmt.Errorf("mongodb find stale: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var stale []string
 	for cursor.Next(ctx) {

@@ -260,7 +260,7 @@ func (s *MongoStore) GetByEventID(ctx context.Context, eventID string) ([]*Entry
 	if err != nil {
 		return nil, fmt.Errorf("get by event id: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var entries []*Entry
 	for cursor.Next(ctx) {
@@ -355,7 +355,7 @@ func (s *MongoStore) List(ctx context.Context, filter Filter) (*Page, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list monitor: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var entries []*Entry
 	for cursor.Next(ctx) {

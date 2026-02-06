@@ -181,7 +181,7 @@ func (s *MongoStore[T]) List(ctx context.Context, filter Filter) (*Page[T], erro
 	if err != nil {
 		return nil, err
 	}
-	defer cur.Close(ctx)
+	defer func() { _ = cur.Close(ctx) }()
 
 	var items []T
 	if err := cur.All(ctx, &items); err != nil {

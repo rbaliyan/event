@@ -228,13 +228,13 @@ type mockMessage struct {
 }
 
 func (m *mockMessage) ID() string                  { return "mock-id" }
-func (m *mockMessage) Source() string               { return "mock-source" }
-func (m *mockMessage) Payload() any                 { return m.payload }
-func (m *mockMessage) Metadata() map[string]string  { return nil }
-func (m *mockMessage) Context() context.Context     { return context.Background() }
-func (m *mockMessage) RetryCount() int              { return 0 }
-func (m *mockMessage) Timestamp() time.Time         { return time.Now() }
-func (m *mockMessage) SpanContext() any             { return nil }
+func (m *mockMessage) Source() string              { return "mock-source" }
+func (m *mockMessage) Payload() any                { return m.payload }
+func (m *mockMessage) Metadata() map[string]string { return nil }
+func (m *mockMessage) Context() context.Context    { return context.Background() }
+func (m *mockMessage) RetryCount() int             { return 0 }
+func (m *mockMessage) Timestamp() time.Time        { return time.Now() }
+func (m *mockMessage) SpanContext() any            { return nil }
 func (m *mockMessage) Ack(err error) error {
 	m.acked = true
 	m.err = err

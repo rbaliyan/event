@@ -328,7 +328,7 @@ func TestBSON(t *testing.T) {
 	t.Run("MongoDBTypes", func(t *testing.T) {
 		type BSONDoc struct {
 			ID   bson.ObjectID `bson:"_id"`
-			Name string             `bson:"name"`
+			Name string        `bson:"name"`
 		}
 
 		original := BSONDoc{

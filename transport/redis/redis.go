@@ -84,15 +84,15 @@ type redisEvent struct {
 // subscription implements transport.Subscription for Redis
 type subscription struct {
 	*base.Subscription             // Embedded base subscription
-	client           Client        // Redis client
-	stream           string        // Stream name
-	group            string        // Consumer group name
-	consumer         string        // Consumer name
-	codec            codec.Codec   // Message codec
-	cancel           context.CancelFunc
-	claimInterval    time.Duration // Interval for claiming orphaned messages
-	claimMinIdle     time.Duration // Minimum idle time before claiming
-	isBroadcast      bool          // If true, consumer group is deleted on close
+	client             Client      // Redis client
+	stream             string      // Stream name
+	group              string      // Consumer group name
+	consumer           string      // Consumer name
+	codec              codec.Codec // Message codec
+	cancel             context.CancelFunc
+	claimInterval      time.Duration // Interval for claiming orphaned messages
+	claimMinIdle       time.Duration // Minimum idle time before claiming
+	isBroadcast        bool          // If true, consumer group is deleted on close
 
 	// Reliability stores
 	idempotencyStore IdempotencyStore
@@ -477,9 +477,9 @@ func (s *subscription) Close(ctx context.Context) error {
 }
 
 // sendWithRetry sends a message to the channel with exponential backoff on timeout.
-// This is a convenience wrapper around base.Subscription.SendWithRetry with Redis-specific logging.
+// This is a convenience wrapper around SendWithRetry with Redis-specific logging.
 func (s *subscription) sendWithRetry(msg transport.Message, msgID string, logger *slog.Logger) bool {
-	return s.Subscription.SendWithRetry(msg, logger, "msg_id", msgID, "stream", s.stream)
+	return s.SendWithRetry(msg, logger, "msg_id", msgID, "stream", s.stream)
 }
 
 // processRedisMessage decodes a Redis stream message and sends it to the subscription channel.

@@ -65,13 +65,13 @@ func (m *RedisMessage) ToMessage() *Message {
 // RedisStore implements outbox storage using Redis Streams with Consumer Groups.
 // Consumer Groups provide exactly-once delivery semantics for HA deployments.
 type RedisStore struct {
-	client        redis.Cmdable
-	pendingKey    string
-	publishedKey  string
-	failedPrefix  string
-	groupName     string // Consumer group name
-	consumerName  string // This instance's consumer name
-	maxLen        int64  // Max stream length (0 = unlimited)
+	client       redis.Cmdable
+	pendingKey   string
+	publishedKey string
+	failedPrefix string
+	groupName    string // Consumer group name
+	consumerName string // This instance's consumer name
+	maxLen       int64  // Max stream length (0 = unlimited)
 }
 
 // NewRedisStore creates a new Redis outbox store with consumer group support.

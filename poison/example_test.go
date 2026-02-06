@@ -15,7 +15,7 @@ func Example() {
 	// Create an in-memory store and detector
 	store := poison.NewMemoryStore()
 	detector := poison.NewDetector(store,
-		poison.WithThreshold(3),           // Quarantine after 3 failures
+		poison.WithThreshold(3),              // Quarantine after 3 failures
 		poison.WithQuarantineTime(time.Hour), // Block for 1 hour
 	)
 
@@ -52,7 +52,7 @@ func ExampleNewDetector() {
 
 	// Create detector with custom settings
 	detector := poison.NewDetector(store,
-		poison.WithThreshold(5),                // 5 failures before quarantine
+		poison.WithThreshold(5),                 // 5 failures before quarantine
 		poison.WithQuarantineTime(24*time.Hour), // Block for 24 hours
 	)
 

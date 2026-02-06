@@ -305,7 +305,7 @@ func (p *MongoProvider) List(ctx context.Context) ([]*EventSchema, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list schemas: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var schemas []*EventSchema
 	for cursor.Next(ctx) {

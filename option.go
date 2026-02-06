@@ -35,12 +35,12 @@ var (
 // eventOptions holds configuration for events (unexported)
 // These are event-level concerns, not bus-level infrastructure
 type eventOptions struct {
-	subTimeout   time.Duration
-	onError      func(*Bus, string, error)
-	maxRetries   int                                                             // Max retry attempts (0 = unlimited)
-	dlqHandler   func(ctx context.Context, msg message.Message, err error) error // Dead letter queue handler (returns error if storage fails)
-	payloadCodec  payload.Codec                                                  // Payload codec (nil = use JSON default)
-	messageFilter      func(map[string]string) bool                                   // Pre-decode message filter (nil = accept all)
+	subTimeout         time.Duration
+	onError            func(*Bus, string, error)
+	maxRetries         int                                                             // Max retry attempts (0 = unlimited)
+	dlqHandler         func(ctx context.Context, msg message.Message, err error) error // Dead letter queue handler (returns error if storage fails)
+	payloadCodec       payload.Codec                                                   // Payload codec (nil = use JSON default)
+	messageFilter      func(map[string]string) bool                                    // Pre-decode message filter (nil = accept all)
 	decodeErrorHandler func(ctx context.Context, msg message.Message, err error) error // Decode error handler (nil = default DLQ+ack)
 }
 

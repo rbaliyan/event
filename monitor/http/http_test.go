@@ -22,7 +22,6 @@ func TestHandlerNew(t *testing.T) {
 	}
 }
 
-
 func TestHandlerList(t *testing.T) {
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
@@ -399,7 +398,6 @@ func TestHandlerDelete(t *testing.T) {
 		}
 	})
 }
-
 
 func TestHandlerQueryParams(t *testing.T) {
 	ctx := context.Background()

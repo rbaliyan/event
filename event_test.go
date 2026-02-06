@@ -643,8 +643,8 @@ func TestWorkerGroupWithBroadcast(t *testing.T) {
 	var total int32 = 20
 
 	// Counters
-	var broadcast1, broadcast2 int32     // broadcast subscribers
-	var workerA1, workerA2 int32         // worker group A
+	var broadcast1, broadcast2 int32         // broadcast subscribers
+	var workerA1, workerA2 int32             // worker group A
 	var workerDefault1, workerDefault2 int32 // default worker pool (no group)
 	var totalProcessed int32
 

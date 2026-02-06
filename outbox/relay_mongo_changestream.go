@@ -254,7 +254,7 @@ func (r *ChangeStreamRelay) watch(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("watch: %w", err)
 	}
-	defer stream.Close(ctx)
+	defer func() { _ = stream.Close(ctx) }()
 
 	r.log().Info("change stream started")
 

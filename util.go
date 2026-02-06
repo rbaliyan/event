@@ -104,4 +104,3 @@ func Caller(depth int) string {
 	}
 	return ""
 }
-

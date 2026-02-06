@@ -56,9 +56,9 @@ type coreEvent struct {
 
 // coreSubscription implements transport.Subscription for NATS Core
 type coreSubscription struct {
-	*base.Subscription          // Embedded base subscription
-	sub              *nats.Subscription
-	codec            codec.Codec
+	*base.Subscription // Embedded base subscription
+	sub                *nats.Subscription
+	codec              codec.Codec
 
 	// Optional reliability features
 	idempotencyStore IdempotencyStore
@@ -426,6 +426,6 @@ func (s *coreSubscription) handleMessage(msg *nats.Msg) {
 
 // Compile-time checks
 var (
-	_ transport.Transport    = (*CoreTransport)(nil)
+	_ transport.Transport     = (*CoreTransport)(nil)
 	_ transport.HealthChecker = (*CoreTransport)(nil)
 )

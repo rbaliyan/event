@@ -53,22 +53,24 @@ type Event[T any] interface {
 // discardEvent discard all events
 type discardEvent[T any] struct{}
 
-func (discardEvent[T]) Name() string                                                              { return "" }
-func (discardEvent[T]) Subscribe(_ context.Context, _ Handler[T], _ ...SubscribeOption[T]) error { return nil }
-func (discardEvent[T]) Publish(_ context.Context, _ T) error                                      { return nil }
+func (discardEvent[T]) Name() string { return "" }
+func (discardEvent[T]) Subscribe(_ context.Context, _ Handler[T], _ ...SubscribeOption[T]) error {
+	return nil
+}
+func (discardEvent[T]) Publish(_ context.Context, _ T) error { return nil }
 
 // New creates a new unbound event.
 // The event must be registered with a Bus before Publish/Subscribe can be used.
 func New[T any](name string, opts ...EventOption) Event[T] {
 	o := newEventOptions(opts...)
 	return &eventImpl[T]{
-		status:       0, // unbound - not active yet
-		name:         name,
-		subTimeout:   o.subTimeout,
-		onError:      o.onError,
-		maxRetries:   o.maxRetries,
-		dlqHandler:   o.dlqHandler,
-		payloadCodec:  o.payloadCodec,
+		status:             0, // unbound - not active yet
+		name:               name,
+		subTimeout:         o.subTimeout,
+		onError:            o.onError,
+		maxRetries:         o.maxRetries,
+		dlqHandler:         o.dlqHandler,
+		payloadCodec:       o.payloadCodec,
 		messageFilter:      o.messageFilter,
 		decodeErrorHandler: o.decodeErrorHandler,
 		// bus is set by bus.Register()
@@ -89,15 +91,15 @@ type schemaFlags struct {
 
 // eventImpl generic event implementation
 type eventImpl[T any] struct {
-	status       int32
-	name         string
-	size         int64
-	bus          atomic.Pointer[Bus]
-	subTimeout   time.Duration
-	onError      func(*Bus, string, error)                                        // for panic recovery only
-	maxRetries   int                                                              // max retry attempts (0 = unlimited)
-	dlqHandler   func(ctx context.Context, msg message.Message, err error) error  // dead letter queue handler (returns error if storage fails)
-	payloadCodec  payload.Codec                                                   // payload codec (nil = use JSON default)
+	status             int32
+	name               string
+	size               int64
+	bus                atomic.Pointer[Bus]
+	subTimeout         time.Duration
+	onError            func(*Bus, string, error)                                       // for panic recovery only
+	maxRetries         int                                                             // max retry attempts (0 = unlimited)
+	dlqHandler         func(ctx context.Context, msg message.Message, err error) error // dead letter queue handler (returns error if storage fails)
+	payloadCodec       payload.Codec                                                   // payload codec (nil = use JSON default)
 	messageFilter      func(map[string]string) bool                                    // pre-decode message filter (nil = accept all)
 	decodeErrorHandler func(ctx context.Context, msg message.Message, err error) error // decode error handler (nil = default DLQ+ack)
 	schema             schemaFlags                                                     // schema-based configuration
@@ -368,7 +370,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 		defer func() {
 			atomic.AddInt64(&e.size, -1)
 			// Use background context for cleanup since subscription context is done
-			sub.Close(context.Background())
+			_ = sub.Close(context.Background())
 		}()
 		for {
 			select {

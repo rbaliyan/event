@@ -226,11 +226,11 @@ var _ Schema = (*JSONSchema)(nil)
 //
 //	registry.AddUpcaster("orders.created", upcaster)
 type FieldMapper struct {
-	from        int
-	to          int
-	fieldMap    map[string]string // old name -> new name
-	defaults    map[string]any    // new field -> default value
-	removeFields []string         // fields to remove
+	from         int
+	to           int
+	fieldMap     map[string]string // old name -> new name
+	defaults     map[string]any    // new field -> default value
+	removeFields []string          // fields to remove
 }
 
 // NewFieldMapper creates a new field mapper for the specified version transition.

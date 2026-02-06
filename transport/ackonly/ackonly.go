@@ -174,7 +174,7 @@ func (t *Transport) UnregisterEvent(ctx context.Context, name string) error {
 	ev := val.(*event)
 	ev.subscribers.Range(func(key, value any) bool {
 		sub := value.(*subscription)
-		sub.Close(ctx)
+		_ = sub.Close(ctx)
 		return true
 	})
 
@@ -305,7 +305,7 @@ func (t *Transport) Close(ctx context.Context) error {
 		ev := value.(*event)
 		ev.subscribers.Range(func(k, v any) bool {
 			sub := v.(*subscription)
-			sub.Close(ctx)
+			_ = sub.Close(ctx)
 			return true
 		})
 		return true

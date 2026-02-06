@@ -173,7 +173,7 @@ func (s *PostgresStore) GetPending(ctx context.Context, limit int) ([]*Message, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return s.scanMessages(rows)
 }
@@ -254,7 +254,7 @@ func (s *PostgresStore) ProcessPending(ctx context.Context, limit int, fn func(m
 
 // scanMessages reads rows into Message structs and closes the rows.
 func (s *PostgresStore) scanMessages(rows *sql.Rows) ([]*Message, error) {
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []*Message
 	for rows.Next() {

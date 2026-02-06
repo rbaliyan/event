@@ -14,9 +14,9 @@ import (
 
 // mockAckBackend implements AckBackend for testing
 type mockAckBackend struct {
-	mu      sync.Mutex
-	stored  map[string][]string // eventName -> msgIDs
-	acked   map[string][]string // eventName -> msgIDs
+	mu       sync.Mutex
+	stored   map[string][]string // eventName -> msgIDs
+	acked    map[string][]string // eventName -> msgIDs
 	storeErr error
 	ackErr   error
 }

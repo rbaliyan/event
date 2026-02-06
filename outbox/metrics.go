@@ -30,12 +30,12 @@ import (
 //	relay := outbox.NewRelay(store, transport).
 //	    WithMetrics(metrics)
 type Metrics struct {
-	storedCounter     metric.Int64Counter
-	publishedCounter  metric.Int64Counter
-	failedCounter     metric.Int64Counter
-	cleanedCounter    metric.Int64Counter
-	pendingGauge      metric.Int64ObservableGauge
-	publishDuration   metric.Float64Histogram
+	storedCounter    metric.Int64Counter
+	publishedCounter metric.Int64Counter
+	failedCounter    metric.Int64Counter
+	cleanedCounter   metric.Int64Counter
+	pendingGauge     metric.Int64ObservableGauge
+	publishDuration  metric.Float64Histogram
 
 	pendingCallback func() int64
 	pendingReg      metric.Registration

@@ -242,7 +242,7 @@ func (s *subscription) drainStore(ctx context.Context, backoff *base.Backoff) bo
 // signalForwarder reads from the signal subscription and notifies the
 // fetch loop via signalCh. Multiple rapid signals are coalesced into one.
 func (s *subscription) signalForwarder(ctx context.Context, signalSub transport.Subscription) {
-	defer signalSub.Close(ctx)
+	defer func() { _ = signalSub.Close(ctx) }()
 
 	for {
 		select {

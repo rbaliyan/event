@@ -614,8 +614,8 @@ func TestBackoff_Next(t *testing.T) {
 	t.Run("caps at max duration", func(t *testing.T) {
 		b := NewBackoffWithConfig(100*time.Millisecond, 300*time.Millisecond, 0)
 
-		b.Next() // 100ms
-		b.Next() // 200ms
+		b.Next()      // 100ms
+		b.Next()      // 200ms
 		d := b.Next() // Should be capped at 300ms
 
 		if d != 300*time.Millisecond {

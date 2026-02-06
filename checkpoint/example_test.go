@@ -400,7 +400,7 @@ func Example_multipleSubscribers() {
 
 	// Each subscriber maintains independent progress
 	baseTime := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
-	store.Save(ctx, subscribers[0].id, baseTime)                     // analytics
+	store.Save(ctx, subscribers[0].id, baseTime)                      // analytics
 	store.Save(ctx, subscribers[1].id, baseTime.Add(-10*time.Minute)) // billing (behind)
 	store.Save(ctx, subscribers[2].id, baseTime.Add(5*time.Minute))   // notifications (ahead)
 

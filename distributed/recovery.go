@@ -51,13 +51,13 @@ type StaleResetter interface {
 //	// Or run once for manual recovery
 //	reset, err := runner.RecoverOnce(ctx)
 type RecoveryRunner struct {
-	sm               StateManager
-	staleTimeout     time.Duration
-	checkInterval    time.Duration
-	batchLimit       int
-	logger           *slog.Logger
-	backoff            backoff.Strategy
-	consecutiveErrors  atomic.Int32
+	sm                StateManager
+	staleTimeout      time.Duration
+	checkInterval     time.Duration
+	batchLimit        int
+	logger            *slog.Logger
+	backoff           backoff.Strategy
+	consecutiveErrors atomic.Int32
 }
 
 // RecoveryOption configures a RecoveryRunner.

@@ -274,7 +274,7 @@ func (p *PostgresProvider) List(ctx context.Context) ([]*EventSchema, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list schemas: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var schemas []*EventSchema
 	for rows.Next() {

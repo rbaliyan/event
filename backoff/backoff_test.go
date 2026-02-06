@@ -31,8 +31,8 @@ func TestLinear(t *testing.T) {
 		{1, 150 * time.Millisecond},
 		{2, 200 * time.Millisecond},
 		{3, 250 * time.Millisecond},
-		{4, 300 * time.Millisecond}, // Max
-		{5, 300 * time.Millisecond}, // Max
+		{4, 300 * time.Millisecond},  // Max
+		{5, 300 * time.Millisecond},  // Max
 		{10, 300 * time.Millisecond}, // Max
 	}
 

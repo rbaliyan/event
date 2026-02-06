@@ -60,17 +60,17 @@ db.event_outbox.createIndex({ "published_at": 1 }, { sparse: true })
 
 // MongoMessage represents a message document in MongoDB
 type MongoMessage struct {
-	ID          bson.ObjectID `bson:"_id,omitempty"`
-	EventName   string             `bson:"event_name"`
-	EventID     string             `bson:"event_id"`
-	Payload     []byte             `bson:"payload"`
-	Metadata    map[string]string  `bson:"metadata,omitempty"`
-	CreatedAt   time.Time          `bson:"created_at"`
-	ClaimedAt   *time.Time         `bson:"claimed_at,omitempty"` // When claimed for processing (HA)
-	PublishedAt *time.Time         `bson:"published_at,omitempty"`
-	Status      Status             `bson:"status"`
-	RetryCount  int                `bson:"retry_count"`
-	LastError   string             `bson:"last_error,omitempty"`
+	ID          bson.ObjectID     `bson:"_id,omitempty"`
+	EventName   string            `bson:"event_name"`
+	EventID     string            `bson:"event_id"`
+	Payload     []byte            `bson:"payload"`
+	Metadata    map[string]string `bson:"metadata,omitempty"`
+	CreatedAt   time.Time         `bson:"created_at"`
+	ClaimedAt   *time.Time        `bson:"claimed_at,omitempty"` // When claimed for processing (HA)
+	PublishedAt *time.Time        `bson:"published_at,omitempty"`
+	Status      Status            `bson:"status"`
+	RetryCount  int               `bson:"retry_count"`
+	LastError   string            `bson:"last_error,omitempty"`
 }
 
 // ToMessage converts MongoMessage to Message

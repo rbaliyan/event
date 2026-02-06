@@ -53,12 +53,12 @@ import (
 //	    poison.WithQuarantineTime(time.Hour),
 //	)
 type PostgresStore struct {
-	db               *sql.DB
-	failuresTable    string
-	quarantineTable  string
-	failureTTL       time.Duration
-	cleanupInterval  time.Duration
-	stopCleanup      chan struct{}
+	db              *sql.DB
+	failuresTable   string
+	quarantineTable string
+	failureTTL      time.Duration
+	cleanupInterval time.Duration
+	stopCleanup     chan struct{}
 }
 
 // PostgresStoreOption configures a PostgresStore.
@@ -156,12 +156,12 @@ func WithPostgresCleanupInterval(interval time.Duration) PostgresStoreOption {
 //	detector := poison.NewDetector(store)
 func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) *PostgresStore {
 	s := &PostgresStore{
-		db:               db,
-		failuresTable:    "poison_failures",
-		quarantineTable:  "poison_quarantine",
-		failureTTL:       24 * time.Hour,
-		cleanupInterval:  time.Minute,
-		stopCleanup:      make(chan struct{}),
+		db:              db,
+		failuresTable:   "poison_failures",
+		quarantineTable: "poison_quarantine",
+		failureTTL:      24 * time.Hour,
+		cleanupInterval: time.Minute,
+		stopCleanup:     make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -435,7 +435,7 @@ func (s *PostgresStore) GetQuarantinedMessages(ctx context.Context, limit int) (
 	if err != nil {
 		return nil, fmt.Errorf("query quarantined: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var messages []string
 	for rows.Next() {

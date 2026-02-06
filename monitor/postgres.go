@@ -206,7 +206,7 @@ func (s *PostgresStore) GetByEventID(ctx context.Context, eventID string) ([]*En
 	if err != nil {
 		return nil, fmt.Errorf("get by event id: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []*Entry
 	for rows.Next() {
@@ -333,7 +333,7 @@ func (s *PostgresStore) List(ctx context.Context, filter Filter) (*Page, error) 
 	if err != nil {
 		return nil, fmt.Errorf("list monitor: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []*Entry
 	for rows.Next() {

@@ -31,9 +31,9 @@ import (
 
 // Errors
 var (
-	ErrClientRequired       = errors.New("kafka client is required")
-	ErrProducerFailed       = errors.New("failed to create kafka producer")
-	ErrAutoCommitEnabled    = errors.New("kafka: auto-commit must be disabled for at-least-once delivery - set Consumer.Offsets.AutoCommit.Enable = false")
+	ErrClientRequired    = errors.New("kafka client is required")
+	ErrProducerFailed    = errors.New("failed to create kafka producer")
+	ErrAutoCommitEnabled = errors.New("kafka: auto-commit must be disabled for at-least-once delivery - set Consumer.Offsets.AutoCommit.Enable = false")
 )
 
 // DefaultBusName is used as default consumer group
@@ -70,10 +70,10 @@ type kafkaEvent struct {
 
 // subscription implements transport.Subscription for Kafka
 type subscription struct {
-	*base.Subscription                   // Embedded base subscription
-	consumer         sarama.ConsumerGroup // Kafka consumer group
-	topic            string               // Topic name
-	codec            codec.Codec          // Message codec
+	*base.Subscription                      // Embedded base subscription
+	consumer           sarama.ConsumerGroup // Kafka consumer group
+	topic              string               // Topic name
+	codec              codec.Codec          // Message codec
 
 	// Native Kafka features
 	producer        sarama.SyncProducer // For DLT publishing
@@ -144,7 +144,7 @@ func New(client sarama.Client, opts ...Option) (*Transport, error) {
 	// Create cluster admin for topic management
 	admin, err := sarama.NewClusterAdminFromClient(client)
 	if err != nil {
-		producer.Close()
+		_ = producer.Close()
 		return nil, err
 	}
 	t.admin = admin
@@ -530,16 +530,16 @@ func (t *Transport) ConsumerLag(ctx context.Context) ([]transport.ConsumerLag, e
 func (s *subscription) Close(ctx context.Context) error {
 	return s.Subscription.Close(func() error {
 		if s.consumer != nil {
-			s.consumer.Close()
+			_ = s.consumer.Close()
 		}
 		return nil
 	})
 }
 
 // sendWithRetry sends a message to the channel with exponential backoff on timeout.
-// This is a convenience wrapper around base.Subscription.SendWithRetry with Kafka-specific logging.
+// This is a convenience wrapper around SendWithRetry with Kafka-specific logging.
 func (s *subscription) sendWithRetry(msg transport.Message, logger *slog.Logger) bool {
-	return s.Subscription.SendWithRetry(msg, logger, "topic", s.topic)
+	return s.SendWithRetry(msg, logger, "topic", s.topic)
 }
 
 func (s *subscription) consumeLoop(ctx context.Context, logger *slog.Logger) {

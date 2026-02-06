@@ -56,10 +56,10 @@ type eventChannel struct {
 
 // subscription implements transport.Subscription
 type subscription struct {
-	*base.Subscription              // Embedded base subscription
-	ev               *eventChannel        // Parent event channel
-	mode             transport.DeliveryMode // Delivery mode
-	workerGroup      string                // Worker group name for WorkerPool mode
+	*base.Subscription                        // Embedded base subscription
+	ev                 *eventChannel          // Parent event channel
+	mode               transport.DeliveryMode // Delivery mode
+	workerGroup        string                 // Worker group name for WorkerPool mode
 }
 
 func (s *subscription) Close(ctx context.Context) error {
@@ -135,7 +135,7 @@ func (t *Transport) UnregisterEvent(ctx context.Context, name string) error {
 	// Close all subscriptions for this event
 	ec.subscribers.Range(func(key, value any) bool {
 		sub := value.(*subscription)
-		sub.Close(ctx)
+		_ = sub.Close(ctx)
 		return true
 	})
 
@@ -370,7 +370,7 @@ func (t *Transport) Close(ctx context.Context) error {
 		// Close all subscriptions
 		ec.subscribers.Range(func(k, v any) bool {
 			sub := v.(*subscription)
-			sub.Close(ctx)
+			_ = sub.Close(ctx)
 			return true
 		})
 		return true

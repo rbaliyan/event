@@ -84,10 +84,10 @@ type natsEvent struct {
 
 // jsSubscription implements transport.Subscription for JetStream
 type jsSubscription struct {
-	*base.Subscription              // Embedded base subscription
-	consumer         jetstream.Consumer // JetStream consumer
-	codec            codec.Codec        // Message codec
-	cancel           context.CancelFunc // Context cancel function
+	*base.Subscription                    // Embedded base subscription
+	consumer           jetstream.Consumer // JetStream consumer
+	codec              codec.Codec        // Message codec
+	cancel             context.CancelFunc // Context cancel function
 }
 
 // Default configuration
