@@ -1,7 +1,6 @@
 # Event v3
 
 [![CI](https://github.com/rbaliyan/event/actions/workflows/ci.yml/badge.svg)](https://github.com/rbaliyan/event/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/rbaliyan/event/branch/main/graph/badge.svg)](https://codecov.io/gh/rbaliyan/event)
 [![Go Reference](https://pkg.go.dev/badge/github.com/rbaliyan/event/v3.svg)](https://pkg.go.dev/github.com/rbaliyan/event/v3)
 [![Go Report Card](https://goreportcard.com/badge/github.com/rbaliyan/event/v3)](https://goreportcard.com/report/github.com/rbaliyan/event/v3)
 
