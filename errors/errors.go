@@ -17,6 +17,7 @@ package errors
 import (
 	"errors"
 	"fmt"
+	"reflect"
 )
 
 // Common sentinel errors for the event ecosystem.
@@ -153,4 +154,60 @@ func IsClosed(err error) bool {
 // IsTimeout checks if an error indicates a timeout.
 func IsTimeout(err error) bool {
 	return errors.Is(err, ErrTimeout)
+}
+
+// RequireNotNil panics if the value is nil with a descriptive message.
+// Use this in constructors for required parameters that must not be nil.
+// Handles both untyped nil and typed nil (e.g., var db *sql.DB = nil).
+//
+// Example:
+//
+//	func NewStore(db *sql.DB) *Store {
+//	    errors.RequireNotNil(db, "db")
+//	    return &Store{db: db}
+//	}
+func RequireNotNil(value any, name string) {
+	if value == nil {
+		panic(fmt.Sprintf("%s must not be nil", name))
+	}
+	// Check for typed nils using reflection
+	// This handles cases like var db *sql.DB = nil
+	v := reflect.ValueOf(value)
+	kind := v.Kind()
+	if (kind == reflect.Ptr || kind == reflect.Interface ||
+		kind == reflect.Map || kind == reflect.Slice ||
+		kind == reflect.Chan || kind == reflect.Func) && v.IsNil() {
+		panic(fmt.Sprintf("%s must not be nil", name))
+	}
+}
+
+// RequireNotEmpty panics if the string is empty with a descriptive message.
+// Use this in constructors for required string parameters.
+//
+// Example:
+//
+//	func NewSaga(name string) *Saga {
+//	    errors.RequireNotEmpty(name, "name")
+//	    return &Saga{name: name}
+//	}
+func RequireNotEmpty(value string, name string) {
+	if value == "" {
+		panic(fmt.Sprintf("%s must not be empty", name))
+	}
+}
+
+// RequirePositive panics if the integer is not positive (> 0).
+// Use this in constructors for required positive integer parameters.
+func RequirePositive(value int, name string) {
+	if value <= 0 {
+		panic(fmt.Sprintf("%s must be positive, got %d", name, value))
+	}
+}
+
+// RequireNonNegative panics if the integer is negative.
+// Use this in constructors for parameters that must be >= 0.
+func RequireNonNegative(value int, name string) {
+	if value < 0 {
+		panic(fmt.Sprintf("%s must be non-negative, got %d", name, value))
+	}
 }
