@@ -232,6 +232,32 @@ func TestMemoryStore(t *testing.T) {
 		}
 	})
 
+	t.Run("List with subscriber name filter", func(t *testing.T) {
+		store := NewMemoryStore()
+		defer store.Close()
+
+		now := time.Now()
+		store.Record(ctx, &Entry{EventID: "e1", SubscriptionID: "s1", SubscriberName: "order-processor", SubscriberDescription: "Handles orders", DeliveryMode: Broadcast, Status: StatusCompleted, StartedAt: now})
+		store.Record(ctx, &Entry{EventID: "e2", SubscriptionID: "s2", SubscriberName: "inventory-updater", SubscriberDescription: "Updates inventory", DeliveryMode: Broadcast, Status: StatusCompleted, StartedAt: now.Add(time.Second)})
+		store.Record(ctx, &Entry{EventID: "e3", SubscriptionID: "s3", SubscriberName: "order-processor", SubscriberDescription: "Handles orders", DeliveryMode: Broadcast, Status: StatusCompleted, StartedAt: now.Add(2 * time.Second)})
+
+		// Filter by subscriber name
+		page, _ := store.List(ctx, Filter{SubscriberName: "order-processor"})
+		if len(page.Entries) != 2 {
+			t.Errorf("expected 2 entries for order-processor, got %d", len(page.Entries))
+		}
+
+		// Verify subscriber name and description are present
+		for _, entry := range page.Entries {
+			if entry.SubscriberName != "order-processor" {
+				t.Errorf("expected subscriber name 'order-processor', got %s", entry.SubscriberName)
+			}
+			if entry.SubscriberDescription != "Handles orders" {
+				t.Errorf("expected subscriber description 'Handles orders', got %s", entry.SubscriberDescription)
+			}
+		}
+	})
+
 	t.Run("List with pagination", func(t *testing.T) {
 		store := NewMemoryStore()
 		defer store.Close()
@@ -366,7 +392,7 @@ func TestMemoryStore(t *testing.T) {
 		store := NewMemoryStore()
 		defer store.Close()
 
-		err := store.RecordStart(ctx, "event-1", "sub-1", "order.created", "bus-1", false, map[string]string{"key": "value"}, "trace-1", "span-1")
+		err := store.RecordStart(ctx, "event-1", "sub-1", "order.created", "bus-1", false, map[string]string{"key": "value"}, "trace-1", "span-1", "test-subscriber", "Test subscriber description")
 		if err != nil {
 			t.Fatalf("RecordStart failed: %v", err)
 		}
@@ -377,6 +403,12 @@ func TestMemoryStore(t *testing.T) {
 		}
 		if entry.TraceID != "trace-1" {
 			t.Errorf("expected trace-1, got %s", entry.TraceID)
+		}
+		if entry.SubscriberName != "test-subscriber" {
+			t.Errorf("expected subscriber name 'test-subscriber', got %s", entry.SubscriberName)
+		}
+		if entry.SubscriberDescription != "Test subscriber description" {
+			t.Errorf("expected subscriber description 'Test subscriber description', got %s", entry.SubscriberDescription)
 		}
 
 		err = store.RecordComplete(ctx, "event-1", "sub-1", string(StatusCompleted), nil, 100*time.Millisecond)

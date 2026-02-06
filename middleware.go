@@ -481,8 +481,10 @@ func IdempotencyMiddleware[T any](store IdempotencyStore) Middleware[T] {
 type MonitorStore interface {
 	// RecordStart records when event processing begins.
 	// workerPool indicates the delivery mode (true = WorkerPool, false = Broadcast)
+	// subscriberName and subscriberDescription are optional human-readable identifiers
 	RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string,
-		workerPool bool, metadata map[string]string, traceID, spanID string) error
+		workerPool bool, metadata map[string]string, traceID, spanID string,
+		subscriberName, subscriberDescription string) error
 
 	// RecordComplete updates the entry with the final result.
 	// status: "completed" (success), "failed" (rejected), "retrying" (will retry)
@@ -533,6 +535,8 @@ func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 			busID := ContextSource(ctx)
 			metadata := ContextMetadata(ctx)
 			workerPool := ContextDeliveryMode(ctx) == WorkerPool
+			subscriberName := ContextSubscriberName(ctx)
+			subscriberDescription := ContextSubscriberDescription(ctx)
 
 			// For WorkerPool mode, subscription ID is not part of the key
 			subIDForEntry := subscriptionID
@@ -549,7 +553,7 @@ func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 
 			// Record start (best effort)
 			if err := store.RecordStart(ctx, eventID, subIDForEntry, eventName, busID,
-				workerPool, metadata, traceID, spanID); err != nil {
+				workerPool, metadata, traceID, spanID, subscriberName, subscriberDescription); err != nil {
 				logger := ContextLogger(ctx)
 				if logger != nil {
 					logger.Warn("monitor record start failed", "error", err)

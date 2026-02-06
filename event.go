@@ -394,7 +394,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 						"error", decodeErrMsg)
 
 					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
+						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
 						if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
 							// DLQ storage failed for decode error - acknowledge anyway to prevent infinite loop
 							// Decode errors won't succeed on retry, so retrying is futile
@@ -430,7 +430,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 						"content_type", contentType)
 
 					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
+						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
 						dlqErr := e.dlqHandler(dlqCtx, msg, fmt.Errorf("unknown content type: %s", contentType))
 						if dlqErr != nil {
 							// DLQ storage failed for content type error - acknowledge anyway to prevent infinite loop
@@ -455,7 +455,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 							"error", err)
 
 						if e.dlqHandler != nil {
-							dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
+							dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
 							if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
 								logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
 									"event", e.Name(),
@@ -469,7 +469,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 					}
 
 					// Custom decode error handler decides the action
-					decodeCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
+					decodeCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
 					decodeResult := e.decodeErrorHandler(decodeCtx, msg, err)
 
 					result, sendToDLQ := classifyResult(decodeResult, msg.RetryCount(), e.maxRetries)
@@ -498,7 +498,7 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 				}
 
 				// Update context values and call handler
-				handlerCtx := contextWithInfo(msg.Context(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode)
+				handlerCtx := contextWithInfo(msg.Context(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
 				err := wrappedHandler(handlerCtx, e, typedData)
 
 				// Classify result and determine action

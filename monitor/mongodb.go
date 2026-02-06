@@ -22,6 +22,8 @@ Document structure:
     "_id": ObjectId,
     "event_id": string,
     "subscription_id": string,
+    "subscriber_name": string,
+    "subscriber_description": string,
     "event_name": string,
     "bus_id": string,
     "delivery_mode": string,
@@ -42,42 +44,47 @@ db.monitor_entries.createIndex({"event_name": 1})
 db.monitor_entries.createIndex({"status": 1})
 db.monitor_entries.createIndex({"started_at": 1})
 db.monitor_entries.createIndex({"delivery_mode": 1})
+db.monitor_entries.createIndex({"subscriber_name": 1})
 */
 
 // MongoEntry represents a monitor entry document in MongoDB.
 type MongoEntry struct {
-	EventID        string            `bson:"event_id"`
-	SubscriptionID string            `bson:"subscription_id"`
-	EventName      string            `bson:"event_name"`
-	BusID          string            `bson:"bus_id"`
-	DeliveryMode   string            `bson:"delivery_mode"`
-	Metadata       map[string]string `bson:"metadata,omitempty"`
-	Status         string            `bson:"status"`
-	Error          string            `bson:"error,omitempty"`
-	RetryCount     int               `bson:"retry_count"`
-	StartedAt      time.Time         `bson:"started_at"`
-	CompletedAt    *time.Time        `bson:"completed_at,omitempty"`
-	DurationMs     *int64            `bson:"duration_ms,omitempty"`
-	TraceID        string            `bson:"trace_id,omitempty"`
-	SpanID         string            `bson:"span_id,omitempty"`
+	EventID               string            `bson:"event_id"`
+	SubscriptionID        string            `bson:"subscription_id"`
+	SubscriberName        string            `bson:"subscriber_name,omitempty"`
+	SubscriberDescription string            `bson:"subscriber_description,omitempty"`
+	EventName             string            `bson:"event_name"`
+	BusID                 string            `bson:"bus_id"`
+	DeliveryMode          string            `bson:"delivery_mode"`
+	Metadata              map[string]string `bson:"metadata,omitempty"`
+	Status                string            `bson:"status"`
+	Error                 string            `bson:"error,omitempty"`
+	RetryCount            int               `bson:"retry_count"`
+	StartedAt             time.Time         `bson:"started_at"`
+	CompletedAt           *time.Time        `bson:"completed_at,omitempty"`
+	DurationMs            *int64            `bson:"duration_ms,omitempty"`
+	TraceID               string            `bson:"trace_id,omitempty"`
+	SpanID                string            `bson:"span_id,omitempty"`
 }
 
 // ToEntry converts MongoEntry to Entry.
 func (m *MongoEntry) ToEntry() *Entry {
 	entry := &Entry{
-		EventID:        m.EventID,
-		SubscriptionID: m.SubscriptionID,
-		EventName:      m.EventName,
-		BusID:          m.BusID,
-		DeliveryMode:   ParseDeliveryMode(m.DeliveryMode),
-		Metadata:       m.Metadata,
-		Status:         Status(m.Status),
-		Error:          m.Error,
-		RetryCount:     m.RetryCount,
-		StartedAt:      m.StartedAt,
-		CompletedAt:    m.CompletedAt,
-		TraceID:        m.TraceID,
-		SpanID:         m.SpanID,
+		EventID:               m.EventID,
+		SubscriptionID:        m.SubscriptionID,
+		SubscriberName:        m.SubscriberName,
+		SubscriberDescription: m.SubscriberDescription,
+		EventName:             m.EventName,
+		BusID:                 m.BusID,
+		DeliveryMode:          ParseDeliveryMode(m.DeliveryMode),
+		Metadata:              m.Metadata,
+		Status:                Status(m.Status),
+		Error:                 m.Error,
+		RetryCount:            m.RetryCount,
+		StartedAt:             m.StartedAt,
+		CompletedAt:           m.CompletedAt,
+		TraceID:               m.TraceID,
+		SpanID:                m.SpanID,
 	}
 	if m.DurationMs != nil {
 		entry.Duration = time.Duration(*m.DurationMs) * time.Millisecond
@@ -99,20 +106,22 @@ func FromEntry(e *Entry) *MongoEntry {
 	}
 
 	return &MongoEntry{
-		EventID:        e.EventID,
-		SubscriptionID: subscriptionID,
-		EventName:      e.EventName,
-		BusID:          e.BusID,
-		DeliveryMode:   e.DeliveryMode.String(),
-		Metadata:       e.Metadata,
-		Status:         string(e.Status),
-		Error:          e.Error,
-		RetryCount:     e.RetryCount,
-		StartedAt:      e.StartedAt,
-		CompletedAt:    e.CompletedAt,
-		DurationMs:     durationMs,
-		TraceID:        e.TraceID,
-		SpanID:         e.SpanID,
+		EventID:               e.EventID,
+		SubscriptionID:        subscriptionID,
+		SubscriberName:        e.SubscriberName,
+		SubscriberDescription: e.SubscriberDescription,
+		EventName:             e.EventName,
+		BusID:                 e.BusID,
+		DeliveryMode:          e.DeliveryMode.String(),
+		Metadata:              e.Metadata,
+		Status:                string(e.Status),
+		Error:                 e.Error,
+		RetryCount:            e.RetryCount,
+		StartedAt:             e.StartedAt,
+		CompletedAt:           e.CompletedAt,
+		DurationMs:            durationMs,
+		TraceID:               e.TraceID,
+		SpanID:                e.SpanID,
 	}
 }
 
@@ -170,6 +179,9 @@ func (s *MongoStore) Indexes() []mongo.IndexModel {
 		{
 			Keys: bson.D{{Key: "delivery_mode", Value: 1}},
 		},
+		{
+			Keys: bson.D{{Key: "subscriber_name", Value: 1}},
+		},
 	}
 }
 
@@ -190,18 +202,20 @@ func (s *MongoStore) Record(ctx context.Context, entry *Entry) error {
 
 	update := bson.M{
 		"$set": bson.M{
-			"event_name":    mongoEntry.EventName,
-			"bus_id":        mongoEntry.BusID,
-			"delivery_mode": mongoEntry.DeliveryMode,
-			"metadata":      mongoEntry.Metadata,
-			"status":        mongoEntry.Status,
-			"error":         mongoEntry.Error,
-			"retry_count":   mongoEntry.RetryCount,
-			"started_at":    mongoEntry.StartedAt,
-			"completed_at":  mongoEntry.CompletedAt,
-			"duration_ms":   mongoEntry.DurationMs,
-			"trace_id":      mongoEntry.TraceID,
-			"span_id":       mongoEntry.SpanID,
+			"subscriber_name":        mongoEntry.SubscriberName,
+			"subscriber_description": mongoEntry.SubscriberDescription,
+			"event_name":             mongoEntry.EventName,
+			"bus_id":                 mongoEntry.BusID,
+			"delivery_mode":          mongoEntry.DeliveryMode,
+			"metadata":               mongoEntry.Metadata,
+			"status":                 mongoEntry.Status,
+			"error":                  mongoEntry.Error,
+			"retry_count":            mongoEntry.RetryCount,
+			"started_at":             mongoEntry.StartedAt,
+			"completed_at":           mongoEntry.CompletedAt,
+			"duration_ms":            mongoEntry.DurationMs,
+			"trace_id":               mongoEntry.TraceID,
+			"span_id":                mongoEntry.SpanID,
 		},
 		"$setOnInsert": bson.M{
 			"event_id":        mongoEntry.EventID,
@@ -389,6 +403,9 @@ func (s *MongoStore) buildFilter(filter Filter) bson.M {
 	if filter.SubscriptionID != "" {
 		mongoFilter["subscription_id"] = filter.SubscriptionID
 	}
+	if filter.SubscriberName != "" {
+		mongoFilter["subscriber_name"] = filter.SubscriberName
+	}
 	if filter.EventName != "" {
 		mongoFilter["event_name"] = filter.EventName
 	}
@@ -507,7 +524,8 @@ func decodeMongoCursor(str string) (mongoCursor, error) {
 // RecordStart records when event processing begins.
 // Implements event.MonitorStore interface.
 func (s *MongoStore) RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string,
-	workerPool bool, metadata map[string]string, traceID, spanID string) error {
+	workerPool bool, metadata map[string]string, traceID, spanID string,
+	subscriberName, subscriberDescription string) error {
 
 	mode := Broadcast
 	if workerPool {
@@ -515,16 +533,18 @@ func (s *MongoStore) RecordStart(ctx context.Context, eventID, subscriptionID, e
 	}
 
 	entry := &Entry{
-		EventID:        eventID,
-		SubscriptionID: subscriptionID,
-		EventName:      eventName,
-		BusID:          busID,
-		DeliveryMode:   mode,
-		Metadata:       metadata,
-		Status:         StatusPending,
-		StartedAt:      time.Now(),
-		TraceID:        traceID,
-		SpanID:         spanID,
+		EventID:               eventID,
+		SubscriptionID:        subscriptionID,
+		SubscriberName:        subscriberName,
+		SubscriberDescription: subscriberDescription,
+		EventName:             eventName,
+		BusID:                 busID,
+		DeliveryMode:          mode,
+		Metadata:              metadata,
+		Status:                StatusPending,
+		StartedAt:             time.Now(),
+		TraceID:               traceID,
+		SpanID:                spanID,
 	}
 
 	return s.Record(ctx, entry)

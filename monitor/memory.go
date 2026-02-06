@@ -233,6 +233,9 @@ func (s *MemoryStore) matchesFilter(entry *Entry, filter Filter) bool {
 	if filter.SubscriptionID != "" && entry.SubscriptionID != filter.SubscriptionID {
 		return false
 	}
+	if filter.SubscriberName != "" && entry.SubscriberName != filter.SubscriberName {
+		return false
+	}
 	if filter.EventName != "" && entry.EventName != filter.EventName {
 		return false
 	}
@@ -366,7 +369,8 @@ func (s *MemoryStore) Len() int {
 // RecordStart records when event processing begins.
 // Implements event.MonitorStore interface.
 func (s *MemoryStore) RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string,
-	workerPool bool, metadata map[string]string, traceID, spanID string) error {
+	workerPool bool, metadata map[string]string, traceID, spanID string,
+	subscriberName, subscriberDescription string) error {
 
 	mode := Broadcast
 	if workerPool {
@@ -374,16 +378,18 @@ func (s *MemoryStore) RecordStart(ctx context.Context, eventID, subscriptionID, 
 	}
 
 	entry := &Entry{
-		EventID:        eventID,
-		SubscriptionID: subscriptionID,
-		EventName:      eventName,
-		BusID:          busID,
-		DeliveryMode:   mode,
-		Metadata:       metadata,
-		Status:         StatusPending,
-		StartedAt:      time.Now(),
-		TraceID:        traceID,
-		SpanID:         spanID,
+		EventID:               eventID,
+		SubscriptionID:        subscriptionID,
+		SubscriberName:        subscriberName,
+		SubscriberDescription: subscriberDescription,
+		EventName:             eventName,
+		BusID:                 busID,
+		DeliveryMode:          mode,
+		Metadata:              metadata,
+		Status:                StatusPending,
+		StartedAt:             time.Now(),
+		TraceID:               traceID,
+		SpanID:                spanID,
 	}
 
 	return s.Record(ctx, entry)

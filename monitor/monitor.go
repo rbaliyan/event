@@ -96,6 +96,10 @@ type Entry struct {
 	EventID        string `json:"event_id"`
 	SubscriptionID string `json:"subscription_id"`
 
+	// Subscriber identification (human-readable, for monitoring dashboards)
+	SubscriberName        string `json:"subscriber_name,omitempty"`
+	SubscriberDescription string `json:"subscriber_description,omitempty"`
+
 	// Event context
 	EventName    string            `json:"event_name"`
 	BusID        string            `json:"bus_id"`

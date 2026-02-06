@@ -51,6 +51,8 @@ func MiddlewareWithMode[T any](store Store, mode *DeliveryMode) event.Middleware
 			eventName := event.ContextName(ctx)
 			busID := event.ContextSource(ctx)
 			metadata := event.ContextMetadata(ctx)
+			subscriberName := event.ContextSubscriberName(ctx)
+			subscriberDescription := event.ContextSubscriberDescription(ctx)
 
 			// Determine delivery mode
 			deliveryMode := detectDeliveryMode(ctx, mode)
@@ -63,14 +65,16 @@ func MiddlewareWithMode[T any](store Store, mode *DeliveryMode) event.Middleware
 
 			// Create initial entry
 			entry := &Entry{
-				EventID:        eventID,
-				SubscriptionID: subIDForEntry,
-				EventName:      eventName,
-				BusID:          busID,
-				DeliveryMode:   deliveryMode,
-				Metadata:       metadata,
-				Status:         StatusPending,
-				StartedAt:      time.Now(),
+				EventID:               eventID,
+				SubscriptionID:        subIDForEntry,
+				SubscriberName:        subscriberName,
+				SubscriberDescription: subscriberDescription,
+				EventName:             eventName,
+				BusID:                 busID,
+				DeliveryMode:          deliveryMode,
+				Metadata:              metadata,
+				Status:                StatusPending,
+				StartedAt:             time.Now(),
 			}
 
 			// Extract trace context if available

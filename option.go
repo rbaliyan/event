@@ -233,14 +233,16 @@ type Middleware[T any] func(Handler[T]) Handler[T]
 
 // subscribeOptions holds configuration for subscriptions
 type subscribeOptions[T any] struct {
-	mode        DeliveryMode
-	workerGroup string
-	startFrom   transport.StartPosition
-	startTime   time.Time
-	maxAge      time.Duration
-	latestOnly  bool
-	bufferSize  int
-	middleware  []Middleware[T]
+	mode                  DeliveryMode
+	workerGroup           string
+	startFrom             transport.StartPosition
+	startTime             time.Time
+	maxAge                time.Duration
+	latestOnly            bool
+	bufferSize            int
+	middleware            []Middleware[T]
+	subscriberName        string
+	subscriberDescription string
 }
 
 // SubscribeOption configures subscription behavior
@@ -450,5 +452,34 @@ func WithBufferSize[T any](size int) SubscribeOption[T] {
 func WithMiddleware[T any](middleware ...Middleware[T]) SubscribeOption[T] {
 	return func(o *subscribeOptions[T]) {
 		o.middleware = append(o.middleware, middleware...)
+	}
+}
+
+// WithSubscriberName sets a human-readable name for the subscriber.
+// This name flows through to monitoring systems and dashboards for identification.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler,
+//	    event.WithSubscriberName[Order]("order-processor"),
+//	)
+func WithSubscriberName[T any](name string) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.subscriberName = name
+	}
+}
+
+// WithSubscriberDescription sets a human-readable description for the subscriber.
+// This description flows through to monitoring systems and dashboards.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler,
+//	    event.WithSubscriberName[Order]("order-processor"),
+//	    event.WithSubscriberDescription[Order]("Processes incoming orders and updates inventory"),
+//	)
+func WithSubscriberDescription[T any](desc string) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.subscriberDescription = desc
 	}
 }
