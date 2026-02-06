@@ -49,6 +49,28 @@ var (
 
 	// ErrInvalidArgument indicates an invalid argument was provided.
 	ErrInvalidArgument = errors.New("invalid argument")
+
+	// ErrMaxRetriesExceeded indicates all retry attempts have been exhausted.
+	// Used by:
+	//   - event-scheduler: message delivery failed after max retries
+	//   - event-dlq: replay failed after max retries
+	ErrMaxRetriesExceeded = errors.New("max retries exceeded")
+
+	// ErrStorageUnavailable indicates the storage backend is not available.
+	// Used when database connections fail or storage is temporarily unavailable.
+	ErrStorageUnavailable = errors.New("storage unavailable")
+
+	// ErrScheduledInPast indicates a message was scheduled for a time in the past.
+	// Used by event-scheduler when ScheduledAt is before the current time.
+	ErrScheduledInPast = errors.New("scheduled time is in the past")
+
+	// ErrTransportUnavailable indicates the transport is not available.
+	// Used when message publishing fails due to transport issues.
+	ErrTransportUnavailable = errors.New("transport unavailable")
+
+	// ErrCompensationFailed indicates saga compensation failed.
+	// Used by event-extras/saga when rollback operations fail.
+	ErrCompensationFailed = errors.New("compensation failed")
 )
 
 // NotFoundError wraps ErrNotFound with additional context.
@@ -210,4 +232,73 @@ func RequireNonNegative(value int, name string) {
 	if value < 0 {
 		panic(fmt.Sprintf("%s must be non-negative, got %d", name, value))
 	}
+}
+
+// IsMaxRetriesExceeded checks if an error indicates max retries exceeded.
+func IsMaxRetriesExceeded(err error) bool {
+	return errors.Is(err, ErrMaxRetriesExceeded)
+}
+
+// IsStorageUnavailable checks if an error indicates storage unavailability.
+func IsStorageUnavailable(err error) bool {
+	return errors.Is(err, ErrStorageUnavailable)
+}
+
+// IsScheduledInPast checks if an error indicates scheduling in the past.
+func IsScheduledInPast(err error) bool {
+	return errors.Is(err, ErrScheduledInPast)
+}
+
+// IsTransportUnavailable checks if an error indicates transport unavailability.
+func IsTransportUnavailable(err error) bool {
+	return errors.Is(err, ErrTransportUnavailable)
+}
+
+// IsCompensationFailed checks if an error indicates compensation failure.
+func IsCompensationFailed(err error) bool {
+	return errors.Is(err, ErrCompensationFailed)
+}
+
+// MaxRetriesError wraps ErrMaxRetriesExceeded with attempt details.
+type MaxRetriesError struct {
+	Attempts int
+	LastErr  error
+}
+
+func (e *MaxRetriesError) Error() string {
+	if e.LastErr != nil {
+		return fmt.Sprintf("max retries exceeded after %d attempts: %v", e.Attempts, e.LastErr)
+	}
+	return fmt.Sprintf("max retries exceeded after %d attempts", e.Attempts)
+}
+
+func (e *MaxRetriesError) Unwrap() error {
+	return ErrMaxRetriesExceeded
+}
+
+// NewMaxRetriesError creates a MaxRetriesError.
+func NewMaxRetriesError(attempts int, lastErr error) error {
+	return &MaxRetriesError{Attempts: attempts, LastErr: lastErr}
+}
+
+// StorageError wraps ErrStorageUnavailable with details.
+type StorageError struct {
+	Operation string // e.g., "save", "load", "delete"
+	Cause     error
+}
+
+func (e *StorageError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("storage unavailable during %s: %v", e.Operation, e.Cause)
+	}
+	return fmt.Sprintf("storage unavailable during %s", e.Operation)
+}
+
+func (e *StorageError) Unwrap() error {
+	return ErrStorageUnavailable
+}
+
+// NewStorageError creates a StorageError.
+func NewStorageError(operation string, cause error) error {
+	return &StorageError{Operation: operation, Cause: cause}
 }
