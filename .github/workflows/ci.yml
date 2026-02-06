@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
+    branches: [main]
 
 permissions:
   contents: read
@@ -13,29 +13,30 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.23', '1.24']
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.24'
+          go-version: ${{ matrix.go-version }}
 
       - name: Download dependencies
         run: go mod download
 
-      - name: Run tests with race detector
+      - name: Run tests
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: ./coverage.out
           flags: unittests
-          name: codecov-umbrella
           fail_ci_if_error: false
-          verbose: true
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
@@ -44,35 +45,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.24'
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
         with:
           version: latest
 
-  build:
-    name: Build
+  vulncheck:
+    name: Vulnerability Check
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ['1.24']
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Set up Go ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: '1.24'
 
-      - name: Build
-        run: go build -v ./...
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
-      - name: Test
-        run: go test -v ./...
+      - name: Run govulncheck
+        run: govulncheck ./...
