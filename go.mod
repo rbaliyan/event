@@ -2,6 +2,8 @@ module github.com/rbaliyan/event/v3
 
 go 1.24.0
 
+toolchain go1.24.13
+
 require (
 	github.com/IBM/sarama v1.46.3
 	github.com/go-faker/faker/v4 v4.7.0
