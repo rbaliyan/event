@@ -34,6 +34,14 @@ lint:
 tidy:
     go mod tidy
 
+# Run vulnerability check
+vulncheck:
+    go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+# Check for outdated dependencies
+depcheck:
+    go list -m -u all | grep '\[' || echo "All dependencies are up to date"
+
 # Create and push a new release tag (bumps patch version)
 release:
     ./scripts/release.sh
