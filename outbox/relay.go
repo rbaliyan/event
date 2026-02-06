@@ -47,6 +47,7 @@ type Relay struct {
 	batchSize  int
 	logger     *slog.Logger
 	cleanupAge time.Duration // How old published messages should be before deletion
+	metrics    *Metrics
 }
 
 // NewRelay creates a new outbox relay.
@@ -158,6 +159,30 @@ func (r *Relay) log() *slog.Logger {
 //	    WithCleanupAge(7 * 24 * time.Hour) // Keep for 7 days
 func (r *Relay) WithCleanupAge(age time.Duration) *Relay {
 	r.cleanupAge = age
+	return r
+}
+
+// WithMetrics enables OpenTelemetry metrics for the relay.
+//
+// When metrics are enabled, the relay records:
+//   - outbox_messages_published_total: Successfully published messages
+//   - outbox_messages_failed_total: Failed publish attempts
+//   - outbox_messages_cleaned_total: Messages cleaned up
+//   - outbox_messages_pending: Current pending messages (gauge)
+//   - outbox_publish_duration_seconds: Time to publish each message
+//
+// Parameters:
+//   - m: The metrics instance (created with NewMetrics)
+//
+// Returns the relay for method chaining.
+//
+// Example:
+//
+//	metrics, _ := outbox.NewMetrics()
+//	relay := outbox.NewRelay(store, transport).
+//	    WithMetrics(metrics)
+func (r *Relay) WithMetrics(m *Metrics) *Relay {
+	r.metrics = m
 	return r
 }
 
@@ -273,6 +298,8 @@ func (r *Relay) publishPending(ctx context.Context) (failures int) {
 
 // publishMessage publishes a single message to the transport
 func (r *Relay) publishMessage(ctx context.Context, msg *Message) error {
+	start := time.Now()
+
 	// msg.Payload is already []byte - pass directly to transport
 	transportMsg := message.New(
 		msg.EventID,
@@ -281,7 +308,20 @@ func (r *Relay) publishMessage(ctx context.Context, msg *Message) error {
 		msg.Metadata,
 	)
 
-	return r.transport.Publish(ctx, msg.EventName, transportMsg)
+	err := r.transport.Publish(ctx, msg.EventName, transportMsg)
+	duration := time.Since(start)
+
+	if err != nil {
+		if r.metrics != nil {
+			r.metrics.RecordFailed(ctx, msg.EventName)
+		}
+		return err
+	}
+
+	if r.metrics != nil {
+		r.metrics.RecordPublished(ctx, msg.EventName, duration)
+	}
+	return nil
 }
 
 // cleanup removes old published messages
@@ -294,6 +334,9 @@ func (r *Relay) cleanup(ctx context.Context) {
 
 	if deleted > 0 {
 		r.log().Info("cleaned up old outbox messages", "count", deleted)
+		if r.metrics != nil {
+			r.metrics.RecordCleaned(ctx, deleted)
+		}
 	}
 }
 

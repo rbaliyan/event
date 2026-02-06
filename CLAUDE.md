@@ -240,6 +240,20 @@ type OutboxStore interface {
 
 **MongoDB Store** implements `event.OutboxStore` and extracts session from context via `event.OutboxTx(ctx)`.
 
+**Outbox Metrics** (`outbox.Metrics`):
+```go
+metrics, _ := outbox.NewMetrics()
+relay := outbox.NewRelay(store, transport).
+    WithMetrics(metrics)
+```
+
+Metrics recorded:
+- `outbox_messages_published_total`: Successfully published messages
+- `outbox_messages_failed_total`: Failed publish attempts
+- `outbox_messages_cleaned_total`: Messages cleaned up
+- `outbox_messages_pending`: Current pending messages (gauge)
+- `outbox_publish_duration_seconds`: Time to publish each message
+
 ### Monitor HTTP/gRPC API
 
 Handler-only approach - no server management, middleware, or auth. Integrating systems mount handlers with their own servers:
