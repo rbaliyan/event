@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rbaliyan/event/v3/health"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
 	"go.opentelemetry.io/otel"
@@ -725,7 +726,7 @@ func (b *Bus) getTyped(name string, eventType reflect.Type) (any, error) {
 
 // Status returns detailed status information about the bus and its transport.
 // Use this to inspect the bus state for monitoring dashboards.
-// If the transport implements HealthChecker, its status is included.
+// If the transport or any configured stores implement HealthChecker, their status is included.
 func (b *Bus) Status(ctx context.Context) *Status {
 	result := &Status{
 		CheckedAt:  time.Now(),
@@ -749,31 +750,88 @@ func (b *Bus) Status(ctx context.Context) *Status {
 	result.Details["bus_name"] = b.name
 	result.Details["events"] = eventCount
 
+	// Start with healthy status
+	result.Code = StatusHealthy
+	result.Message = "bus is healthy"
+
 	// Check transport health if it implements HealthChecker
 	if hc, ok := b.transport.(transport.HealthChecker); ok {
 		transportHealth := hc.Health(ctx)
-		// Convert transport health to bus status
 		result.Components["transport"] = convertTransportStatus(transportHealth)
-
-		// Aggregate status from transport
-		switch transportHealth.Status {
-		case transport.HealthStatusUnhealthy:
-			result.Code = StatusUnhealthy
-			result.Message = "transport is unhealthy"
-		case transport.HealthStatusDegraded:
-			result.Code = StatusDegraded
-			result.Message = "transport is degraded"
-		default:
-			result.Code = StatusHealthy
-			result.Message = "bus is healthy"
-		}
-	} else {
-		// Transport doesn't implement health checks
-		result.Code = StatusHealthy
-		result.Message = "bus is healthy (transport health not available)"
+		aggregateComponentStatus(result, "transport", transportHealth.Status)
 	}
 
+	// Check health of configured stores that implement health.Checker
+	b.checkComponentHealth(ctx, result, "idempotency_store", b.idempotencyStore)
+	b.checkComponentHealth(ctx, result, "poison_detector", b.poisonDetector)
+	b.checkComponentHealth(ctx, result, "monitor_store", b.monitorStore)
+	b.checkComponentHealth(ctx, result, "schema_provider", b.schemaProvider)
+	b.checkComponentHealth(ctx, result, "outbox_store", b.outboxStore)
+
 	return result
+}
+
+// checkComponentHealth checks if a component implements health.Checker and aggregates its status.
+func (b *Bus) checkComponentHealth(ctx context.Context, result *Status, name string, component any) {
+	if component == nil {
+		return
+	}
+	if hc, ok := component.(health.Checker); ok {
+		componentHealth := hc.Health(ctx)
+		result.Components[name] = convertHealthResult(componentHealth)
+		aggregateComponentStatus(result, name, health.Status(componentHealth.Status))
+	}
+}
+
+// aggregateComponentStatus updates the result status based on component status.
+// Uses the worst status: unhealthy > degraded > healthy
+func aggregateComponentStatus(result *Status, name string, status any) {
+	var statusCode StatusCode
+	switch s := status.(type) {
+	case transport.HealthStatus:
+		switch s {
+		case transport.HealthStatusUnhealthy:
+			statusCode = StatusUnhealthy
+		case transport.HealthStatusDegraded:
+			statusCode = StatusDegraded
+		default:
+			return // healthy, no change needed
+		}
+	case health.Status:
+		switch s {
+		case health.StatusUnhealthy:
+			statusCode = StatusUnhealthy
+		case health.StatusDegraded:
+			statusCode = StatusDegraded
+		default:
+			return // healthy, no change needed
+		}
+	default:
+		return
+	}
+
+	// Only update if new status is worse
+	if statusCode == StatusUnhealthy {
+		result.Code = StatusUnhealthy
+		result.Message = name + " is unhealthy"
+	} else if statusCode == StatusDegraded && result.Code != StatusUnhealthy {
+		result.Code = StatusDegraded
+		result.Message = name + " is degraded"
+	}
+}
+
+// convertHealthResult converts health.Result to bus Status
+func convertHealthResult(hr *health.Result) *Status {
+	if hr == nil {
+		return nil
+	}
+	return &Status{
+		Code:      StatusCode(hr.Status),
+		Message:   hr.Message,
+		Latency:   hr.Latency,
+		Details:   hr.Details,
+		CheckedAt: hr.CheckedAt,
+	}
 }
 
 // Health performs a health check suitable for health probes.
