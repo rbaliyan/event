@@ -6,6 +6,20 @@ import (
 	"time"
 )
 
+// Bus errors
+var (
+	ErrBusClosed         = errors.New("bus is closed")
+	ErrBusExists         = errors.New("bus already exists with this name")
+	ErrBusNotFound       = errors.New("bus not found")
+	ErrEventExists       = errors.New("event already exists")
+	ErrEventNotFound     = errors.New("event not found")
+	ErrTypeMismatch      = errors.New("event type mismatch")
+	ErrAlreadyBound      = errors.New("event already bound to another bus")
+	ErrTransportRequired = errors.New("transport is required: use WithBusTransport(channel.New()) or similar")
+	ErrInvalidFullName   = errors.New("invalid full name format, expected: <bus_name>://<event_name>")
+	ErrSchemaLoadFailed  = errors.New("failed to load schema from provider")
+)
+
 // Handler result sentinel errors.
 // These errors control message acknowledgment behavior when returned from handlers.
 // Use errors.Is() to check for these errors as they may be wrapped with additional context.
