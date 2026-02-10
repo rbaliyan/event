@@ -594,6 +594,33 @@ func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 	}
 }
 
+// BestEffortMiddleware creates a middleware that suppresses all handler errors.
+// The wrapped handler always returns nil (ack), and errors are logged at warn level.
+//
+// This is a composable alternative to WithBestEffort / WithAckPolicy(AckOnReceive).
+// Use this when you want to suppress errors for a specific middleware position
+// rather than changing the overall subscription ack policy.
+//
+// Example:
+//
+//	ev.Subscribe(ctx, handler, event.WithMiddleware(
+//	    event.BestEffortMiddleware[Order](),
+//	))
+func BestEffortMiddleware[T any]() Middleware[T] {
+	return func(next Handler[T]) Handler[T] {
+		return func(ctx context.Context, ev Event[T], data T) error {
+			if err := next(ctx, ev, data); err != nil {
+				logger := ContextLogger(ctx)
+				if logger != nil {
+					logger.Warn("best-effort handler error suppressed",
+						"event", ev.Name(), "error", err)
+				}
+			}
+			return nil
+		}
+	}
+}
+
 // PoisonMiddleware creates a middleware that detects and quarantines poison messages.
 // Poison messages are messages that repeatedly fail processing.
 //

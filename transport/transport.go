@@ -190,6 +190,12 @@ type SubscribeOptions struct {
 	// resume across restarts. If empty, a random ID is generated (checkpoints
 	// will not survive restarts).
 	ConsumerID string
+
+	// AckPolicy controls when messages are acknowledged.
+	// Default: AckExplicit (handler must succeed for acknowledgment).
+	// Set to AckOnReceive for best-effort delivery where handler errors
+	// are logged but never cause redelivery.
+	AckPolicy AckPolicy
 }
 
 // SubscribeOption is a functional option for configuring subscriptions
@@ -304,6 +310,18 @@ func WithWorkerGroup(group string) SubscribeOption {
 func WithConsumerID(id string) SubscribeOption {
 	return func(o *SubscribeOptions) {
 		o.ConsumerID = id
+	}
+}
+
+// WithAckPolicy sets the acknowledgment policy for a subscription.
+//
+// Example:
+//
+//	sub, err := transport.Subscribe(ctx, "events",
+//	    transport.WithAckPolicy(transport.AckOnReceive))
+func WithAckPolicy(policy AckPolicy) SubscribeOption {
+	return func(o *SubscribeOptions) {
+		o.AckPolicy = policy
 	}
 }
 

@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/rbaliyan/event/v3/payload"
@@ -17,11 +18,24 @@ const MetadataContentType = payload.MetadataContentType
 // This is an alias for transport.DeliveryMode.
 type DeliveryMode = transport.DeliveryMode
 
+// AckPolicy controls when messages are acknowledged by the event layer.
+// This is an alias for transport.AckPolicy.
+type AckPolicy = transport.AckPolicy
+
 const (
 	// Broadcast delivers message to ALL subscribers (pub/sub fan-out)
 	Broadcast = transport.Broadcast
 	// WorkerPool delivers message to ONE subscriber (load balancing across workers)
 	WorkerPool = transport.WorkerPool
+)
+
+const (
+	// AckExplicit requires the handler to succeed before acknowledging.
+	// This is the default behavior.
+	AckExplicit = transport.AckExplicit
+	// AckOnReceive acknowledges messages immediately upon delivery.
+	// Handler errors are logged but never cause redelivery.
+	AckOnReceive = transport.AckOnReceive
 )
 
 // Default event configuration values
@@ -329,6 +343,10 @@ func WithMiddlewareChain[T any](chain *Chain[T]) SubscribeOption[T] {
 	}
 }
 
+// defaultCoalesceMaxKeys is the default maximum number of unique keys
+// tracked by the coalescer before evicting the oldest entry.
+const defaultCoalesceMaxKeys = 10000
+
 // subscribeOptions holds configuration for subscriptions
 type subscribeOptions[T any] struct {
 	mode                  DeliveryMode
@@ -341,6 +359,14 @@ type subscribeOptions[T any] struct {
 	middleware            []Middleware[T]
 	subscriberName        string
 	subscriberDescription string
+
+	// ack policy
+	ackPolicy AckPolicy
+
+	// coalescing
+	coalesceKeyFunc func(T) string // key from decoded payload (nil = no coalescing)
+	coalesceMetaKey string         // key from message metadata (empty = no coalescing)
+	coalesceMaxKeys int            // max unique keys tracked (0 = defaultCoalesceMaxKeys)
 }
 
 // SubscribeOption configures subscription behavior
@@ -356,6 +382,30 @@ func newSubscribeOptions[T any](opts ...SubscribeOption[T]) *subscribeOptions[T]
 		opt(o)
 	}
 	return o
+}
+
+// coalescing returns true if any coalescing mode is configured.
+func (o *subscribeOptions[T]) coalescing() bool {
+	return o.coalesceKeyFunc != nil || o.coalesceMetaKey != ""
+}
+
+// effectiveCoalesceMaxKeys returns the coalesce max keys, applying the default.
+func (o *subscribeOptions[T]) effectiveCoalesceMaxKeys() int {
+	if o.coalesceMaxKeys > 0 {
+		return o.coalesceMaxKeys
+	}
+	return defaultCoalesceMaxKeys
+}
+
+// validate checks for incompatible option combinations.
+func (o *subscribeOptions[T]) validate() error {
+	if o.coalesceKeyFunc != nil && o.coalesceMetaKey != "" {
+		return errors.New("invalid subscribe options: WithCoalesceByKey and WithCoalesceByMetadata cannot be combined")
+	}
+	if o.coalescing() && o.latestOnly {
+		return errors.New("invalid subscribe options: coalescing and WithLatestOnly cannot be combined")
+	}
+	return nil
 }
 
 // transportOptions converts event subscribe options to transport subscribe options
@@ -386,6 +436,10 @@ func (o *subscribeOptions[T]) transportOptions() []transport.SubscribeOption {
 
 	if o.bufferSize > 0 {
 		opts = append(opts, transport.WithBufferSize(o.bufferSize))
+	}
+
+	if o.ackPolicy != AckExplicit {
+		opts = append(opts, transport.WithAckPolicy(transport.AckPolicy(o.ackPolicy)))
 	}
 
 	return opts
@@ -579,5 +633,110 @@ func WithSubscriberName[T any](name string) SubscribeOption[T] {
 func WithSubscriberDescription[T any](desc string) SubscribeOption[T] {
 	return func(o *subscribeOptions[T]) {
 		o.subscriberDescription = desc
+	}
+}
+
+// WithAckPolicy sets the acknowledgment policy for this subscription.
+// Default is AckExplicit (handler must succeed for acknowledgment).
+//
+// AckOnReceive is useful for:
+//   - Real-time dashboards where stale retries are worse than gaps
+//   - SSE/WebSocket push where clients will reconnect
+//   - Metrics aggregation where occasional loss is acceptable
+//
+// AckOnReceive effectively disables retries and DLQ routing for this subscriber.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler,
+//	    event.WithAckPolicy[Order](event.AckOnReceive),
+//	)
+func WithAckPolicy[T any](policy AckPolicy) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.ackPolicy = policy
+	}
+}
+
+// WithBestEffort is a convenience alias for WithAckPolicy[T](AckOnReceive).
+// Messages are auto-acknowledged on receive, handler errors are logged but
+// never cause redelivery.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, sseHandler,
+//	    event.WithBestEffort[Order](),
+//	)
+func WithBestEffort[T any]() SubscribeOption[T] {
+	return WithAckPolicy[T](AckOnReceive)
+}
+
+// WithCoalesceByKey enables key-based message coalescing.
+// When multiple messages arrive for the same key while the handler is
+// processing, intermediate messages are auto-acked and only the latest
+// message per key is delivered.
+//
+// The keyFunc extracts a coalescing key from the decoded event data.
+// Return "" to bypass coalescing for that message (deliver immediately).
+//
+// Coalescing state is ephemeral — it does not survive restarts.
+// After restart, all messages are delivered without coalescing history.
+//
+// Cannot be combined with WithLatestOnly or WithCoalesceByMetadata.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler,
+//	    event.WithCoalesceByKey[Order](func(o Order) string {
+//	        return o.ID
+//	    }),
+//	)
+func WithCoalesceByKey[T any](keyFunc func(T) string) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		if keyFunc != nil {
+			o.coalesceKeyFunc = keyFunc
+		}
+	}
+}
+
+// WithCoalesceByMetadata enables metadata-based message coalescing.
+// Like WithCoalesceByKey, but the coalescing key is extracted from message
+// metadata before payload decoding. This avoids decoding messages that will
+// be superseded, which is more efficient for high-throughput streams.
+//
+// The metadataKey specifies which metadata field to use as the coalescing key.
+// For MongoDB change streams, use "document_key" (see event-mongodb.CoalesceByDocumentKey).
+//
+// Cannot be combined with WithLatestOnly or WithCoalesceByKey.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler,
+//	    event.WithCoalesceByMetadata[Order]("document_key"),
+//	)
+func WithCoalesceByMetadata[T any](metadataKey string) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		if metadataKey != "" {
+			o.coalesceMetaKey = metadataKey
+		}
+	}
+}
+
+// WithCoalesceMaxKeys sets the maximum number of unique keys the coalescer
+// will track. When exceeded, the oldest entry is evicted and delivered to
+// the handler. Default: 10000.
+//
+// Use this to bound memory usage for high-cardinality key spaces.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler,
+//	    event.WithCoalesceByKey[Order](func(o Order) string { return o.ID }),
+//	    event.WithCoalesceMaxKeys[Order](50000),
+//	)
+func WithCoalesceMaxKeys[T any](n int) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		if n > 0 {
+			o.coalesceMaxKeys = n
+		}
 	}
 }

@@ -24,6 +24,7 @@ type eventContextData struct {
 	deliveryMode          DeliveryMode
 	subscriberName        string
 	subscriberDescription string
+	coalescedCount        int
 }
 
 // contextKey
@@ -137,6 +138,17 @@ func ContextSubscriberDescription(ctx context.Context) string {
 	return ""
 }
 
+// ContextCoalescedCount returns the number of messages that were superseded
+// by coalescing before this message was delivered.
+// Returns 0 if no coalescing occurred or the subscriber does not use coalescing.
+func ContextCoalescedCount(ctx context.Context) int {
+	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
+	if ok {
+		return s.coalescedCount
+	}
+	return 0
+}
+
 // ContextWithMetadata generate a context with event metadata
 func ContextWithMetadata(ctx context.Context, m map[string]string) context.Context {
 	if m == nil {
@@ -157,6 +169,7 @@ func ContextWithMetadata(ctx context.Context, m map[string]string) context.Conte
 			deliveryMode:          s.deliveryMode,
 			subscriberName:        s.subscriberName,
 			subscriberDescription: s.subscriberDescription,
+			coalescedCount:        s.coalescedCount,
 		}
 		return context.WithValue(ctx, eventcontextKey, newData)
 	}
@@ -183,6 +196,7 @@ func ContextWithEventID(ctx context.Context, id string) context.Context {
 			deliveryMode:          s.deliveryMode,
 			subscriberName:        s.subscriberName,
 			subscriberDescription: s.subscriberDescription,
+			coalescedCount:        s.coalescedCount,
 		}
 		return context.WithValue(ctx, eventcontextKey, newData)
 	}
@@ -209,6 +223,7 @@ func ContextWithLogger(ctx context.Context, l *slog.Logger) context.Context {
 			deliveryMode:          s.deliveryMode,
 			subscriberName:        s.subscriberName,
 			subscriberDescription: s.subscriberDescription,
+			coalescedCount:        s.coalescedCount,
 		}
 		return context.WithValue(ctx, eventcontextKey, newData)
 	}
@@ -216,6 +231,10 @@ func ContextWithLogger(ctx context.Context, l *slog.Logger) context.Context {
 }
 
 func contextWithInfo(ctx context.Context, id, name, source, subID string, metadata map[string]string, msgTime time.Time, l *slog.Logger, b *Bus, mode DeliveryMode, subscriberName, subscriberDescription string) context.Context {
+	return contextWithInfoCoalesced(ctx, id, name, source, subID, metadata, msgTime, l, b, mode, subscriberName, subscriberDescription, 0)
+}
+
+func contextWithInfoCoalesced(ctx context.Context, id, name, source, subID string, metadata map[string]string, msgTime time.Time, l *slog.Logger, b *Bus, mode DeliveryMode, subscriberName, subscriberDescription string, coalescedCount int) context.Context {
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{
 		eventID:               id,
 		name:                  name,
@@ -228,6 +247,7 @@ func contextWithInfo(ctx context.Context, id, name, source, subID string, metada
 		deliveryMode:          mode,
 		subscriberName:        subscriberName,
 		subscriberDescription: subscriberDescription,
+		coalescedCount:        coalescedCount,
 	})
 }
 

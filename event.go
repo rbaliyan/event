@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -312,7 +313,26 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 		return ErrInvalidSubscribeOptions
 	}
 
+	// Validate coalescing options
+	if err := subOpts.validate(); err != nil {
+		return err
+	}
+
+	// Warn about incompatible combinations with AckOnReceive
+	bestEffort := subOpts.ackPolicy == AckOnReceive
+
 	logger := bus.logger.With("event", e.name)
+
+	if bestEffort {
+		if e.maxRetries > 0 {
+			logger.Warn("AckOnReceive with WithMaxRetries: retries will never fire",
+				"event", e.name, "max_retries", e.maxRetries)
+		}
+		if e.dlqHandler != nil {
+			logger.Warn("AckOnReceive with WithDeadLetterQueue: DLQ will never be reached",
+				"event", e.name)
+		}
+	}
 
 	// Convert event-level options to transport options
 	transportOpts := subOpts.transportOptions()
@@ -366,82 +386,218 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 		}
 	}
 
+	// Dispatch to the appropriate subscribe loop based on coalescing mode.
+	if subOpts.coalesceMetaKey != "" {
+		go e.subscribeWithRawCoalesce(ctx, bus, sub, subOpts, wrappedHandler, logger, bestEffort)
+	} else if subOpts.coalesceKeyFunc != nil {
+		go e.subscribeWithCoalesce(ctx, bus, sub, subOpts, wrappedHandler, logger, bestEffort)
+	} else {
+		go e.subscribeLoop(ctx, bus, sub, subOpts, wrappedHandler, logger, bestEffort)
+	}
+
+	logger.Info("installed subscriber", "event", e.Name(), "subscriber_id", subID,
+		"ack_policy", subOpts.ackPolicy.String(),
+		"coalescing", subOpts.coalescing())
+	return nil
+}
+
+// subscribeLoop is the standard message processing loop (no coalescing).
+func (e *eventImpl[T]) subscribeLoop(
+	ctx context.Context,
+	bus *Bus,
+	sub transport.Subscription,
+	subOpts *subscribeOptions[T],
+	wrappedHandler Handler[T],
+	logger *slog.Logger,
+	bestEffort bool,
+) {
+	subID := sub.ID()
+	defer func() {
+		atomic.AddInt64(&e.size, -1)
+		_ = sub.Close(context.Background())
+	}()
+
+	for {
+		select {
+		case <-bus.shutdownChan:
+			logger.Info("shutdown subscriber remove", "event", e.Name(), "subscriber_id", subID)
+			return
+
+		case <-ctx.Done():
+			logger.Info("subscriber remove", "event", e.Name(), "subscriber_id", subID)
+			return
+
+		case msg, ok := <-sub.Messages():
+			if !ok {
+				logger.Info("channel closed", "event", e.Name(), "subscriber_id", subID)
+				return
+			}
+
+			e.processMessage(msg, bus, sub, subOpts, wrappedHandler, logger, bestEffort, 0)
+		}
+	}
+}
+
+// subscribeWithRawCoalesce runs the pre-decode (metadata-based) coalescing loop.
+func (e *eventImpl[T]) subscribeWithRawCoalesce(
+	ctx context.Context,
+	bus *Bus,
+	sub transport.Subscription,
+	subOpts *subscribeOptions[T],
+	wrappedHandler Handler[T],
+	logger *slog.Logger,
+	bestEffort bool,
+) {
+	subID := sub.ID()
+	coal := newRawCoalescer(subOpts.coalesceMetaKey, subOpts.effectiveCoalesceMaxKeys(), logger)
+
+	defer func() {
+		coal.Close()
+		atomic.AddInt64(&e.size, -1)
+		_ = sub.Close(context.Background())
+	}()
+
+	// Ingestion goroutine: reads from transport, filters, feeds coalescer.
 	go func() {
-		defer func() {
-			atomic.AddInt64(&e.size, -1)
-			// Use background context for cleanup since subscription context is done
-			_ = sub.Close(context.Background())
-		}()
+		defer close(coal.incoming)
 		for {
 			select {
 			case <-bus.shutdownChan:
-				logger.Info("shutdown subscriber remove", "event", e.Name(), "subscriber_id", subID)
 				return
-
 			case <-ctx.Done():
-				logger.Info("subscriber remove", "event", e.Name(), "subscriber_id", subID)
 				return
-
 			case msg, ok := <-sub.Messages():
 				if !ok {
-					logger.Info("channel closed", "event", e.Name(), "subscriber_id", subID)
 					return
 				}
 
-				// Check for transport-level decode errors
+				// Check for transport-level decode errors — handle inline, no coalescing possible.
 				if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
 					logger.Error("transport decode error, routing to DLQ",
-						"event", e.Name(),
-						"msg_id", msg.ID(),
-						"error", decodeErrMsg)
-
+						"event", e.Name(), "msg_id", msg.ID(), "error", decodeErrMsg)
 					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
+						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), sub.ID(), msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
 						if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
-							// DLQ storage failed for decode error - acknowledge anyway to prevent infinite loop
-							// Decode errors won't succeed on retry, so retrying is futile
-							logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
-								"event", e.Name(),
-								"msg_id", msg.ID(),
-								"dlq_error", dlqErr,
-								"decode_error", decodeErrMsg)
+							logger.Error("DLQ handler failed for decode error",
+								"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
 						}
 					}
 					_ = msg.Ack(nil)
 					continue
 				}
 
-				// Apply pre-decode message filter
+				// Apply pre-decode message filter.
 				if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
 					_ = msg.Ack(nil)
 					continue
 				}
 
-				// Decode payload from bytes
+				select {
+				case coal.incoming <- rawCoalesceInput{msg: msg}:
+				case <-bus.shutdownChan:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	// Delivery loop: pulls coalesced messages, decodes, calls handler.
+	for {
+		select {
+		case <-bus.shutdownChan:
+			logger.Info("shutdown subscriber remove", "event", e.Name(), "subscriber_id", subID)
+			return
+		case <-ctx.Done():
+			logger.Info("subscriber remove", "event", e.Name(), "subscriber_id", subID)
+			return
+		case out, ok := <-coal.output:
+			if !ok {
+				return
+			}
+
+			e.processMessage(out.msg, bus, sub, subOpts, wrappedHandler, logger, bestEffort, out.count)
+
+			// Signal coalescer that this key is done.
+			select {
+			case coal.done <- out.key:
+			case <-coal.stopped:
+			}
+		}
+	}
+}
+
+// subscribeWithCoalesce runs the post-decode (key function) coalescing loop.
+func (e *eventImpl[T]) subscribeWithCoalesce(
+	ctx context.Context,
+	bus *Bus,
+	sub transport.Subscription,
+	subOpts *subscribeOptions[T],
+	wrappedHandler Handler[T],
+	logger *slog.Logger,
+	bestEffort bool,
+) {
+	subID := sub.ID()
+	coal := newCoalescer[T](subOpts.effectiveCoalesceMaxKeys(), logger)
+
+	defer func() {
+		coal.Close()
+		atomic.AddInt64(&e.size, -1)
+		_ = sub.Close(context.Background())
+	}()
+
+	// Ingestion goroutine: reads from transport, decodes, feeds coalescer.
+	go func() {
+		defer close(coal.incoming)
+		for {
+			select {
+			case <-bus.shutdownChan:
+				return
+			case <-ctx.Done():
+				return
+			case msg, ok := <-sub.Messages():
+				if !ok {
+					return
+				}
+
+				// Check for transport-level decode errors — pass through.
+				if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
+					logger.Error("transport decode error, routing to DLQ",
+						"event", e.Name(), "msg_id", msg.ID(), "error", decodeErrMsg)
+					if e.dlqHandler != nil {
+						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), sub.ID(), msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
+						if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
+							logger.Error("DLQ handler failed for decode error",
+								"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
+						}
+					}
+					_ = msg.Ack(nil)
+					continue
+				}
+
+				// Apply pre-decode message filter.
+				if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
+					_ = msg.Ack(nil)
+					continue
+				}
+
+				// Decode payload.
 				var typedData T
 				contentType := msg.Metadata()[MetadataContentType]
 				if contentType == "" {
-					contentType = "application/json" // default
+					contentType = "application/json"
 				}
 
 				codec, codecOk := payload.Get(contentType)
 				if !codecOk {
 					logger.Error("unknown content type, routing to DLQ",
-						"event", e.Name(),
-						"msg_id", msg.ID(),
-						"content_type", contentType)
-
+						"event", e.Name(), "msg_id", msg.ID(), "content_type", contentType)
 					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-						dlqErr := e.dlqHandler(dlqCtx, msg, fmt.Errorf("unknown content type: %s", contentType))
-						if dlqErr != nil {
-							// DLQ storage failed for content type error - acknowledge anyway to prevent infinite loop
-							// Content type errors won't succeed on retry
-							logger.Error("DLQ handler failed for content type error, acknowledging to prevent infinite loop (potential data loss)",
-								"event", e.Name(),
-								"msg_id", msg.ID(),
-								"dlq_error", dlqErr,
-								"content_type", contentType)
+						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), sub.ID(), msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
+						if dlqErr := e.dlqHandler(dlqCtx, msg, fmt.Errorf("unknown content type: %s", contentType)); dlqErr != nil {
+							logger.Error("DLQ handler failed for content type error",
+								"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
 						}
 					}
 					_ = msg.Ack(nil)
@@ -449,94 +605,264 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 				}
 
 				if err := codec.Decode(msg.Payload(), &typedData); err != nil {
-					if e.decodeErrorHandler == nil {
-						// Default behavior: route to DLQ and ack
-						logger.Error("decode error received, routing to DLQ",
-							"event", e.Name(),
-							"msg_id", msg.ID(),
-							"error", err)
-
-						if e.dlqHandler != nil {
-							dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-							if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
-								logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
-									"event", e.Name(),
-									"msg_id", msg.ID(),
-									"dlq_error", dlqErr,
-									"decode_error", err)
-							}
-						}
-						_ = msg.Ack(nil)
-						continue
-					}
-
-					// Custom decode error handler decides the action
-					decodeCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-					decodeResult := e.decodeErrorHandler(decodeCtx, msg, err)
-
-					result, sendToDLQ := classifyResult(decodeResult, msg.RetryCount(), e.maxRetries)
-
-					if sendToDLQ && e.dlqHandler != nil {
-						if dlqErr := e.dlqHandler(decodeCtx, msg, err); dlqErr != nil {
-							logger.Error("DLQ handler failed for decode error, message will be retried",
-								"event", e.Name(),
-								"msg_id", msg.ID(),
-								"error", dlqErr,
-								"decode_error", err)
-							_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
-							continue
+					logger.Error("decode error, routing to DLQ",
+						"event", e.Name(), "msg_id", msg.ID(), "error", err)
+					if e.dlqHandler != nil {
+						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), sub.ID(), msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
+						if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
+							logger.Error("DLQ handler failed for decode error",
+								"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
 						}
 					}
-
-					switch result {
-					case ResultAck, ResultReject:
-						_ = msg.Ack(nil)
-					case ResultNack:
-						_ = msg.Ack(err)
-					case ResultDefer:
-						_ = msg.Ack(err)
-					}
+					_ = msg.Ack(nil)
 					continue
 				}
 
-				// Update context values and call handler
-				handlerCtx := contextWithInfo(msg.Context(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-				err := wrappedHandler(handlerCtx, e, typedData)
+				// Extract coalesce key from decoded data.
+				key := subOpts.coalesceKeyFunc(typedData)
 
-				// Classify result and determine action
-				result, sendToDLQ := classifyResult(err, msg.RetryCount(), e.maxRetries)
-
-				// Send to DLQ if configured and needed
-				if sendToDLQ && e.dlqHandler != nil {
-					if dlqErr := e.dlqHandler(handlerCtx, msg, err); dlqErr != nil {
-						// DLQ storage failed - DON'T ACK, let message be redelivered
-						logger.Error("DLQ handler failed, message will be retried",
-							"event", e.Name(),
-							"msg_id", msg.ID(),
-							"error", dlqErr,
-							"original_error", err)
-						_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
-						continue
-					}
-				}
-
-				// Ack based on result
-				switch result {
-				case ResultAck, ResultReject:
-					// Acknowledge (remove from queue)
-					_ = msg.Ack(nil)
-				case ResultNack:
-					// Retry immediately
-					_ = msg.Ack(err)
-				case ResultDefer:
-					// Retry with backoff (transport handles this)
-					_ = msg.Ack(err)
+				select {
+				case coal.incoming <- coalesceInput[T]{key: key, msg: msg, value: typedData}:
+				case <-bus.shutdownChan:
+					return
+				case <-ctx.Done():
+					return
 				}
 			}
 		}
 	}()
-	logger.Info("installed subscriber", "event", e.Name(), "subscriber_id", subID)
-	return nil
+
+	// Delivery loop: pulls coalesced entries, calls handler directly (already decoded).
+	for {
+		select {
+		case <-bus.shutdownChan:
+			logger.Info("shutdown subscriber remove", "event", e.Name(), "subscriber_id", subID)
+			return
+		case <-ctx.Done():
+			logger.Info("subscriber remove", "event", e.Name(), "subscriber_id", subID)
+			return
+		case out, ok := <-coal.output:
+			if !ok {
+				return
+			}
+
+			// Build context and call handler directly (payload already decoded).
+			handlerCtx := contextWithInfoCoalesced(out.msg.Context(), out.msg.ID(), e.name, bus.ID(), sub.ID(), out.msg.Metadata(), out.msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription, out.count)
+
+			// Best-effort: ack before handler (at-most-once delivery).
+			if bestEffort {
+				_ = out.msg.Ack(nil)
+			}
+
+			handlerErr := wrappedHandler(handlerCtx, e, out.value)
+
+			if bestEffort {
+				if handlerErr != nil {
+					logger.Warn("best-effort handler error suppressed",
+						"event", e.Name(), "msg_id", out.msg.ID(), "error", handlerErr)
+				}
+			} else {
+				e.handleResult(out.msg, handlerCtx, handlerErr, logger)
+			}
+
+			// Signal coalescer that this key is done.
+			select {
+			case coal.done <- out.key:
+			case <-coal.stopped:
+			}
+		}
+	}
+}
+
+// processMessage handles a single message through the full decode + handler + ack pipeline.
+// coalescedCount is the number of messages that were superseded (0 for non-coalesced).
+func (e *eventImpl[T]) processMessage(
+	msg transport.Message,
+	bus *Bus,
+	sub transport.Subscription,
+	subOpts *subscribeOptions[T],
+	wrappedHandler Handler[T],
+	logger *slog.Logger,
+	bestEffort bool,
+	coalescedCount int,
+) {
+	subID := sub.ID()
+
+	// Check for transport-level decode errors
+	if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
+		logger.Error("transport decode error, routing to DLQ",
+			"event", e.Name(),
+			"msg_id", msg.ID(),
+			"error", decodeErrMsg)
+
+		if e.dlqHandler != nil {
+			dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
+			if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
+				logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
+					"event", e.Name(),
+					"msg_id", msg.ID(),
+					"dlq_error", dlqErr,
+					"decode_error", decodeErrMsg)
+			}
+		}
+		_ = msg.Ack(nil)
+		return
+	}
+
+	// Apply pre-decode message filter
+	if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
+		_ = msg.Ack(nil)
+		return
+	}
+
+	// Best-effort: auto-ack on receive.
+	if bestEffort {
+		_ = msg.Ack(nil)
+	}
+
+	// Decode payload from bytes
+	var typedData T
+	contentType := msg.Metadata()[MetadataContentType]
+	if contentType == "" {
+		contentType = "application/json" // default
+	}
+
+	codec, codecOk := payload.Get(contentType)
+	if !codecOk {
+		logger.Error("unknown content type, routing to DLQ",
+			"event", e.Name(),
+			"msg_id", msg.ID(),
+			"content_type", contentType)
+
+		if e.dlqHandler != nil {
+			dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
+			dlqErr := e.dlqHandler(dlqCtx, msg, fmt.Errorf("unknown content type: %s", contentType))
+			if dlqErr != nil {
+				logger.Error("DLQ handler failed for content type error, acknowledging to prevent infinite loop (potential data loss)",
+					"event", e.Name(),
+					"msg_id", msg.ID(),
+					"dlq_error", dlqErr,
+					"content_type", contentType)
+			}
+		}
+		if !bestEffort {
+			_ = msg.Ack(nil)
+		}
+		return
+	}
+
+	if err := codec.Decode(msg.Payload(), &typedData); err != nil {
+		if e.decodeErrorHandler == nil {
+			// Default behavior: route to DLQ and ack
+			logger.Error("decode error received, routing to DLQ",
+				"event", e.Name(),
+				"msg_id", msg.ID(),
+				"error", err)
+
+			if e.dlqHandler != nil {
+				dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
+				if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
+					logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
+						"event", e.Name(),
+						"msg_id", msg.ID(),
+						"dlq_error", dlqErr,
+						"decode_error", err)
+				}
+			}
+			if !bestEffort {
+				_ = msg.Ack(nil)
+			}
+			return
+		}
+
+		// Custom decode error handler decides the action
+		decodeCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
+		decodeResult := e.decodeErrorHandler(decodeCtx, msg, err)
+
+		if bestEffort {
+			if decodeResult != nil {
+				logger.Warn("best-effort decode error handler returned error, suppressed",
+					"event", e.Name(), "msg_id", msg.ID(), "error", decodeResult)
+			}
+			return
+		}
+
+		result, sendToDLQ := classifyResult(decodeResult, msg.RetryCount(), e.maxRetries)
+
+		if sendToDLQ && e.dlqHandler != nil {
+			if dlqErr := e.dlqHandler(decodeCtx, msg, err); dlqErr != nil {
+				logger.Error("DLQ handler failed for decode error, message will be retried",
+					"event", e.Name(),
+					"msg_id", msg.ID(),
+					"error", dlqErr,
+					"decode_error", err)
+				_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
+				return
+			}
+		}
+
+		switch result {
+		case ResultAck, ResultReject:
+			_ = msg.Ack(nil)
+		case ResultNack:
+			_ = msg.Ack(err)
+		case ResultDefer:
+			_ = msg.Ack(err)
+		}
+		return
+	}
+
+	// Update context values and call handler
+	handlerCtx := contextWithInfoCoalesced(msg.Context(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription, coalescedCount)
+	handlerErr := wrappedHandler(handlerCtx, e, typedData)
+
+	if bestEffort {
+		// Already acked. Log errors and move on.
+		if handlerErr != nil {
+			logger.Warn("best-effort handler error suppressed",
+				"event", e.Name(), "msg_id", msg.ID(), "error", handlerErr)
+		}
+		return
+	}
+
+	e.handleResult(msg, handlerCtx, handlerErr, logger)
+}
+
+// handleResult classifies the handler error and performs ack/nack/DLQ routing.
+func (e *eventImpl[T]) handleResult(
+	msg transport.Message,
+	handlerCtx context.Context,
+	handlerErr error,
+	logger *slog.Logger,
+) {
+	result, sendToDLQ := classifyResult(handlerErr, msg.RetryCount(), e.maxRetries)
+
+	// Send to DLQ if configured and needed
+	if sendToDLQ && e.dlqHandler != nil {
+		if dlqErr := e.dlqHandler(handlerCtx, msg, handlerErr); dlqErr != nil {
+			// DLQ storage failed - DON'T ACK, let message be redelivered
+			logger.Error("DLQ handler failed, message will be retried",
+				"event", e.Name(),
+				"msg_id", msg.ID(),
+				"error", dlqErr,
+				"original_error", handlerErr)
+			_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
+			return
+		}
+	}
+
+	// Ack based on result
+	switch result {
+	case ResultAck, ResultReject:
+		// Acknowledge (remove from queue)
+		_ = msg.Ack(nil)
+	case ResultNack:
+		// Retry immediately
+		_ = msg.Ack(handlerErr)
+	case ResultDefer:
+		// Retry with backoff (transport handles this)
+		_ = msg.Ack(handlerErr)
+	}
 }
 
 // Events a group of events with same type
