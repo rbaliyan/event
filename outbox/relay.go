@@ -25,10 +25,11 @@ import (
 // Example:
 //
 //	store := outbox.NewPostgresStore(db)
-//	relay := outbox.NewRelay(store, transport).
-//	    WithPollDelay(100 * time.Millisecond).
-//	    WithBatchSize(100).
-//	    WithCleanupAge(7 * 24 * time.Hour)
+//	relay := outbox.NewRelay(store, transport,
+//	    outbox.WithPollDelay(100 * time.Millisecond),
+//	    outbox.WithBatchSize(100),
+//	    outbox.WithCleanupAge(7 * 24 * time.Hour),
+//	)
 //
 //	// Start relay in background
 //	ctx, cancel := context.WithCancel(context.Background())
@@ -50,6 +51,65 @@ type Relay struct {
 	metrics    *Metrics
 }
 
+// RelayOption configures a Relay.
+type RelayOption func(*relayOptions)
+
+type relayOptions struct {
+	pollDelay  time.Duration
+	batchSize  int
+	logger     *slog.Logger
+	cleanupAge time.Duration
+	metrics    *Metrics
+}
+
+// WithPollDelay sets the polling interval.
+//
+// Lower values mean lower latency but higher database load.
+// Higher values reduce load but increase message delivery latency.
+func WithPollDelay(d time.Duration) RelayOption {
+	return func(o *relayOptions) {
+		if d > 0 {
+			o.pollDelay = d
+		}
+	}
+}
+
+// WithBatchSize sets the number of messages to process per poll.
+func WithBatchSize(size int) RelayOption {
+	return func(o *relayOptions) {
+		if size > 0 {
+			o.batchSize = size
+		}
+	}
+}
+
+// WithLogger sets a custom logger for the relay.
+func WithLogger(l *slog.Logger) RelayOption {
+	return func(o *relayOptions) {
+		if l != nil {
+			o.logger = l
+		}
+	}
+}
+
+// WithCleanupAge sets how old published messages should be before deletion.
+func WithCleanupAge(age time.Duration) RelayOption {
+	return func(o *relayOptions) {
+		if age > 0 {
+			o.cleanupAge = age
+		}
+	}
+}
+
+// WithMetrics enables OpenTelemetry metrics for the relay.
+func WithMetrics(m *Metrics) RelayOption {
+	return func(o *relayOptions) {
+		if m != nil {
+			o.metrics = m
+		}
+	}
+}
+
 // NewRelay creates a new outbox relay.
 //
 // The relay polls the store for pending messages and publishes them to
@@ -61,77 +121,34 @@ type Relay struct {
 // Parameters:
 //   - store: The outbox store to poll for messages
 //   - t: The transport to publish messages to
+//   - opts: Optional configuration options
 //
 // Example:
 //
-//	relay := outbox.NewRelay(store, transport)
+//	relay := outbox.NewRelay(store, transport,
+//	    outbox.WithPollDelay(100 * time.Millisecond),
+//	    outbox.WithBatchSize(100),
+//	)
 //	go relay.Start(ctx)
-func NewRelay(store Store, t transport.Transport) *Relay {
-	return &Relay{
-		store:      store,
-		transport:  t,
+func NewRelay(store Store, t transport.Transport, opts ...RelayOption) *Relay {
+	o := &relayOptions{
 		pollDelay:  100 * time.Millisecond,
 		batchSize:  100,
 		cleanupAge: 24 * time.Hour,
 	}
-}
+	for _, opt := range opts {
+		opt(o)
+	}
 
-// WithPollDelay sets the polling interval.
-//
-// Lower values mean lower latency but higher database load.
-// Higher values reduce load but increase message delivery latency.
-//
-// Parameters:
-//   - d: The interval between polls (e.g., 100*time.Millisecond)
-//
-// Returns the relay for method chaining.
-//
-// Example:
-//
-//	relay := outbox.NewRelay(store, transport).
-//	    WithPollDelay(50 * time.Millisecond) // Low latency
-func (r *Relay) WithPollDelay(d time.Duration) *Relay {
-	r.pollDelay = d
-	return r
-}
-
-// WithBatchSize sets the number of messages to process per poll.
-//
-// Larger batches are more efficient but may cause longer processing times.
-// Smaller batches provide more even processing but more database queries.
-//
-// Parameters:
-//   - size: Maximum messages to fetch per poll
-//
-// Returns the relay for method chaining.
-//
-// Example:
-//
-//	relay := outbox.NewRelay(store, transport).
-//	    WithBatchSize(50) // Smaller batches for faster individual processing
-func (r *Relay) WithBatchSize(size int) *Relay {
-	r.batchSize = size
-	return r
-}
-
-// WithLogger sets a custom logger.
-//
-// The logger is used for error and debug messages during relay operation.
-// If not set, slog.Default() is used.
-//
-// Parameters:
-//   - l: The slog logger to use
-//
-// Returns the relay for method chaining.
-//
-// Example:
-//
-//	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-//	relay := outbox.NewRelay(store, transport).
-//	    WithLogger(logger.With("service", "outbox"))
-func (r *Relay) WithLogger(l *slog.Logger) *Relay {
-	r.logger = l
-	return r
+	return &Relay{
+		store:      store,
+		transport:  t,
+		pollDelay:  o.pollDelay,
+		batchSize:  o.batchSize,
+		logger:     o.logger,
+		cleanupAge: o.cleanupAge,
+		metrics:    o.metrics,
+	}
 }
 
 // log returns the configured logger, falling back to slog.Default().
@@ -141,49 +158,6 @@ func (r *Relay) log() *slog.Logger {
 	}
 	r.logger = slog.Default().With("component", "outbox.relay")
 	return r.logger
-}
-
-// WithCleanupAge sets how old published messages should be before deletion.
-//
-// Messages older than this age are deleted during periodic cleanup.
-// Longer retention is useful for debugging but uses more storage.
-//
-// Parameters:
-//   - age: How long to keep published messages
-//
-// Returns the relay for method chaining.
-//
-// Example:
-//
-//	relay := outbox.NewRelay(store, transport).
-//	    WithCleanupAge(7 * 24 * time.Hour) // Keep for 7 days
-func (r *Relay) WithCleanupAge(age time.Duration) *Relay {
-	r.cleanupAge = age
-	return r
-}
-
-// WithMetrics enables OpenTelemetry metrics for the relay.
-//
-// When metrics are enabled, the relay records:
-//   - outbox_messages_published_total: Successfully published messages
-//   - outbox_messages_failed_total: Failed publish attempts
-//   - outbox_messages_cleaned_total: Messages cleaned up
-//   - outbox_messages_pending: Current pending messages (gauge)
-//   - outbox_publish_duration_seconds: Time to publish each message
-//
-// Parameters:
-//   - m: The metrics instance (created with NewMetrics)
-//
-// Returns the relay for method chaining.
-//
-// Example:
-//
-//	metrics, _ := outbox.NewMetrics()
-//	relay := outbox.NewRelay(store, transport).
-//	    WithMetrics(metrics)
-func (r *Relay) WithMetrics(m *Metrics) *Relay {
-	r.metrics = m
-	return r
 }
 
 // Start begins polling the outbox and publishing messages.

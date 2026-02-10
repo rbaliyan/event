@@ -3,25 +3,26 @@ package event
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/rbaliyan/event/v3/health"
 	"github.com/rbaliyan/event/v3/transport"
 )
 
-// StatusCode represents the health state of the bus
-type StatusCode string
+// StatusCode is an alias for health.Status representing the health state of the bus.
+type StatusCode = health.Status
 
 const (
 	// StatusHealthy indicates the bus is functioning normally
-	StatusHealthy StatusCode = "healthy"
+	StatusHealthy = health.StatusHealthy
 	// StatusDegraded indicates the bus is functioning but with issues
-	StatusDegraded StatusCode = "degraded"
+	StatusDegraded = health.StatusDegraded
 	// StatusUnhealthy indicates the bus is not functioning
-	StatusUnhealthy StatusCode = "unhealthy"
+	StatusUnhealthy = health.StatusUnhealthy
 )
 
-// Status contains detailed status information for the bus
+// Status contains detailed status information for the bus.
 type Status struct {
 	Code       StatusCode         `json:"status"`
 	Message    string             `json:"message,omitempty"`
@@ -95,44 +96,25 @@ func (b *Bus) checkComponentHealth(ctx context.Context, result *Status, name str
 	if hc, ok := component.(health.Checker); ok {
 		componentHealth := hc.Health(ctx)
 		result.Components[name] = convertHealthResult(componentHealth)
-		aggregateComponentStatus(result, name, health.Status(componentHealth.Status))
+		aggregateComponentStatus(result, name, componentHealth.Status)
 	}
 }
 
 // aggregateComponentStatus updates the result status based on component status.
-// Uses the worst status: unhealthy > degraded > healthy
+// Uses the worst status: unhealthy > degraded > healthy.
+// Accepts health.Status or transport.HealthStatus (both are string types with identical values).
 func aggregateComponentStatus(result *Status, name string, status any) {
-	var statusCode StatusCode
-	switch s := status.(type) {
-	case transport.HealthStatus:
-		switch s {
-		case transport.HealthStatusUnhealthy:
-			statusCode = StatusUnhealthy
-		case transport.HealthStatusDegraded:
-			statusCode = StatusDegraded
-		default:
-			return // healthy, no change needed
-		}
-	case health.Status:
-		switch s {
-		case health.StatusUnhealthy:
-			statusCode = StatusUnhealthy
-		case health.StatusDegraded:
-			statusCode = StatusDegraded
-		default:
-			return // healthy, no change needed
-		}
-	default:
-		return
-	}
+	code := StatusCode(fmt.Sprint(status))
 
-	// Only update if new status is worse
-	if statusCode == StatusUnhealthy {
+	switch code {
+	case StatusUnhealthy:
 		result.Code = StatusUnhealthy
 		result.Message = name + " is unhealthy"
-	} else if statusCode == StatusDegraded && result.Code != StatusUnhealthy {
-		result.Code = StatusDegraded
-		result.Message = name + " is degraded"
+	case StatusDegraded:
+		if result.Code != StatusUnhealthy {
+			result.Code = StatusDegraded
+			result.Message = name + " is degraded"
+		}
 	}
 }
 

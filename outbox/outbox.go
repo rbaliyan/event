@@ -67,9 +67,10 @@
 //	// Setup
 //	db, _ := sql.Open("postgres", connString)
 //	publisher := outbox.NewPostgresPublisher(db)
-//	relay := outbox.NewRelay(publisher.Store(), transport).
-//	    WithPollDelay(100 * time.Millisecond).
-//	    WithBatchSize(100)
+//	relay := outbox.NewRelay(publisher.Store(), transport,
+//	    outbox.WithPollDelay(100 * time.Millisecond),
+//	    outbox.WithBatchSize(100),
+//	)
 //
 //	// Start relay in background
 //	go relay.Start(ctx)

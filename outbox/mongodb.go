@@ -98,23 +98,40 @@ type CappedInfo struct {
 	Count    int64 // Current document count
 }
 
+// MongoStoreOption configures a MongoStore.
+type MongoStoreOption func(*mongoStoreOptions)
+
+type mongoStoreOptions struct {
+	collection string
+}
+
+// WithCollection sets a custom collection name for the MongoDB outbox store.
+func WithCollection(name string) MongoStoreOption {
+	return func(o *mongoStoreOptions) {
+		if name != "" {
+			o.collection = name
+		}
+	}
+}
+
 // MongoStore defines the interface for MongoDB outbox storage
 type MongoStore struct {
 	collection *mongo.Collection
 	cappedInfo *CappedInfo // Cached capped info (nil = not checked yet)
 }
 
-// NewMongoStore creates a new MongoDB outbox store
-func NewMongoStore(db *mongo.Database) *MongoStore {
-	return &MongoStore{
-		collection: db.Collection("event_outbox"),
+// NewMongoStore creates a new MongoDB outbox store.
+func NewMongoStore(db *mongo.Database, opts ...MongoStoreOption) *MongoStore {
+	o := &mongoStoreOptions{
+		collection: "event_outbox",
 	}
-}
+	for _, opt := range opts {
+		opt(o)
+	}
 
-// WithCollection sets a custom collection name
-func (s *MongoStore) WithCollection(name string) *MongoStore {
-	s.collection = s.collection.Database().Collection(name)
-	return s
+	return &MongoStore{
+		collection: db.Collection(o.collection),
+	}
 }
 
 // Collection returns the underlying MongoDB collection
@@ -601,10 +618,10 @@ type MongoPublisher struct {
 	codec  codec.Codec
 }
 
-// NewMongoPublisher creates a new MongoDB outbox publisher
-func NewMongoPublisher(client *mongo.Client, db *mongo.Database) *MongoPublisher {
+// NewMongoPublisher creates a new MongoDB outbox publisher.
+func NewMongoPublisher(client *mongo.Client, db *mongo.Database, opts ...MongoStoreOption) *MongoPublisher {
 	return &MongoPublisher{
-		store:  NewMongoStore(db),
+		store:  NewMongoStore(db, opts...),
 		client: client,
 		codec:  codec.Default(),
 	}
@@ -613,12 +630,6 @@ func NewMongoPublisher(client *mongo.Client, db *mongo.Database) *MongoPublisher
 // WithCodec sets a custom codec for encoding payloads
 func (p *MongoPublisher) WithCodec(c codec.Codec) *MongoPublisher {
 	p.codec = c
-	return p
-}
-
-// WithCollection sets a custom collection name
-func (p *MongoPublisher) WithCollection(name string) *MongoPublisher {
-	p.store = p.store.WithCollection(name)
 	return p
 }
 
