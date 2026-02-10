@@ -274,6 +274,10 @@ func (p *Processor[T]) Process(
 			if err = handler(ctx, data); err == nil {
 				break
 			}
+			// Stop retrying if context is cancelled
+			if ctx.Err() != nil {
+				break
+			}
 		}
 
 		if err != nil {
