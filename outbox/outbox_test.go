@@ -180,10 +180,11 @@ func TestRelayOptions(t *testing.T) {
 	store := newMockStore()
 	tr := channel.New()
 
-	relay := NewRelay(store, tr).
-		WithPollDelay(50 * time.Millisecond).
-		WithBatchSize(50).
-		WithCleanupAge(48 * time.Hour)
+	relay := NewRelay(store, tr,
+		WithPollDelay(50*time.Millisecond),
+		WithBatchSize(50),
+		WithCleanupAge(48*time.Hour),
+	)
 
 	if relay.pollDelay != 50*time.Millisecond {
 		t.Errorf("expected 50ms, got %v", relay.pollDelay)
@@ -290,8 +291,9 @@ func TestRelayStartStop(t *testing.T) {
 	store := newMockStore()
 	tr := channel.New()
 
-	relay := NewRelay(store, tr).
-		WithPollDelay(10 * time.Millisecond)
+	relay := NewRelay(store, tr,
+		WithPollDelay(10*time.Millisecond),
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -349,7 +351,7 @@ func TestRelayMultipleMessages(t *testing.T) {
 		t.Fatalf("expected 5 pending, got %d", store.pendingCount())
 	}
 
-	relay := NewRelay(store, tr).WithBatchSize(10)
+	relay := NewRelay(store, tr, WithBatchSize(10))
 	relay.PublishOnce(ctx)
 
 	if store.publishedCount() != 5 {

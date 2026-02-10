@@ -11,6 +11,22 @@ import (
 	"github.com/rbaliyan/event/v3/transport/codec"
 )
 
+// PostgresStoreOption configures a PostgresStore.
+type PostgresStoreOption func(*postgresStoreOptions)
+
+type postgresStoreOptions struct {
+	table string
+}
+
+// WithTable sets a custom table name for the PostgreSQL outbox store.
+func WithTable(table string) PostgresStoreOption {
+	return func(o *postgresStoreOptions) {
+		if table != "" {
+			o.table = table
+		}
+	}
+}
+
 // PostgresStore implements Store for PostgreSQL.
 //
 // PostgresStore uses PostgreSQL's transactional capabilities for reliable
@@ -33,14 +49,6 @@ import (
 //	);
 //	CREATE INDEX idx_outbox_pending ON event_outbox(status, created_at)
 //	    WHERE status = 'pending';
-//
-// Example:
-//
-//	db, _ := sql.Open("postgres", connString)
-//	store := outbox.NewPostgresStore(db)
-//
-//	// Optional: use custom table name
-//	store = store.WithTableName("my_outbox")
 type PostgresStore struct {
 	db        *sql.DB
 	tableName string
@@ -50,42 +58,18 @@ type PostgresStore struct {
 //
 // The provided database connection should be configured and connected.
 // The default table name is "event_outbox".
-//
-// Parameters:
-//   - db: An open PostgreSQL database connection
-//
-// Example:
-//
-//	db, err := sql.Open("postgres", "postgres://localhost/mydb")
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//
-//	store := outbox.NewPostgresStore(db)
-func NewPostgresStore(db *sql.DB) *PostgresStore {
+func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) *PostgresStore {
+	o := &postgresStoreOptions{
+		table: "event_outbox",
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
+
 	return &PostgresStore{
 		db:        db,
-		tableName: "event_outbox",
+		tableName: o.table,
 	}
-}
-
-// WithTableName sets a custom table name.
-//
-// Use this when you need multiple outbox tables (e.g., per-tenant) or
-// when using a different naming convention.
-//
-// Parameters:
-//   - name: The table name to use
-//
-// Returns the store for method chaining.
-//
-// Example:
-//
-//	store := outbox.NewPostgresStore(db).
-//	    WithTableName("orders_outbox")
-func (s *PostgresStore) WithTableName(name string) *PostgresStore {
-	s.tableName = name
-	return s
 }
 
 // Insert adds a message to the outbox within a transaction.

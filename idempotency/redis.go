@@ -37,7 +37,7 @@ import (
 //	store := idempotency.NewRedisStore(rdb, 24*time.Hour)
 //
 //	// Optional: customize key prefix for multi-tenant
-//	store = store.WithPrefix("myapp:dedup:")
+//	store := idempotency.NewRedisStore(rdb, 24*time.Hour, idempotency.WithPrefix("myapp:dedup:"))
 //
 //	// Use in message handler
 //	func handlePayment(ctx context.Context, payment Payment) error {
@@ -96,12 +96,11 @@ type RedisStore struct {
 //	    Addrs: []string{"localhost:6379"},
 //	})
 //	store := idempotency.NewRedisStore(rdb, time.Hour)
-func NewRedisStore(client redis.Cmdable, ttl time.Duration) *RedisStore {
-	return &RedisStore{
-		client: client,
-		ttl:    ttl,
-		prefix: "idemp:",
-	}
+// RedisStoreOption configures a RedisStore.
+type RedisStoreOption func(*redisStoreOptions)
+
+type redisStoreOptions struct {
+	prefix string
 }
 
 // WithPrefix sets a custom prefix for Redis keys.
@@ -114,24 +113,27 @@ func NewRedisStore(client redis.Cmdable, ttl time.Duration) *RedisStore {
 // The prefix is prepended to all message IDs when creating Redis keys.
 // For example, with prefix "orders:" and message ID "123", the Redis
 // key will be "orders:123".
-//
-// Parameters:
-//   - prefix: The key prefix (should end with a separator like ":" or "/")
-//
-// Returns the store for method chaining.
-//
-// Example:
-//
-//	// Per-tenant isolation
-//	store := idempotency.NewRedisStore(rdb, time.Hour).
-//	    WithPrefix(fmt.Sprintf("tenant:%s:dedup:", tenantID))
-//
-//	// Per-service isolation
-//	store := idempotency.NewRedisStore(rdb, time.Hour).
-//	    WithPrefix("payment-service:idemp:")
-func (s *RedisStore) WithPrefix(prefix string) *RedisStore {
-	s.prefix = prefix
-	return s
+func WithPrefix(prefix string) RedisStoreOption {
+	return func(o *redisStoreOptions) {
+		if prefix != "" {
+			o.prefix = prefix
+		}
+	}
+}
+
+func NewRedisStore(client redis.Cmdable, ttl time.Duration, opts ...RedisStoreOption) *RedisStore {
+	o := &redisStoreOptions{
+		prefix: "idemp:",
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
+
+	return &RedisStore{
+		client: client,
+		ttl:    ttl,
+		prefix: o.prefix,
+	}
 }
 
 // IsDuplicate checks if a message ID has already been processed.

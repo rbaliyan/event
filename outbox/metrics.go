@@ -27,8 +27,9 @@ import (
 //	    log.Fatal(err)
 //	}
 //
-//	relay := outbox.NewRelay(store, transport).
-//	    WithMetrics(metrics)
+//	relay := outbox.NewRelay(store, transport,
+//	    outbox.WithMetrics(metrics),
+//	)
 type Metrics struct {
 	storedCounter    metric.Int64Counter
 	publishedCounter metric.Int64Counter

@@ -62,6 +62,53 @@ func (m *RedisMessage) ToMessage() *Message {
 	}
 }
 
+// RedisStoreOption configures a RedisStore.
+type RedisStoreOption func(*redisStoreOptions)
+
+type redisStoreOptions struct {
+	consumerName string
+	groupName    string
+	keyPrefix    string
+	maxLen       int64
+}
+
+// WithConsumerName sets a custom consumer name for this relay instance.
+// Use a stable name (e.g., hostname or pod name) to properly track pending messages.
+func WithConsumerName(name string) RedisStoreOption {
+	return func(o *redisStoreOptions) {
+		if name != "" {
+			o.consumerName = name
+		}
+	}
+}
+
+// WithGroupName sets a custom consumer group name.
+func WithGroupName(name string) RedisStoreOption {
+	return func(o *redisStoreOptions) {
+		if name != "" {
+			o.groupName = name
+		}
+	}
+}
+
+// WithKeyPrefix sets a custom key prefix for all Redis keys.
+func WithKeyPrefix(prefix string) RedisStoreOption {
+	return func(o *redisStoreOptions) {
+		if prefix != "" {
+			o.keyPrefix = prefix
+		}
+	}
+}
+
+// WithMaxLen sets the maximum stream length.
+func WithMaxLen(maxLen int64) RedisStoreOption {
+	return func(o *redisStoreOptions) {
+		if maxLen > 0 {
+			o.maxLen = maxLen
+		}
+	}
+}
+
 // RedisStore implements outbox storage using Redis Streams with Consumer Groups.
 // Consumer Groups provide exactly-once delivery semantics for HA deployments.
 type RedisStore struct {
@@ -76,43 +123,25 @@ type RedisStore struct {
 
 // NewRedisStore creates a new Redis outbox store with consumer group support.
 // Each relay instance should have a unique consumerName for proper HA operation.
-func NewRedisStore(client redis.Cmdable) *RedisStore {
+func NewRedisStore(client redis.Cmdable, opts ...RedisStoreOption) *RedisStore {
+	o := &redisStoreOptions{
+		consumerName: uuid.New().String(),
+		groupName:    "outbox-relay",
+		keyPrefix:    "outbox:",
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
+
 	return &RedisStore{
 		client:       client,
-		pendingKey:   "outbox:pending",
-		publishedKey: "outbox:published",
-		failedPrefix: "outbox:failed:",
-		groupName:    "outbox-relay",
-		consumerName: uuid.New().String(), // Unique per instance
-		maxLen:       0,
+		pendingKey:   o.keyPrefix + "pending",
+		publishedKey: o.keyPrefix + "published",
+		failedPrefix: o.keyPrefix + "failed:",
+		groupName:    o.groupName,
+		consumerName: o.consumerName,
+		maxLen:       o.maxLen,
 	}
-}
-
-// WithConsumerName sets a custom consumer name for this relay instance.
-// Use a stable name (e.g., hostname or pod name) to properly track pending messages.
-func (s *RedisStore) WithConsumerName(name string) *RedisStore {
-	s.consumerName = name
-	return s
-}
-
-// WithGroupName sets a custom consumer group name.
-func (s *RedisStore) WithGroupName(name string) *RedisStore {
-	s.groupName = name
-	return s
-}
-
-// WithKeyPrefix sets a custom key prefix
-func (s *RedisStore) WithKeyPrefix(prefix string) *RedisStore {
-	s.pendingKey = prefix + "pending"
-	s.publishedKey = prefix + "published"
-	s.failedPrefix = prefix + "failed:"
-	return s
-}
-
-// WithMaxLen sets the maximum stream length
-func (s *RedisStore) WithMaxLen(maxLen int64) *RedisStore {
-	s.maxLen = maxLen
-	return s
 }
 
 // Insert adds a message to the outbox
@@ -506,6 +535,55 @@ func (p *RedisPublisher) Publish(ctx context.Context, eventName string, payload 
 	return err
 }
 
+// RedisRelayOption configures a RedisRelay.
+type RedisRelayOption func(*redisRelayOptions)
+
+type redisRelayOptions struct {
+	pollDelay     time.Duration
+	batchSize     int64
+	logger        *slog.Logger
+	stuckDuration time.Duration
+}
+
+// WithRedisRelayPollDelay sets the polling interval for the Redis relay.
+func WithRedisRelayPollDelay(d time.Duration) RedisRelayOption {
+	return func(o *redisRelayOptions) {
+		if d > 0 {
+			o.pollDelay = d
+		}
+	}
+}
+
+// WithRedisRelayBatchSize sets the batch size for the Redis relay.
+func WithRedisRelayBatchSize(size int64) RedisRelayOption {
+	return func(o *redisRelayOptions) {
+		if size > 0 {
+			o.batchSize = size
+		}
+	}
+}
+
+// WithRedisRelayLogger sets a custom logger for the Redis relay.
+func WithRedisRelayLogger(l *slog.Logger) RedisRelayOption {
+	return func(o *redisRelayOptions) {
+		if l != nil {
+			o.logger = l
+		}
+	}
+}
+
+// WithRedisRelayStuckDuration sets how long a message can be pending before claiming from other consumers.
+// Messages that have been pending longer than this duration in another consumer's queue
+// will be claimed by this relay. This handles crashed relay instances.
+// Default: 5 minutes
+func WithRedisRelayStuckDuration(d time.Duration) RedisRelayOption {
+	return func(o *redisRelayOptions) {
+		if d > 0 {
+			o.stuckDuration = d
+		}
+	}
+}
+
 // RedisRelay polls the Redis outbox and publishes messages to the transport
 type RedisRelay struct {
 	store         *RedisStore
@@ -516,34 +594,25 @@ type RedisRelay struct {
 	stuckDuration time.Duration // How long before claiming messages from other consumers
 }
 
-// NewRedisRelay creates a new Redis outbox relay
-func NewRedisRelay(store *RedisStore, t transport.Transport) *RedisRelay {
+// NewRedisRelay creates a new Redis outbox relay.
+func NewRedisRelay(store *RedisStore, t transport.Transport, opts ...RedisRelayOption) *RedisRelay {
+	o := &redisRelayOptions{
+		pollDelay:     100 * time.Millisecond,
+		batchSize:     100,
+		stuckDuration: 5 * time.Minute,
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
+
 	return &RedisRelay{
 		store:         store,
 		transport:     t,
-		pollDelay:     100 * time.Millisecond,
-		batchSize:     100,
-		stuckDuration: 5 * time.Minute, // Claim messages from crashed consumers after 5 min
+		pollDelay:     o.pollDelay,
+		batchSize:     o.batchSize,
+		logger:        o.logger,
+		stuckDuration: o.stuckDuration,
 	}
-}
-
-// WithPollDelay sets the polling interval
-func (r *RedisRelay) WithPollDelay(d time.Duration) *RedisRelay {
-	r.pollDelay = d
-	return r
-}
-
-// WithBatchSize sets the batch size
-func (r *RedisRelay) WithBatchSize(size int64) *RedisRelay {
-	r.batchSize = size
-	return r
-}
-
-// WithLogger sets a custom logger.
-// If not set, slog.Default() is used.
-func (r *RedisRelay) WithLogger(l *slog.Logger) *RedisRelay {
-	r.logger = l
-	return r
 }
 
 // log returns the configured logger, falling back to slog.Default().
@@ -553,15 +622,6 @@ func (r *RedisRelay) log() *slog.Logger {
 	}
 	r.logger = slog.Default().With("component", "outbox.redis_relay")
 	return r.logger
-}
-
-// WithStuckDuration sets how long a message can be pending before claiming from other consumers.
-// Messages that have been pending longer than this duration in another consumer's queue
-// will be claimed by this relay. This handles crashed relay instances.
-// Default: 5 minutes
-func (r *RedisRelay) WithStuckDuration(d time.Duration) *RedisRelay {
-	r.stuckDuration = d
-	return r
 }
 
 // Start begins polling the outbox.
