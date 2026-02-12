@@ -72,6 +72,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 )
 
 // ErrTransactionFailed is returned when a transaction cannot be completed.
@@ -337,7 +338,7 @@ func (m *SQLManager) Begin(ctx context.Context) (Transaction, error) {
 //
 //	    return nil // Triggers commit
 //	})
-func (m *SQLManager) Execute(ctx context.Context, fn func(tx Transaction) error) error {
+func (m *SQLManager) Execute(ctx context.Context, fn func(tx Transaction) error) (retErr error) {
 	tx, err := m.Begin(ctx)
 	if err != nil {
 		return err
@@ -346,7 +347,7 @@ func (m *SQLManager) Execute(ctx context.Context, fn func(tx Transaction) error)
 	defer func() {
 		if p := recover(); p != nil {
 			_ = tx.Rollback()
-			panic(p)
+			retErr = fmt.Errorf("transaction panicked: %v: %w", p, ErrTransactionFailed)
 		}
 	}()
 

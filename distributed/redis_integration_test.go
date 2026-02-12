@@ -292,10 +292,13 @@ func TestRedisStateManager_Integration_RecoveryRunner(t *testing.T) {
 
 	ctx := context.Background()
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	// Acquire a message
 	sm.Acquire(ctx, "recovery-1", time.Hour)
@@ -335,10 +338,13 @@ func TestRedisStateManager_Integration_RecoveryRunnerBackground(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(30*time.Millisecond),
 		WithCheckInterval(20*time.Millisecond),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	// Start runner in background
 	go runner.Run(ctx)
