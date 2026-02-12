@@ -2,6 +2,7 @@ package event
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/rbaliyan/event/v3/transport"
 )
@@ -13,6 +14,7 @@ type busOptions struct {
 	tracingEnabled  bool
 	recoveryEnabled bool
 	metricsEnabled  bool
+	drainTimeout    time.Duration
 	// Subscriber middleware stores (applied automatically to all subscribers)
 	idempotencyStore IdempotencyStore
 	poisonDetector   PoisonDetector
@@ -245,6 +247,17 @@ func WithDLQ(store DLQStore) BusOption {
 	return func(o *busOptions) {
 		if store != nil {
 			o.dlqStore = store
+		}
+	}
+}
+
+// WithDrainTimeout sets the maximum time Bus.Close() will wait for in-flight
+// message handlers to complete before proceeding with shutdown.
+// A value of 0 (the default) means no waiting — current behavior is preserved.
+func WithDrainTimeout(d time.Duration) BusOption {
+	return func(o *busOptions) {
+		if d > 0 {
+			o.drainTimeout = d
 		}
 	}
 }

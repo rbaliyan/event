@@ -32,12 +32,13 @@ import (
 
 // Transport implements transport.Transport using Go channels
 type Transport struct {
-	status     int32
-	events     sync.Map // map[string]*eventChannel
-	bufferSize uint
-	timeout    int64 // stored as nanoseconds for atomic access
-	logger     *slog.Logger
-	onError    func(error)
+	status          int32
+	events          sync.Map // map[string]*eventChannel
+	bufferSize      uint
+	timeout         int64 // stored as nanoseconds for atomic access
+	fallbackTimeout int64 // stored as nanoseconds for atomic access, 0 = use default (30s)
+	logger          *slog.Logger
+	onError         func(error)
 
 	// Metrics
 	meter          metric.Meter
@@ -85,13 +86,14 @@ func New(opts ...Option) *Transport {
 	)
 
 	return &Transport{
-		status:         1,
-		bufferSize:     o.bufferSize,
-		timeout:        int64(o.timeout),
-		logger:         o.logger,
-		onError:        o.onError,
-		meter:          meter,
-		droppedCounter: droppedCounter,
+		status:          1,
+		bufferSize:      o.bufferSize,
+		timeout:         int64(o.timeout),
+		fallbackTimeout: int64(o.fallbackTimeout),
+		logger:          o.logger,
+		onError:         o.onError,
+		meter:           meter,
+		droppedCounter:  droppedCounter,
 	}
 }
 
@@ -296,7 +298,7 @@ func (t *Transport) sendToSubscriber(ctx context.Context, sub *subscription, msg
 	}
 
 	// No timeout - try non-blocking first, then block with a generous ceiling
-	// to prevent permanently blocked publisher goroutines. The 30s ceiling is
+	// to prevent permanently blocked publisher goroutines. The default 30s ceiling is
 	// intentionally large — it indicates a severely backed-up subscriber rather
 	// than normal flow control. For guaranteed delivery, use Redis/NATS/Kafka.
 	select {
@@ -305,7 +307,11 @@ func (t *Transport) sendToSubscriber(ctx context.Context, sub *subscription, msg
 	case sub.Ch() <- msg:
 		return nil
 	default:
-		timer := time.NewTimer(30 * time.Second)
+		ft := time.Duration(atomic.LoadInt64(&t.fallbackTimeout))
+		if ft == 0 {
+			ft = 30 * time.Second
+		}
+		timer := time.NewTimer(ft)
 		defer timer.Stop()
 		select {
 		case <-timer.C:

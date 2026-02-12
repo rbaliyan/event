@@ -431,7 +431,9 @@ func (e *eventImpl[T]) subscribeLoop(
 				return
 			}
 
+			bus.inflightWG.Add(1)
 			e.processMessage(msg, bus, sub, subOpts, wrappedHandler, logger, bestEffort, 0)
+			bus.inflightWG.Done()
 		}
 	}
 }
@@ -471,11 +473,11 @@ func (e *eventImpl[T]) subscribeWithRawCoalesce(
 
 				// Check for transport-level decode errors — handle inline, no coalescing possible.
 				if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
+					decodeErr := errors.New(decodeErrMsg)
 					logger.Error("transport decode error, routing to DLQ",
 						"event", e.Name(), "msg_id", msg.ID(), "error", decodeErrMsg)
-					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, errors.New(decodeErrMsg)); dlqErr != nil {
-						logger.Error("DLQ store failed for decode error",
-							"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
+					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, decodeErr); dlqErr != nil {
+						bus.logFallbackDLQ(logger, e.name, msg, decodeErr, dlqErr)
 					}
 					_ = msg.Ack(nil)
 					continue
@@ -512,7 +514,9 @@ func (e *eventImpl[T]) subscribeWithRawCoalesce(
 				return
 			}
 
+			bus.inflightWG.Add(1)
 			e.processMessage(out.msg, bus, sub, subOpts, wrappedHandler, logger, bestEffort, out.count)
+			bus.inflightWG.Done()
 
 			// Signal coalescer that this key is done.
 			select {
@@ -558,11 +562,11 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 
 				// Check for transport-level decode errors — pass through.
 				if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
+					decodeErr := errors.New(decodeErrMsg)
 					logger.Error("transport decode error, routing to DLQ",
 						"event", e.Name(), "msg_id", msg.ID(), "error", decodeErrMsg)
-					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, errors.New(decodeErrMsg)); dlqErr != nil {
-						logger.Error("DLQ store failed for decode error",
-							"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
+					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, decodeErr); dlqErr != nil {
+						bus.logFallbackDLQ(logger, e.name, msg, decodeErr, dlqErr)
 					}
 					_ = msg.Ack(nil)
 					continue
@@ -583,11 +587,11 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 
 				codec, codecOk := payload.Get(contentType)
 				if !codecOk {
+					contentErr := fmt.Errorf("unknown content type: %s", contentType)
 					logger.Error("unknown content type, routing to DLQ",
 						"event", e.Name(), "msg_id", msg.ID(), "content_type", contentType)
-					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, fmt.Errorf("unknown content type: %s", contentType)); dlqErr != nil {
-						logger.Error("DLQ store failed for content type error",
-							"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
+					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, contentErr); dlqErr != nil {
+						bus.logFallbackDLQ(logger, e.name, msg, contentErr, dlqErr)
 					}
 					_ = msg.Ack(nil)
 					continue
@@ -597,8 +601,7 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 					logger.Error("decode error, routing to DLQ",
 						"event", e.Name(), "msg_id", msg.ID(), "error", err)
 					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, err); dlqErr != nil {
-						logger.Error("DLQ store failed for decode error",
-							"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
+						bus.logFallbackDLQ(logger, e.name, msg, err, dlqErr)
 					}
 					_ = msg.Ack(nil)
 					continue
@@ -632,6 +635,8 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 				return
 			}
 
+			bus.inflightWG.Add(1)
+
 			// Build context and call handler directly (payload already decoded).
 			handlerCtx := contextWithInfoCoalesced(out.msg.Context(), out.msg.ID(), e.name, bus.ID(), sub.ID(), out.msg.Metadata(), out.msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription, out.count)
 			handlerCtx = ContextWithRawPayload(handlerCtx, out.msg.Payload())
@@ -651,6 +656,8 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 			} else {
 				e.handleResult(out.msg, handlerCtx, handlerErr, logger)
 			}
+
+			bus.inflightWG.Done()
 
 			// Signal coalescer that this key is done.
 			select {
@@ -677,17 +684,14 @@ func (e *eventImpl[T]) processMessage(
 
 	// Check for transport-level decode errors
 	if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
+		decodeErr := errors.New(decodeErrMsg)
 		logger.Error("transport decode error, routing to DLQ",
 			"event", e.Name(),
 			"msg_id", msg.ID(),
 			"error", decodeErrMsg)
 
-		if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, errors.New(decodeErrMsg)); dlqErr != nil {
-			logger.Error("DLQ store failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
-				"event", e.Name(),
-				"msg_id", msg.ID(),
-				"dlq_error", dlqErr,
-				"decode_error", decodeErrMsg)
+		if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, decodeErr); dlqErr != nil {
+			bus.logFallbackDLQ(logger, e.name, msg, decodeErr, dlqErr)
 		}
 		_ = msg.Ack(nil)
 		return
@@ -713,17 +717,14 @@ func (e *eventImpl[T]) processMessage(
 
 	codec, codecOk := payload.Get(contentType)
 	if !codecOk {
+		contentErr := fmt.Errorf("unknown content type: %s", contentType)
 		logger.Error("unknown content type, routing to DLQ",
 			"event", e.Name(),
 			"msg_id", msg.ID(),
 			"content_type", contentType)
 
-		if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, fmt.Errorf("unknown content type: %s", contentType)); dlqErr != nil {
-			logger.Error("DLQ store failed for content type error, acknowledging to prevent infinite loop (potential data loss)",
-				"event", e.Name(),
-				"msg_id", msg.ID(),
-				"dlq_error", dlqErr,
-				"content_type", contentType)
+		if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, contentErr); dlqErr != nil {
+			bus.logFallbackDLQ(logger, e.name, msg, contentErr, dlqErr)
 		}
 		if !bestEffort {
 			_ = msg.Ack(nil)
@@ -740,11 +741,7 @@ func (e *eventImpl[T]) processMessage(
 				"error", err)
 
 			if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, err); dlqErr != nil {
-				logger.Error("DLQ store failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
-					"event", e.Name(),
-					"msg_id", msg.ID(),
-					"dlq_error", dlqErr,
-					"decode_error", err)
+				bus.logFallbackDLQ(logger, e.name, msg, err, dlqErr)
 			}
 			if !bestEffort {
 				_ = msg.Ack(nil)

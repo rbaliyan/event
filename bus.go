@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -40,6 +41,8 @@ type Bus struct {
 	id              string
 	name            string
 	shutdownChan    chan struct{}
+	inflightWG      sync.WaitGroup
+	drainTimeout    time.Duration
 	transport       transport.Transport
 	logger          *slog.Logger
 	tracingEnabled  bool
@@ -91,6 +94,7 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		status:           busRunning,
 		id:               NewID(),
 		shutdownChan:     make(chan struct{}),
+		drainTimeout:     o.drainTimeout,
 		transport:        transport,
 		logger:           o.logger.With("component", "bus>"+name),
 		tracingEnabled:   o.tracingEnabled,
@@ -210,6 +214,22 @@ func (b *Bus) sendToDLQ(ctx context.Context, eventName string, msg transport.Mes
 	})
 }
 
+// logFallbackDLQ logs the full raw message as a structured log entry when both
+// decode fails and DLQ storage fails. This provides a last-resort recovery path
+// via centralized logging (e.g., CloudWatch, Datadog, ELK).
+func (b *Bus) logFallbackDLQ(logger *slog.Logger, eventName string, msg transport.Message, decodeErr, dlqErr error) {
+	logger.Error("DLQ_FALLBACK: message preserved in log after DLQ store failure",
+		"event", eventName,
+		"msg_id", msg.ID(),
+		"payload_b64", base64.StdEncoding.EncodeToString(msg.Payload()),
+		"metadata", msg.Metadata(),
+		"decode_error", decodeErr,
+		"dlq_error", dlqErr,
+		"retry_count", msg.RetryCount(),
+		"timestamp", msg.Timestamp(),
+	)
+}
+
 // SupportsRedelivery returns true if the underlying transport supports
 // automatic re-delivery of unacknowledged messages.
 // Returns false if transport does not implement transport.Redeliverable.
@@ -240,6 +260,22 @@ func (b *Bus) Close(ctx context.Context) error {
 
 	// Signal all subscriber goroutines to stop
 	close(b.shutdownChan)
+
+	// Wait for in-flight message handlers to complete
+	if b.drainTimeout > 0 {
+		done := make(chan struct{})
+		go func() {
+			b.inflightWG.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			b.logger.Info("all in-flight handlers completed")
+		case <-time.After(b.drainTimeout):
+			b.logger.Warn("drain timeout exceeded, proceeding with shutdown",
+				"timeout", b.drainTimeout)
+		}
+	}
 
 	var errs []error
 
