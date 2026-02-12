@@ -2,6 +2,9 @@ package distributed
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,19 +13,30 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-// Default collection name for state storage
-const DefaultStateCollection = "_message_state"
+const (
+	// defaultStateCollection is the default MongoDB collection name for state storage.
+	defaultStateCollection = "_message_state"
+
+	// MongoDB document status values.
+	statusProcessing = "processing"
+	statusCompleted  = "completed"
+	statusReleased   = "released"
+)
 
 // stateDocument represents a state record in MongoDB.
 type stateDocument struct {
-	ID        string    `bson:"_id"`
-	Status    string    `bson:"status"`
-	ExpiresAt time.Time `bson:"expires_at"`
-	CreatedAt time.Time `bson:"created_at"`
-	UpdatedAt time.Time `bson:"updated_at"`
+	ID        string            `bson:"_id"`
+	Status    string            `bson:"status"`
+	WorkerID  string            `bson:"worker_id,omitempty"`
+	ExpiresAt time.Time         `bson:"expires_at"`
+	CreatedAt time.Time         `bson:"created_at"`
+	UpdatedAt time.Time         `bson:"updated_at"`
+	Payload   []byte            `bson:"payload,omitempty"`
+	Metadata  map[string]string `bson:"metadata,omitempty"`
+	EventName string            `bson:"event_name,omitempty"`
 }
 
-// MongoStateManager implements StateManager using MongoDB for distributed deployments.
+// MongoStateManager implements Coordinator and PayloadStore using MongoDB for distributed deployments.
 //
 // MongoStateManager uses MongoDB's atomic findOneAndUpdate with conditional filters
 // for race-condition-free message state management. This is ideal when you're already
@@ -39,7 +53,7 @@ type stateDocument struct {
 // Features:
 //   - Atomic state acquisition using findOneAndUpdate with upsert
 //   - Automatic expiration using MongoDB TTL indexes
-//   - Configurable database and collection for multi-tenant deployments
+//   - Configurable collection for multi-tenant deployments
 //   - Optional capped collection for high-throughput scenarios
 //   - Supports MongoDB replica sets and sharded clusters
 //
@@ -50,6 +64,7 @@ type stateDocument struct {
 //	{
 //	    "_id": "msg-123",           // Message ID
 //	    "status": "processing",     // "processing" or "completed"
+//	    "worker_id": "a1b2c3...",   // Unique per Acquire call
 //	    "expires_at": ISODate(...), // TTL expiration
 //	    "created_at": ISODate(...),
 //	    "updated_at": ISODate(...)
@@ -67,8 +82,10 @@ type stateDocument struct {
 //
 // For high-throughput scenarios, you can use a capped collection:
 //
-//	sm := distributed.NewMongoStateManager(db).
-//	    WithCapped(100*1024*1024, 100000) // 100MB, 100k docs max
+//	sm := distributed.NewMongoStateManager(db,
+//	    distributed.WithCollection("state_buffer"),
+//	    distributed.WithCapped(100*1024*1024, 100000), // 100MB, 100k docs max
+//	)
 //	sm.CreateCollection(ctx) // Creates capped collection
 //
 // IMPORTANT: Capped collections have limitations:
@@ -83,18 +100,15 @@ type stateDocument struct {
 //	sm.EnsureIndexes(ctx)
 //
 //	// With custom collection
-//	sm := distributed.NewMongoStateManager(db).
-//	    WithCollection("my_states")
-//
-//	// With custom database and collection
-//	sm := distributed.NewMongoStateManager(db).
-//	    WithDatabase(client.Database("other_db")).
-//	    WithCollection("my_states")
+//	sm := distributed.NewMongoStateManager(db,
+//	    distributed.WithCollection("my_states"),
+//	)
 //
 //	// With capped collection for high throughput
-//	sm := distributed.NewMongoStateManager(db).
-//	    WithCollection("state_buffer").
-//	    WithCapped(100*1024*1024, 0) // 100MB, unlimited docs
+//	sm := distributed.NewMongoStateManager(db,
+//	    distributed.WithCollection("state_buffer"),
+//	    distributed.WithCapped(100*1024*1024, 0), // 100MB, unlimited docs
+//	)
 //	sm.CreateCollection(ctx)
 //
 //	// Use with middleware
@@ -118,9 +132,9 @@ type MongoStateManager struct {
 //
 // Parameters:
 //   - db: A connected MongoDB database
+//   - opts: Optional configuration (WithCollection, WithCapped, WithCompletedTTL)
 //
 // Returns a configured MongoStateManager ready for use.
-// Use WithDatabase() and WithCollection() to customize storage location.
 //
 // Example:
 //
@@ -128,102 +142,30 @@ type MongoStateManager struct {
 //	sm := distributed.NewMongoStateManager(db)
 //
 //	// With custom collection
-//	sm := distributed.NewMongoStateManager(db).
-//	    WithCollection("worker_state")
+//	sm := distributed.NewMongoStateManager(db,
+//	    distributed.WithCollection("worker_state"),
+//	)
 //
 //	// Don't forget to create indexes for TTL cleanup
 //	sm.EnsureIndexes(ctx)
-func NewMongoStateManager(db *mongo.Database) *MongoStateManager {
-	opts := defaultStateOptions()
+func NewMongoStateManager(db *mongo.Database, opts ...Option) *MongoStateManager {
+	o := defaultStateOptions()
+	for _, opt := range opts {
+		opt(o)
+	}
+
+	collName := defaultStateCollection
+	if o.collectionName != "" {
+		collName = o.collectionName
+	}
 
 	return &MongoStateManager{
-		collection:    db.Collection(DefaultStateCollection),
-		completionTTL: opts.completionTTL,
+		collection:    db.Collection(collName),
+		completionTTL: o.completionTTL,
+		capped:        o.capped,
+		cappedSize:    o.cappedSize,
+		cappedMaxDocs: o.cappedMaxDocs,
 	}
-}
-
-// WithDatabase sets a different database for state storage.
-//
-// Use this when you want to store states in a different database than
-// the one used for your main application data.
-//
-// Example:
-//
-//	sm := distributed.NewMongoStateManager(appDB).
-//	    WithDatabase(client.Database("state_db"))
-func (s *MongoStateManager) WithDatabase(db *mongo.Database) *MongoStateManager {
-	s.collection = db.Collection(s.collection.Name())
-	return s
-}
-
-// WithCollection sets a custom collection name for state storage.
-//
-// Default: "_message_state"
-//
-// Example:
-//
-//	sm := distributed.NewMongoStateManager(db).
-//	    WithCollection("worker_state")
-func (s *MongoStateManager) WithCollection(name string) *MongoStateManager {
-	s.collection = s.collection.Database().Collection(name)
-	return s
-}
-
-// WithCompletedTTL sets how long to remember completed messages.
-//
-// After a message is completed, its ID is remembered for this duration
-// to prevent reprocessing if the same message is delivered again.
-//
-// Default: 24 hours
-func (s *MongoStateManager) WithCompletedTTL(ttl time.Duration) *MongoStateManager {
-	if ttl > 0 {
-		s.completionTTL = ttl
-	}
-	return s
-}
-
-// Collection returns the underlying MongoDB collection.
-func (s *MongoStateManager) Collection() *mongo.Collection {
-	return s.collection
-}
-
-// WithCapped enables capped collection mode for high-throughput scenarios.
-//
-// Capped collections are fixed-size collections that automatically remove
-// the oldest documents when the size limit is reached. This provides:
-//   - Very high write throughput
-//   - Automatic cleanup without TTL indexes
-//   - Predictable storage size
-//
-// Parameters:
-//   - sizeBytes: Maximum collection size in bytes (required, minimum 4096)
-//   - maxDocs: Maximum number of documents (0 = unlimited, size-based only)
-//
-// IMPORTANT LIMITATIONS:
-//   - Reset() becomes a no-op (MongoDB doesn't allow deletes in capped collections)
-//   - No TTL index support (EnsureIndexes skips TTL index for capped collections)
-//   - Failed states wait for size-based removal, not time-based expiration
-//   - Updates cannot increase document size
-//
-// After calling WithCapped(), you must call CreateCollection() to create
-// the capped collection before using the state manager.
-//
-// Example:
-//
-//	sm := distributed.NewMongoStateManager(db).
-//	    WithCollection("state_buffer").
-//	    WithCapped(100*1024*1024, 100000) // 100MB, max 100k docs
-//	sm.CreateCollection(ctx) // Creates the capped collection
-func (s *MongoStateManager) WithCapped(sizeBytes int64, maxDocs int64) *MongoStateManager {
-	s.capped = true
-	s.cappedSize = sizeBytes
-	s.cappedMaxDocs = maxDocs
-	return s
-}
-
-// IsCapped returns true if capped collection mode is enabled.
-func (s *MongoStateManager) IsCapped() bool {
-	return s.capped
 }
 
 // CreateCollection creates the state collection.
@@ -236,8 +178,9 @@ func (s *MongoStateManager) IsCapped() bool {
 //
 // Example:
 //
-//	sm := distributed.NewMongoStateManager(db).
-//	    WithCapped(100*1024*1024, 0)
+//	sm := distributed.NewMongoStateManager(db,
+//	    distributed.WithCapped(100*1024*1024, 0),
+//	)
 //	if err := sm.CreateCollection(ctx); err != nil {
 //	    log.Fatal("failed to create collection:", err)
 //	}
@@ -279,19 +222,22 @@ func isNamespaceExistsError(err error) bool {
 	return false
 }
 
+// generateWorkerID creates a unique identifier for an Acquire call.
+func generateWorkerID() string {
+	b := make([]byte, 12)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 // Acquire atomically transitions a message to "processing" state using MongoDB findOneAndUpdate.
 //
 // The transition is atomic: the update only succeeds if:
 //   - The document doesn't exist (new state), OR
 //   - The existing state has expired (TTL passed)
 //
-// MongoDB query:
-//
-//	findOneAndUpdate(
-//	    {$or: [{_id: msgID, expires_at: {$lt: now}}, {_id: msgID, status: {$exists: false}}]},
-//	    {$set: {status: "processing", expires_at: now+ttl, ...}},
-//	    {upsert: true}
-//	)
+// Each Acquire call generates a unique worker_id stored in the document.
+// After the atomic update, the returned document's worker_id is compared
+// against the caller's to confirm ownership (deterministic, no timing races).
 //
 // Parameters:
 //   - ctx: Context for cancellation
@@ -305,19 +251,20 @@ func isNamespaceExistsError(err error) bool {
 func (s *MongoStateManager) Acquire(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
 	now := time.Now()
 	expiresAt := now.Add(ttl)
+	workerID := generateWorkerID()
 
-	// Atomic upsert: only succeeds if document doesn't exist OR has expired
 	filter := bson.M{
 		"_id": messageID,
 		"$or": []bson.M{
-			{"expires_at": bson.M{"$lt": now}},   // Expired state
-			{"status": bson.M{"$exists": false}}, // New document (shouldn't happen with upsert, but safe)
+			{"expires_at": bson.M{"$lt": now}},
+			{"status": bson.M{"$exists": false}},
 		},
 	}
 
 	update := bson.M{
 		"$set": bson.M{
-			"status":     "processing",
+			"status":     statusProcessing,
+			"worker_id":  workerID,
 			"expires_at": expiresAt,
 			"updated_at": now,
 		},
@@ -335,57 +282,25 @@ func (s *MongoStateManager) Acquire(ctx context.Context, messageID string, ttl t
 
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
-			// Document exists with active state - another worker acquired it
 			return false, nil
 		}
-		if err == mongo.ErrNoDocuments {
-			// This can happen if the filter didn't match (active state exists)
-			// Check if document exists with active status
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			// ErrNoDocuments with upsert=true means the filter didn't match
+			// (active non-expired state exists) AND a concurrent insert on
+			// the _id unique index prevented the upsert. Verify the existing
+			// state is still active, otherwise retry with a direct insert.
 			var existing stateDocument
 			findErr := s.collection.FindOne(ctx, bson.M{"_id": messageID}).Decode(&existing)
 			if findErr == nil && existing.ExpiresAt.After(now) {
-				// Active state exists
 				return false, nil
 			}
-			// No document or expired - try insert
-			return s.tryInsert(ctx, messageID, ttl)
+			return s.tryInsert(ctx, messageID, ttl, workerID)
 		}
 		return false, fmt.Errorf("mongodb find and update: %w", err)
 	}
 
-	// Check if we actually got the state (status is processing and our expiry)
-	// Note: MongoDB stores times with millisecond precision, so we truncate before comparing
-	// to avoid false negatives due to nanosecond differences after round-trip.
-	if result.Status == "processing" && result.ExpiresAt.Truncate(time.Millisecond).Equal(expiresAt.Truncate(time.Millisecond)) {
-		return true, nil
-	}
-
-	// Someone else has the state
-	return false, nil
-}
-
-// tryInsert attempts a direct insert when findOneAndUpdate fails.
-func (s *MongoStateManager) tryInsert(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
-	now := time.Now()
-
-	doc := stateDocument{
-		ID:        messageID,
-		Status:    "processing",
-		ExpiresAt: now.Add(ttl),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-
-	_, err := s.collection.InsertOne(ctx, doc)
-	if err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			// Another worker acquired it
-			return false, nil
-		}
-		return false, fmt.Errorf("mongodb insert: %w", err)
-	}
-
-	return true, nil
+	// Check worker_id to confirm we are the one who acquired the state
+	return result.WorkerID == workerID, nil
 }
 
 // MarkProcessed transitions a message to "completed" state.
@@ -405,7 +320,7 @@ func (s *MongoStateManager) MarkProcessed(ctx context.Context, messageID string)
 	filter := bson.M{"_id": messageID}
 	update := bson.M{
 		"$set": bson.M{
-			"status":     "completed",
+			"status":     statusCompleted,
 			"expires_at": now.Add(s.completionTTL),
 			"updated_at": now,
 		},
@@ -442,7 +357,7 @@ func (s *MongoStateManager) Reset(ctx context.Context, messageID string) error {
 		filter := bson.M{"_id": messageID}
 		update := bson.M{
 			"$set": bson.M{
-				"status":     "released",
+				"status":     statusReleased,
 				"expires_at": now, // Set to now so it's immediately reacquirable
 				"updated_at": now,
 			},
@@ -482,7 +397,7 @@ func (s *MongoStateManager) ListStale(ctx context.Context, staleTimeout time.Dur
 	cutoff := time.Now().Add(-staleTimeout)
 
 	filter := bson.M{
-		"status":     "processing",
+		"status":     statusProcessing,
 		"updated_at": bson.M{"$lt": cutoff},
 	}
 
@@ -527,19 +442,25 @@ func (s *MongoStateManager) ListStale(ctx context.Context, staleTimeout time.Dur
 //
 // Returns the number of states reset.
 func (s *MongoStateManager) ResetStale(ctx context.Context, staleTimeout time.Duration, limit int) (int64, error) {
-	cutoff := time.Now().Add(-staleTimeout)
-
-	filter := bson.M{
-		"status":     "processing",
-		"updated_at": bson.M{"$lt": cutoff},
+	// Use ListStale to get the bounded set of stale IDs, then reset them.
+	// This ensures the limit is always respected (MongoDB's DeleteMany and
+	// UpdateMany do not natively support a limit clause).
+	stale, err := s.ListStale(ctx, staleTimeout, limit)
+	if err != nil {
+		return 0, err
 	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+
+	filter := bson.M{"_id": bson.M{"$in": stale}}
 
 	if s.capped {
 		// Capped collections don't support deletes, update status instead
 		now := time.Now()
 		update := bson.M{
 			"$set": bson.M{
-				"status":     "released",
+				"status":     statusReleased,
 				"expires_at": now,
 				"updated_at": now,
 			},
@@ -556,6 +477,115 @@ func (s *MongoStateManager) ResetStale(ctx context.Context, staleTimeout time.Du
 		return 0, fmt.Errorf("mongodb delete stale: %w", err)
 	}
 	return result.DeletedCount, nil
+}
+
+// tryInsert attempts a direct insert when findOneAndUpdate fails.
+func (s *MongoStateManager) tryInsert(ctx context.Context, messageID string, ttl time.Duration, workerID string) (bool, error) {
+	now := time.Now()
+
+	doc := stateDocument{
+		ID:        messageID,
+		Status:    statusProcessing,
+		WorkerID:  workerID,
+		ExpiresAt: now.Add(ttl),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	_, err := s.collection.InsertOne(ctx, doc)
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("mongodb insert: %w", err)
+	}
+
+	return true, nil
+}
+
+// StorePayload persists message payload alongside state for recovery re-publishing.
+// Uses $set to atomically update the same document that Acquire created.
+func (s *MongoStateManager) StorePayload(ctx context.Context, messageID string, data *MessageData) error {
+	if data == nil || len(data.Payload) == 0 {
+		return nil
+	}
+
+	setFields := bson.M{
+		"payload": data.Payload,
+	}
+	if len(data.Metadata) > 0 {
+		setFields["metadata"] = data.Metadata
+	}
+	if data.EventName != "" {
+		setFields["event_name"] = data.EventName
+	}
+
+	_, err := s.collection.UpdateOne(ctx, bson.M{"_id": messageID}, bson.M{"$set": setFields})
+	if err != nil {
+		return fmt.Errorf("mongodb store payload: %w", err)
+	}
+	return nil
+}
+
+// LoadStalePayloads returns stale messages that have stored payload.
+func (s *MongoStateManager) LoadStalePayloads(ctx context.Context, staleTimeout time.Duration, limit int) ([]*StaleMessage, error) {
+	cutoff := time.Now().Add(-staleTimeout)
+
+	// Only return entries that have payload stored
+	filter := bson.M{
+		"status":     statusProcessing,
+		"updated_at": bson.M{"$lt": cutoff},
+		"payload":    bson.M{"$exists": true},
+	}
+
+	opts := options.Find()
+	if limit > 0 {
+		opts.SetLimit(int64(limit))
+	}
+
+	cursor, err := s.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("mongodb find stale payloads: %w", err)
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+
+	var results []*StaleMessage
+	for cursor.Next(ctx) {
+		var doc stateDocument
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+		results = append(results, &StaleMessage{
+			MessageID: doc.ID,
+			Data: MessageData{
+				Payload:   doc.Payload,
+				Metadata:  doc.Metadata,
+				EventName: doc.EventName,
+			},
+			CreatedAt: doc.CreatedAt,
+		})
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("mongodb cursor: %w", err)
+	}
+
+	return results, nil
+}
+
+// ClearPayload removes stored payload for a message.
+func (s *MongoStateManager) ClearPayload(ctx context.Context, messageID string) error {
+	_, err := s.collection.UpdateOne(ctx, bson.M{"_id": messageID}, bson.M{
+		"$unset": bson.M{
+			"payload":    "",
+			"metadata":   "",
+			"event_name": "",
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("mongodb clear payload: %w", err)
+	}
+	return nil
 }
 
 // EnsureIndexes creates the necessary indexes for the state collection.
@@ -609,14 +639,24 @@ func (s *MongoStateManager) Indexes() []mongo.IndexModel {
 		}
 	}
 
-	// Regular collection with TTL index
+	// Regular collection with TTL index and compound index for stale detection
 	return []mongo.IndexModel{
 		{
 			Keys:    bson.D{{Key: "expires_at", Value: 1}},
 			Options: options.Index().SetExpireAfterSeconds(0),
 		},
+		{
+			Keys: bson.D{
+				{Key: "status", Value: 1},
+				{Key: "updated_at", Value: 1},
+			},
+		},
 	}
 }
 
-// Compile-time interface check
-var _ StateManager = (*MongoStateManager)(nil)
+// Compile-time interface checks
+var (
+	_ Coordinator   = (*MongoStateManager)(nil)
+	_ PayloadStore  = (*MongoStateManager)(nil)
+	_ StaleResetter = (*MongoStateManager)(nil)
+)

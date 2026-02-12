@@ -19,9 +19,10 @@ type stateEntry struct {
 	state     stateValue
 	expiresAt time.Time
 	updatedAt time.Time
+	payload   *MessageData // optional payload for recovery re-publishing
 }
 
-// MemoryStateManager implements StateManager using in-memory storage.
+// MemoryStateManager implements Coordinator and PayloadStore using in-memory storage.
 //
 // MemoryStateManager is suitable for:
 //   - Single-instance deployments where only one process handles messages
@@ -46,7 +47,6 @@ type stateEntry struct {
 //
 //	// With custom options
 //	sm := distributed.NewMemoryStateManager(
-//	    distributed.WithStateTTL(5*time.Minute),
 //	    distributed.WithCompletedTTL(24*time.Hour),
 //	)
 //
@@ -214,6 +214,53 @@ func (s *MemoryStateManager) ListStale(_ context.Context, staleTimeout time.Dura
 	return stale, nil
 }
 
+// StorePayload persists payload alongside a message ID.
+func (s *MemoryStateManager) StorePayload(_ context.Context, messageID string, data *MessageData) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if entry, exists := s.states[messageID]; exists {
+		entry.payload = data
+	}
+	return nil
+}
+
+// LoadStalePayloads returns stale messages that have stored payload.
+func (s *MemoryStateManager) LoadStalePayloads(_ context.Context, staleTimeout time.Duration, limit int) ([]*StaleMessage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cutoff := time.Now().Add(-staleTimeout)
+	var result []*StaleMessage
+
+	for id, entry := range s.states {
+		if entry.state == stateProcessing && entry.updatedAt.Before(cutoff) && entry.payload != nil {
+			sm := &StaleMessage{
+				MessageID: id,
+				Data:      *entry.payload,
+				CreatedAt: entry.updatedAt,
+			}
+			result = append(result, sm)
+			if limit > 0 && len(result) >= limit {
+				break
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// ClearPayload removes stored payload for a message.
+func (s *MemoryStateManager) ClearPayload(_ context.Context, messageID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if entry, exists := s.states[messageID]; exists {
+		entry.payload = nil
+	}
+	return nil
+}
+
 // ResetStale resets all stale states, allowing them to be reacquired.
 //
 // This is a convenience method that combines ListStale and Reset.
@@ -289,5 +336,9 @@ func (s *MemoryStateManager) cleanupExpired() {
 	}
 }
 
-// Compile-time interface check
-var _ StateManager = (*MemoryStateManager)(nil)
+// Compile-time interface checks
+var (
+	_ Coordinator   = (*MemoryStateManager)(nil)
+	_ PayloadStore  = (*MemoryStateManager)(nil)
+	_ StaleResetter = (*MemoryStateManager)(nil)
+)

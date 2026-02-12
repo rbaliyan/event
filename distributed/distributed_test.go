@@ -115,9 +115,6 @@ func TestStateOptions(t *testing.T) {
 	if opts.prefix != "state:" {
 		t.Errorf("expected prefix 'state:', got %q", opts.prefix)
 	}
-	if opts.ttl != 5*time.Minute {
-		t.Errorf("expected ttl 5m, got %v", opts.ttl)
-	}
 	if opts.completionTTL != 24*time.Hour {
 		t.Errorf("expected completionTTL 24h, got %v", opts.completionTTL)
 	}
@@ -128,14 +125,26 @@ func TestStateOptions(t *testing.T) {
 		t.Errorf("expected prefix 'test:', got %q", opts.prefix)
 	}
 
-	WithStateTTL(10 * time.Minute)(opts)
-	if opts.ttl != 10*time.Minute {
-		t.Errorf("expected ttl 10m, got %v", opts.ttl)
-	}
-
 	WithCompletedTTL(48 * time.Hour)(opts)
 	if opts.completionTTL != 48*time.Hour {
 		t.Errorf("expected completionTTL 48h, got %v", opts.completionTTL)
+	}
+
+	// Test MongoDB-specific options
+	WithCollection("custom_states")(opts)
+	if opts.collectionName != "custom_states" {
+		t.Errorf("expected collectionName 'custom_states', got %q", opts.collectionName)
+	}
+
+	WithCapped(1024*1024, 1000)(opts)
+	if !opts.capped {
+		t.Error("expected capped to be true")
+	}
+	if opts.cappedSize != 1024*1024 {
+		t.Errorf("expected cappedSize 1048576, got %d", opts.cappedSize)
+	}
+	if opts.cappedMaxDocs != 1000 {
+		t.Errorf("expected cappedMaxDocs 1000, got %d", opts.cappedMaxDocs)
 	}
 }
 

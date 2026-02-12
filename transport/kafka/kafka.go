@@ -655,8 +655,13 @@ func (h *consumerHandler) ConsumeClaim(session sarama.ConsumerGroupSession, clai
 	}
 }
 
+// SupportsRedelivery returns true because Kafka natively supports
+// re-delivery of uncommitted messages via consumer group offset management.
+func (t *Transport) SupportsRedelivery() bool { return true }
+
 // Compile-time checks
 var _ transport.Transport = (*Transport)(nil)
 var _ transport.HealthChecker = (*Transport)(nil)
 var _ transport.LagMonitor = (*Transport)(nil)
+var _ transport.Redeliverable = (*Transport)(nil)
 var _ transport.Subscription = (*subscription)(nil)

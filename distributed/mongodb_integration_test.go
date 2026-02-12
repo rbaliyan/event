@@ -39,9 +39,10 @@ func setupMongoStateManager(t *testing.T) (*MongoStateManager, func()) {
 	collName := "state_" + time.Now().Format("20060102150405")
 	db := client.Database(dbName)
 
-	sm := NewMongoStateManager(db).
-		WithCollection(collName).
-		WithCompletedTTL(time.Hour)
+	sm := NewMongoStateManager(db,
+		WithCollection(collName),
+		WithCompletedTTL(time.Hour),
+	)
 
 	if err := sm.EnsureIndexes(context.Background()); err != nil {
 		t.Fatalf("failed to ensure indexes: %v", err)
@@ -321,4 +322,96 @@ func TestMongoStateManager_Integration_RecoveryRunner(t *testing.T) {
 	if !acquired {
 		t.Error("expected acquisition to succeed after recovery")
 	}
+}
+
+func TestMongoStateManager_Integration_PayloadRecovery(t *testing.T) {
+	sm, cleanup := setupMongoStateManager(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Track re-published events
+	pub := &integrationMockPublisher{}
+
+	runner := NewRecoveryRunner(sm,
+		WithStaleTimeout(50*time.Millisecond),
+		WithBatchLimit(10),
+		WithPublisher(pub),
+	)
+
+	// Acquire and store payload (simulates middleware with payload storage)
+	acquired, err := sm.Acquire(ctx, "payload-1", time.Hour)
+	if err != nil || !acquired {
+		t.Fatalf("expected acquisition to succeed: acquired=%v err=%v", acquired, err)
+	}
+	err = sm.StorePayload(ctx, "payload-1", &MessageData{
+		Payload:   []byte(`{"order":"abc"}`),
+		Metadata:  map[string]string{"source": "integration-test"},
+		EventName: "order.created",
+	})
+	if err != nil {
+		t.Fatalf("StorePayload failed: %v", err)
+	}
+
+	// Acquire another message without payload (should be reset, not re-published)
+	sm.Acquire(ctx, "no-payload-1", time.Hour)
+
+	// Wait for both to become stale
+	time.Sleep(100 * time.Millisecond)
+
+	// Phase 1: re-publish payload entry, Phase 2: reset no-payload entry
+	recovered, err := runner.RecoverOnce(ctx)
+	if err != nil {
+		t.Fatalf("RecoverOnce failed: %v", err)
+	}
+	if recovered != 2 {
+		t.Fatalf("expected 2 recovered, got %d", recovered)
+	}
+
+	// Publisher should have been called once (for payload-1)
+	if len(pub.calls) != 1 {
+		t.Fatalf("expected 1 publish call, got %d", len(pub.calls))
+	}
+	if pub.calls[0].eventName != "order.created" {
+		t.Errorf("expected event name 'order.created', got %q", pub.calls[0].eventName)
+	}
+	if string(pub.calls[0].payload) != `{"order":"abc"}` {
+		t.Errorf("unexpected payload: %s", pub.calls[0].payload)
+	}
+
+	// payload-1 should be marked as processed (not acquirable)
+	acquired, _ = sm.Acquire(ctx, "payload-1", time.Hour)
+	if acquired {
+		t.Error("expected payload-1 to NOT be acquirable after recovery (marked processed)")
+	}
+
+	// no-payload-1 should be acquirable after reset
+	acquired, _ = sm.Acquire(ctx, "no-payload-1", time.Hour)
+	if !acquired {
+		t.Error("expected no-payload-1 to be acquirable after reset")
+	}
+}
+
+// integrationMockPublisher records published events for test verification.
+// Uses mockPublishCall to avoid collision with payload_test.go types
+// (both compile together under -tags=integration).
+type integrationMockPublisher struct {
+	calls []mockPublishCall
+}
+
+type mockPublishCall struct {
+	eventName string
+	eventID   string
+	payload   []byte
+	metadata  map[string]string
+}
+
+func (p *integrationMockPublisher) Send(_ context.Context, eventName, eventID string, payload []byte, metadata map[string]string) error {
+	p.calls = append(p.calls, mockPublishCall{
+		eventName: eventName,
+		eventID:   eventID,
+		payload:   payload,
+		metadata:  metadata,
+	})
+	return nil
 }

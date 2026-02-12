@@ -2,10 +2,50 @@ package distributed
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/rbaliyan/event/v3"
 )
+
+// PoolOption configures WorkerPoolMiddleware behavior.
+type PoolOption func(*poolOptions)
+
+type poolOptions struct {
+	storePayload   *bool // nil = auto-detect from transport, non-nil = explicit
+	maxPayloadSize int   // 0 = no limit
+}
+
+// WithPayloadRecovery explicitly enables payload storage for recovery.
+//
+// When enabled, the middleware stores message payload alongside state so that
+// the RecoveryRunner can re-publish events if the worker crashes. This is
+// required for transports that don't support re-delivery (e.g., MongoDB
+// Change Streams).
+//
+// By default, payload storage is auto-detected from the transport's
+// SupportsRedelivery() capability. Use this option to override the detection
+// or to make the behavior deterministic at construction time.
+func WithPayloadRecovery() PoolOption {
+	return func(o *poolOptions) {
+		t := true
+		o.storePayload = &t
+	}
+}
+
+// WithMaxPayloadSize sets the maximum payload size (in bytes) that will be
+// stored for recovery. If a message payload exceeds this limit, the middleware
+// falls back to regular Acquire without payload storage and logs a warning.
+//
+// Default: 0 (no limit). MongoDB's document limit is 16MB which provides
+// a natural ceiling for MongoDB-backed state managers.
+func WithMaxPayloadSize(size int) PoolOption {
+	return func(o *poolOptions) {
+		if size > 0 {
+			o.maxPayloadSize = size
+		}
+	}
+}
 
 // WorkerPoolMiddleware creates middleware that emulates WorkerPool mode
 // on Broadcast-only transports using atomic database state transitions.
@@ -28,7 +68,7 @@ import (
 //   - Adding worker semantics to existing Broadcast subscriptions
 //
 // Parameters:
-//   - sm: A StateManager implementation (RedisStateManager for distributed)
+//   - coord: A Coordinator implementation (RedisStateManager for distributed)
 //   - stateTTL: How long to hold the state (should exceed handler timeout)
 //
 // Example:
@@ -76,8 +116,27 @@ import (
 //
 //	orderEvent.Subscribe(ctx, collectAnalytics,
 //	    event.WithMiddleware(distributed.WorkerPoolMiddleware[Order](smB, ttl)))
-func WorkerPoolMiddleware[T any](sm StateManager, stateTTL time.Duration) event.Middleware[T] {
+func WorkerPoolMiddleware[T any](coord Coordinator, stateTTL time.Duration, opts ...PoolOption) event.Middleware[T] {
+	o := &poolOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
+
+	// Check if coordinator also implements PayloadStore
+	ps, hasPayloadStore := coord.(PayloadStore)
+
 	return func(next event.Handler[T]) event.Handler[T] {
+		// Track whether the transport supports redelivery
+		var (
+			detectOnce   sync.Once
+			storePayload bool // true when transport lacks redelivery
+		)
+
+		// If explicitly configured, set immediately (no auto-detection needed)
+		if o.storePayload != nil {
+			storePayload = *o.storePayload
+		}
+
 		return func(ctx context.Context, ev event.Event[T], data T) error {
 			// Get message ID from context
 			messageID := event.ContextEventID(ctx)
@@ -87,8 +146,18 @@ func WorkerPoolMiddleware[T any](sm StateManager, stateTTL time.Duration) event.
 				return next(ctx, ev, data)
 			}
 
+			// Auto-detect transport capability once per subscriber (skipped if explicit)
+			if o.storePayload == nil {
+				detectOnce.Do(func() {
+					bus := event.ContextBus(ctx)
+					if bus != nil && !bus.SupportsRedelivery() {
+						storePayload = true
+					}
+				})
+			}
+
 			// Attempt to acquire the message state
-			acquired, err := sm.Acquire(ctx, messageID, stateTTL)
+			acquired, err := coord.Acquire(ctx, messageID, stateTTL)
 			if err != nil {
 				// State manager error - log and proceed with processing (fail open)
 				// This prevents message loss at the cost of potential duplicates
@@ -103,7 +172,6 @@ func WorkerPoolMiddleware[T any](sm StateManager, stateTTL time.Duration) event.
 
 			if !acquired {
 				// Another worker already acquired this message - skip silently
-				// Return nil to acknowledge the message without processing
 				logger := event.ContextLogger(ctx)
 				if logger != nil {
 					logger.Debug("message acquired by another worker, skipping",
@@ -112,13 +180,48 @@ func WorkerPoolMiddleware[T any](sm StateManager, stateTTL time.Duration) event.
 				return nil
 			}
 
+			// Store payload for recovery if needed (after successful acquire)
+			payloadStored := false
+			if storePayload && hasPayloadStore {
+				payload := event.ContextRawPayload(ctx)
+
+				if o.maxPayloadSize > 0 && len(payload) > o.maxPayloadSize {
+					logger := event.ContextLogger(ctx)
+					if logger != nil {
+						logger.Warn("payload exceeds max size, skipping payload storage",
+							"message_id", messageID,
+							"payload_size", len(payload),
+							"max_size", o.maxPayloadSize)
+					}
+				} else if len(payload) > 0 {
+					msgData := &MessageData{
+						Payload:   payload,
+						Metadata:  event.ContextMetadata(ctx),
+						EventName: event.ContextName(ctx),
+					}
+					if storeErr := ps.StorePayload(ctx, messageID, msgData); storeErr != nil {
+						logger := event.ContextLogger(ctx)
+						if logger != nil {
+							logger.Warn("failed to store payload for recovery",
+								"message_id", messageID,
+								"error", storeErr)
+						}
+					} else {
+						payloadStored = true
+					}
+				}
+			}
+
 			// We acquired the message state - process it
 			handlerErr := next(ctx, ev, data)
 
 			// Record result
 			if handlerErr == nil {
-				// Success - mark as processed
-				if markErr := sm.MarkProcessed(ctx, messageID); markErr != nil {
+				// Success - mark as processed and clear payload if stored
+				if payloadStored {
+					_ = ps.ClearPayload(ctx, messageID)
+				}
+				if markErr := coord.MarkProcessed(ctx, messageID); markErr != nil {
 					logger := event.ContextLogger(ctx)
 					if logger != nil {
 						logger.Warn("failed to mark message as processed",
@@ -127,13 +230,28 @@ func WorkerPoolMiddleware[T any](sm StateManager, stateTTL time.Duration) event.
 					}
 				}
 			} else {
-				// Failure - reset state for another worker to retry
-				if resetErr := sm.Reset(ctx, messageID); resetErr != nil {
+				// Failure — decide whether to reset or leave for recovery.
+				// When payload was stored, the transport cannot redeliver the
+				// original message. Calling Reset would delete the stored payload,
+				// permanently losing the event. Leave the state in "processing"
+				// so RecoveryRunner can find it via LoadStalePayloads and
+				// re-publish with the stored payload.
+				if payloadStored {
 					logger := event.ContextLogger(ctx)
 					if logger != nil {
-						logger.Warn("failed to reset message state",
+						logger.Info("handler failed, leaving state for recovery re-publish",
 							"message_id", messageID,
-							"error", resetErr)
+							"error", handlerErr)
+					}
+				} else {
+					// No stored payload — safe to reset for immediate retry
+					if resetErr := coord.Reset(ctx, messageID); resetErr != nil {
+						logger := event.ContextLogger(ctx)
+						if logger != nil {
+							logger.Warn("failed to reset message state",
+								"message_id", messageID,
+								"error", resetErr)
+						}
 					}
 				}
 			}
