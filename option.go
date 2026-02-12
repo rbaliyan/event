@@ -52,7 +52,6 @@ type eventOptions struct {
 	subTimeout         time.Duration
 	onError            func(*Bus, string, error)
 	maxRetries         int                                                             // Max retry attempts (0 = unlimited)
-	dlqHandler         func(ctx context.Context, msg message.Message, err error) error // Dead letter queue handler (returns error if storage fails)
 	payloadCodec       payload.Codec                                                   // Payload codec (nil = use JSON default)
 	messageFilter      func(map[string]string) bool                                    // Pre-decode message filter (nil = accept all)
 	decodeErrorHandler func(ctx context.Context, msg message.Message, err error) error // Decode error handler (nil = default DLQ+ack)
@@ -109,41 +108,6 @@ func WithMaxRetries(maxRetries int) Option {
 	return func(o *eventOptions) {
 		if maxRetries >= 0 {
 			o.maxRetries = maxRetries
-		}
-	}
-}
-
-// WithDeadLetterQueue configures a handler for messages that fail permanently.
-// Messages are sent to DLQ when:
-//   - Handler returns ErrReject
-//   - Max retries are exhausted (if WithMaxRetries is set)
-//   - Message decode fails (malformed message)
-//
-// The handler receives the original message and the last error.
-// IMPORTANT: If the DLQ handler returns an error, the message will NOT be acknowledged
-// and will be retried. This ensures no message loss if DLQ storage fails.
-//
-// Use this for logging, alerting, or storing failed messages for manual review.
-//
-// Example:
-//
-//	event := New[Order]("orders",
-//	    WithMaxRetries(3),
-//	    WithDeadLetterQueue(func(ctx context.Context, msg Message, err error) error {
-//	        if err := dlqStore.Save(ctx, msg, err); err != nil {
-//	            return err // Don't ACK - retry later
-//	        }
-//	        log.Error("message failed permanently",
-//	            "msg_id", msg.ID(),
-//	            "error", err,
-//	        )
-//	        return nil // ACK - message safely stored
-//	    }),
-//	)
-func WithDeadLetterQueue(handler func(ctx context.Context, msg message.Message, err error) error) Option {
-	return func(o *eventOptions) {
-		if handler != nil {
-			o.dlqHandler = handler
 		}
 	}
 }

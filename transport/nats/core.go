@@ -9,8 +9,8 @@
 //   - Low-latency requirements
 //   - Simple pub/sub without persistence
 //
-// For reliability features (deduplication, DLQ, poison detection), inject
-// optional stores via WithIdempotencyStore(), WithDLQHandler(), etc.
+// For reliability features (deduplication, poison detection), inject
+// optional stores via WithIdempotencyStore(), WithPoisonDetector(), etc.
 package nats
 
 import (
@@ -42,7 +42,6 @@ type CoreTransport struct {
 
 	// Optional reliability stores (library-level features)
 	idempotencyStore IdempotencyStore
-	dlqHandler       DLQHandler
 	poisonDetector   PoisonDetector
 
 	// Subscription management
@@ -62,7 +61,6 @@ type coreSubscription struct {
 
 	// Optional reliability features
 	idempotencyStore IdempotencyStore
-	dlqHandler       DLQHandler
 	poisonDetector   PoisonDetector
 }
 
@@ -79,7 +77,6 @@ type CoreOption func(*CoreTransport)
 //
 //	transport := nats.New(conn,
 //	    nats.WithIdempotencyStore(store),  // Deduplication
-//	    nats.WithDLQHandler(handler),       // Dead letter handling
 //	    nats.WithPoisonDetector(detector),  // Poison message detection
 //	)
 //
@@ -141,10 +138,6 @@ func WithCoreErrorHandler(fn func(error)) CoreOption {
 // This is an alias of transport.IdempotencyStore.
 type IdempotencyStore = transport.IdempotencyStore
 
-// DLQHandler is called when a message fails processing.
-// This is an alias of transport.DLQHandler.
-type DLQHandler = transport.DLQHandler
-
 // PoisonDetector tracks and quarantines repeatedly failing messages.
 // This is an alias of transport.PoisonDetector.
 type PoisonDetector = transport.PoisonDetector
@@ -161,23 +154,6 @@ type PoisonDetector = transport.PoisonDetector
 func WithIdempotencyStore(store IdempotencyStore) CoreOption {
 	return func(t *CoreTransport) {
 		t.idempotencyStore = store
-	}
-}
-
-// WithDLQHandler sets a handler for failed messages.
-//
-// When set, messages that fail processing will be passed to this handler
-// for dead letter queue storage.
-//
-// Example:
-//
-//	handler := func(ctx context.Context, event, msgID string, payload []byte, err error) error {
-//	    return dlqStore.Store(ctx, event, msgID, payload, nil, err, 0, "nats-core")
-//	}
-//	transport := nats.New(conn, nats.WithDLQHandler(handler))
-func WithDLQHandler(handler DLQHandler) CoreOption {
-	return func(t *CoreTransport) {
-		t.dlqHandler = handler
 	}
 }
 
@@ -282,7 +258,6 @@ func (t *CoreTransport) Subscribe(ctx context.Context, name string, opts ...tran
 		Subscription:     base.NewSubscription(subID, bufSize, 0), // No send timeout for Core
 		codec:            t.codec,
 		idempotencyStore: t.idempotencyStore,
-		dlqHandler:       t.dlqHandler,
 		poisonDetector:   t.poisonDetector,
 	}
 

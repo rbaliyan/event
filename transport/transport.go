@@ -507,9 +507,6 @@ type PoisonDetector interface {
 	RecordSuccess(ctx context.Context, messageID string) error
 }
 
-// DLQHandler is called when a message fails processing after max retries.
-type DLQHandler func(ctx context.Context, eventName string, msgID string, payload []byte, err error) error
-
 // Jitter adds randomness to a duration to prevent thundering herd.
 // Returns a duration between d*(1-factor) and d*(1+factor).
 // Factor should be between 0 and 1 (e.g., 0.3 for +/-30% jitter).

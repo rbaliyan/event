@@ -70,7 +70,6 @@ func New[T any](name string, opts ...EventOption) Event[T] {
 		subTimeout:         o.subTimeout,
 		onError:            o.onError,
 		maxRetries:         o.maxRetries,
-		dlqHandler:         o.dlqHandler,
 		payloadCodec:       o.payloadCodec,
 		messageFilter:      o.messageFilter,
 		decodeErrorHandler: o.decodeErrorHandler,
@@ -99,7 +98,6 @@ type eventImpl[T any] struct {
 	subTimeout         time.Duration
 	onError            func(*Bus, string, error)                                       // for panic recovery only
 	maxRetries         int                                                             // max retry attempts (0 = unlimited)
-	dlqHandler         func(ctx context.Context, msg message.Message, err error) error // dead letter queue handler (returns error if storage fails)
 	payloadCodec       payload.Codec                                                   // payload codec (nil = use JSON default)
 	messageFilter      func(map[string]string) bool                                    // pre-decode message filter (nil = accept all)
 	decodeErrorHandler func(ctx context.Context, msg message.Message, err error) error // decode error handler (nil = default DLQ+ack)
@@ -328,8 +326,8 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 			logger.Warn("AckOnReceive with WithMaxRetries: retries will never fire",
 				"event", e.name, "max_retries", e.maxRetries)
 		}
-		if e.dlqHandler != nil {
-			logger.Warn("AckOnReceive with WithDeadLetterQueue: DLQ will never be reached",
+		if bus.dlqStore != nil {
+			logger.Warn("AckOnReceive with DLQ: DLQ will never be reached",
 				"event", e.name)
 		}
 	}
@@ -475,12 +473,9 @@ func (e *eventImpl[T]) subscribeWithRawCoalesce(
 				if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
 					logger.Error("transport decode error, routing to DLQ",
 						"event", e.Name(), "msg_id", msg.ID(), "error", decodeErrMsg)
-					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), sub.ID(), msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-						if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
-							logger.Error("DLQ handler failed for decode error",
-								"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
-						}
+					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, errors.New(decodeErrMsg)); dlqErr != nil {
+						logger.Error("DLQ store failed for decode error",
+							"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
 					}
 					_ = msg.Ack(nil)
 					continue
@@ -565,12 +560,9 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 				if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
 					logger.Error("transport decode error, routing to DLQ",
 						"event", e.Name(), "msg_id", msg.ID(), "error", decodeErrMsg)
-					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), sub.ID(), msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-						if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
-							logger.Error("DLQ handler failed for decode error",
-								"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
-						}
+					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, errors.New(decodeErrMsg)); dlqErr != nil {
+						logger.Error("DLQ store failed for decode error",
+							"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
 					}
 					_ = msg.Ack(nil)
 					continue
@@ -593,12 +585,9 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 				if !codecOk {
 					logger.Error("unknown content type, routing to DLQ",
 						"event", e.Name(), "msg_id", msg.ID(), "content_type", contentType)
-					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), sub.ID(), msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-						if dlqErr := e.dlqHandler(dlqCtx, msg, fmt.Errorf("unknown content type: %s", contentType)); dlqErr != nil {
-							logger.Error("DLQ handler failed for content type error",
-								"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
-						}
+					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, fmt.Errorf("unknown content type: %s", contentType)); dlqErr != nil {
+						logger.Error("DLQ store failed for content type error",
+							"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
 					}
 					_ = msg.Ack(nil)
 					continue
@@ -607,12 +596,9 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 				if err := codec.Decode(msg.Payload(), &typedData); err != nil {
 					logger.Error("decode error, routing to DLQ",
 						"event", e.Name(), "msg_id", msg.ID(), "error", err)
-					if e.dlqHandler != nil {
-						dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), sub.ID(), msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-						if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
-							logger.Error("DLQ handler failed for decode error",
-								"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
-						}
+					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, err); dlqErr != nil {
+						logger.Error("DLQ store failed for decode error",
+							"event", e.Name(), "msg_id", msg.ID(), "dlq_error", dlqErr)
 					}
 					_ = msg.Ack(nil)
 					continue
@@ -696,15 +682,12 @@ func (e *eventImpl[T]) processMessage(
 			"msg_id", msg.ID(),
 			"error", decodeErrMsg)
 
-		if e.dlqHandler != nil {
-			dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-			if dlqErr := e.dlqHandler(dlqCtx, msg, errors.New(decodeErrMsg)); dlqErr != nil {
-				logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
-					"event", e.Name(),
-					"msg_id", msg.ID(),
-					"dlq_error", dlqErr,
-					"decode_error", decodeErrMsg)
-			}
+		if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, errors.New(decodeErrMsg)); dlqErr != nil {
+			logger.Error("DLQ store failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
+				"event", e.Name(),
+				"msg_id", msg.ID(),
+				"dlq_error", dlqErr,
+				"decode_error", decodeErrMsg)
 		}
 		_ = msg.Ack(nil)
 		return
@@ -735,16 +718,12 @@ func (e *eventImpl[T]) processMessage(
 			"msg_id", msg.ID(),
 			"content_type", contentType)
 
-		if e.dlqHandler != nil {
-			dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-			dlqErr := e.dlqHandler(dlqCtx, msg, fmt.Errorf("unknown content type: %s", contentType))
-			if dlqErr != nil {
-				logger.Error("DLQ handler failed for content type error, acknowledging to prevent infinite loop (potential data loss)",
-					"event", e.Name(),
-					"msg_id", msg.ID(),
-					"dlq_error", dlqErr,
-					"content_type", contentType)
-			}
+		if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, fmt.Errorf("unknown content type: %s", contentType)); dlqErr != nil {
+			logger.Error("DLQ store failed for content type error, acknowledging to prevent infinite loop (potential data loss)",
+				"event", e.Name(),
+				"msg_id", msg.ID(),
+				"dlq_error", dlqErr,
+				"content_type", contentType)
 		}
 		if !bestEffort {
 			_ = msg.Ack(nil)
@@ -760,15 +739,12 @@ func (e *eventImpl[T]) processMessage(
 				"msg_id", msg.ID(),
 				"error", err)
 
-			if e.dlqHandler != nil {
-				dlqCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
-				if dlqErr := e.dlqHandler(dlqCtx, msg, err); dlqErr != nil {
-					logger.Error("DLQ handler failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
-						"event", e.Name(),
-						"msg_id", msg.ID(),
-						"dlq_error", dlqErr,
-						"decode_error", err)
-				}
+			if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, err); dlqErr != nil {
+				logger.Error("DLQ store failed for decode error, acknowledging to prevent infinite loop (potential data loss)",
+					"event", e.Name(),
+					"msg_id", msg.ID(),
+					"dlq_error", dlqErr,
+					"decode_error", err)
 			}
 			if !bestEffort {
 				_ = msg.Ack(nil)
@@ -790,9 +766,9 @@ func (e *eventImpl[T]) processMessage(
 
 		result, sendToDLQ := classifyResult(decodeResult, msg.RetryCount(), e.maxRetries)
 
-		if sendToDLQ && e.dlqHandler != nil {
-			if dlqErr := e.dlqHandler(decodeCtx, msg, err); dlqErr != nil {
-				logger.Error("DLQ handler failed for decode error, message will be retried",
+		if sendToDLQ {
+			if dlqErr := bus.sendToDLQ(decodeCtx, e.name, msg, err); dlqErr != nil {
+				logger.Error("DLQ store failed for decode error, message will be retried",
 					"event", e.Name(),
 					"msg_id", msg.ID(),
 					"error", dlqErr,
@@ -839,17 +815,20 @@ func (e *eventImpl[T]) handleResult(
 ) {
 	result, sendToDLQ := classifyResult(handlerErr, msg.RetryCount(), e.maxRetries)
 
-	// Send to DLQ if configured and needed
-	if sendToDLQ && e.dlqHandler != nil {
-		if dlqErr := e.dlqHandler(handlerCtx, msg, handlerErr); dlqErr != nil {
-			// DLQ storage failed - DON'T ACK, let message be redelivered
-			logger.Error("DLQ handler failed, message will be retried",
-				"event", e.Name(),
-				"msg_id", msg.ID(),
-				"error", dlqErr,
-				"original_error", handlerErr)
-			_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
-			return
+	// Send to DLQ if needed
+	if sendToDLQ {
+		bus := e.bus.Load()
+		if bus != nil {
+			if dlqErr := bus.sendToDLQ(handlerCtx, e.name, msg, handlerErr); dlqErr != nil {
+				// DLQ storage failed - DON'T ACK, let message be redelivered
+				logger.Error("DLQ store failed, message will be retried",
+					"event", e.Name(),
+					"msg_id", msg.ID(),
+					"error", dlqErr,
+					"original_error", handlerErr)
+				_ = msg.Ack(fmt.Errorf("DLQ storage failed: %w", dlqErr))
+				return
+			}
 		}
 	}
 

@@ -68,6 +68,20 @@ func wait(ch chan struct{}, timeout int) bool {
 	}
 }
 
+// testDLQStore is a simple DLQStore for testing that signals when Store is called.
+type testDLQStore struct {
+	called chan struct{}
+}
+
+func newTestDLQStore() *testDLQStore {
+	return &testDLQStore{called: make(chan struct{}, 10)}
+}
+
+func (s *testDLQStore) Store(_ context.Context, _ *DLQMessage) error {
+	s.called <- struct{}{}
+	return nil
+}
+
 // Compare metadata (ignoring Content-Type which is added by payload codec)
 func CompareMetadata(expected, actual map[string]string) bool {
 	// Check that all expected keys are in actual
@@ -3441,17 +3455,13 @@ func TestWithDecodeErrorHandler_Nil(t *testing.T) {
 }
 
 func TestDecodeErrorHandler_AckSkipsDLQ(t *testing.T) {
-	bus := mustNewBus(t, "test-decode-ack", WithTransport(channel.New()))
+	dlqStore := newTestDLQStore()
+	bus := mustNewBus(t, "test-decode-ack", WithTransport(channel.New()), WithDLQ(dlqStore))
 	defer bus.Close(context.Background())
 
-	var dlqCalled atomic.Bool
 	handlerCalled := make(chan struct{}, 1)
 
 	e := New[string]("test-decode-ack",
-		WithDeadLetterQueue(func(ctx context.Context, msg message.Message, err error) error {
-			dlqCalled.Store(true)
-			return nil
-		}),
 		WithDecodeErrorHandler(func(ctx context.Context, msg message.Message, err error) error {
 			handlerCalled <- struct{}{}
 			return nil // Ack — skip DLQ
@@ -3479,22 +3489,19 @@ func TestDecodeErrorHandler_AckSkipsDLQ(t *testing.T) {
 	// Give time for any async DLQ call
 	time.Sleep(20 * time.Millisecond)
 
-	if dlqCalled.Load() {
-		t.Error("expected DLQ handler NOT to be called when decode error handler returns nil")
+	select {
+	case <-dlqStore.called:
+		t.Error("expected DLQ store NOT to be called when decode error handler returns nil")
+	default:
 	}
 }
 
 func TestDecodeErrorHandler_RejectSendsToDLQ(t *testing.T) {
-	bus := mustNewBus(t, "test-decode-reject", WithTransport(channel.New()))
+	dlqStore := newTestDLQStore()
+	bus := mustNewBus(t, "test-decode-reject", WithTransport(channel.New()), WithDLQ(dlqStore))
 	defer bus.Close(context.Background())
 
-	dlqCalled := make(chan struct{}, 1)
-
 	e := New[string]("test-decode-reject",
-		WithDeadLetterQueue(func(ctx context.Context, msg message.Message, err error) error {
-			dlqCalled <- struct{}{}
-			return nil
-		}),
 		WithDecodeErrorHandler(func(ctx context.Context, msg message.Message, err error) error {
 			return ErrReject // Send to DLQ
 		}),
@@ -3513,24 +3520,18 @@ func TestDecodeErrorHandler_RejectSendsToDLQ(t *testing.T) {
 		t.Fatalf("send failed: %v", err)
 	}
 
-	if !wait(dlqCalled, waitChTimeoutMS) {
-		t.Fatal("expected DLQ handler to be called when decode error handler returns ErrReject")
+	if !wait(dlqStore.called, waitChTimeoutMS) {
+		t.Fatal("expected DLQ store to be called when decode error handler returns ErrReject")
 	}
 }
 
 func TestDecodeErrorHandler_DefaultBehaviorWhenNotSet(t *testing.T) {
-	bus := mustNewBus(t, "test-decode-default", WithTransport(channel.New()))
+	dlqStore := newTestDLQStore()
+	bus := mustNewBus(t, "test-decode-default", WithTransport(channel.New()), WithDLQ(dlqStore))
 	defer bus.Close(context.Background())
 
-	dlqCalled := make(chan struct{}, 1)
-
 	// No WithDecodeErrorHandler — should use default DLQ+ack behavior
-	e := New[string]("test-decode-default",
-		WithDeadLetterQueue(func(ctx context.Context, msg message.Message, err error) error {
-			dlqCalled <- struct{}{}
-			return nil
-		}),
-	)
+	e := New[string]("test-decode-default")
 	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
@@ -3545,7 +3546,7 @@ func TestDecodeErrorHandler_DefaultBehaviorWhenNotSet(t *testing.T) {
 		t.Fatalf("send failed: %v", err)
 	}
 
-	if !wait(dlqCalled, waitChTimeoutMS) {
-		t.Fatal("expected DLQ handler to be called with default behavior (no decode error handler set)")
+	if !wait(dlqStore.called, waitChTimeoutMS) {
+		t.Fatal("expected DLQ store to be called with default behavior (no decode error handler set)")
 	}
 }

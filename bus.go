@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
@@ -56,6 +57,8 @@ type Bus struct {
 	strictSchema   bool // If true, fail registration when schema provider errors
 	// Outbox store for transactional event publishing
 	outboxStore OutboxStore
+	// DLQ store for automatic dead letter routing
+	dlqStore DLQStore
 	// Cached OTel instruments (initialized once during construction)
 	publishedCounter  metric.Int64Counter
 	subscribedCounter metric.Int64Counter
@@ -101,6 +104,7 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		schemaProvider:   o.schemaProvider,
 		strictSchema:     o.strictSchema,
 		outboxStore:      o.outboxStore,
+		dlqStore:         o.dlqStore,
 	}
 
 	// Initialize OTel instruments if metrics enabled
@@ -180,6 +184,30 @@ func (b *Bus) SchemaProvider() SchemaProvider {
 // When configured, publishes inside transactions automatically route to the outbox.
 func (b *Bus) OutboxStore() OutboxStore {
 	return b.outboxStore
+}
+
+// DLQStore returns the bus-level DLQ store (may be nil).
+// When configured, rejected messages are automatically routed to the DLQ.
+func (b *Bus) DLQStore() DLQStore {
+	return b.dlqStore
+}
+
+// sendToDLQ stores a message in the DLQ if configured.
+// Returns nil if no DLQ store is configured.
+func (b *Bus) sendToDLQ(ctx context.Context, eventName string, msg transport.Message, err error) error {
+	if b.dlqStore == nil {
+		return nil
+	}
+	return b.dlqStore.Store(ctx, &DLQMessage{
+		EventName:  eventName,
+		MessageID:  msg.ID(),
+		Payload:    msg.Payload(),
+		Metadata:   msg.Metadata(),
+		Error:      err,
+		RetryCount: msg.RetryCount(),
+		Source:     b.name,
+		CreatedAt:  time.Now(),
+	})
 }
 
 // SupportsRedelivery returns true if the underlying transport supports

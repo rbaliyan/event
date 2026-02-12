@@ -48,13 +48,12 @@
 //   - WithSchemaProvider: set schema provider for dynamic event configuration.
 //   - WithStrictSchema: fail registration if schema provider returns an error.
 //   - WithOutbox: set outbox store for transactional event publishing.
+//   - WithDLQ: set DLQ store for automatic dead letter routing.
 //
 // Event Options:
 //   - WithSubscriberTimeout: set handler execution timeout. Default is 0 (no timeout).
 //   - WithErrorHandler: set panic recovery error callback.
 //   - WithMaxRetries: set max retry attempts before sending to DLQ. Default is 0 (unlimited).
-//   - WithDeadLetterQueue: set handler for permanently failed messages.
-//
 // Subscribe Options:
 //   - AsWorker: use WorkerPool mode (load balancing - one subscriber receives each message).
 //   - AsBroadcast: use Broadcast mode (fan-out - all subscribers receive each message). Default.
