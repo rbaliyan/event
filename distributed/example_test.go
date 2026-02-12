@@ -49,9 +49,8 @@ func Example() {
 // ExampleNewMemoryStateManager demonstrates creating a memory state manager
 // with custom options.
 func ExampleNewMemoryStateManager() {
-	// Create state manager with custom TTL settings
+	// Create state manager with custom settings
 	sm := distributed.NewMemoryStateManager(
-		distributed.WithStateTTL(10*time.Minute),
 		distributed.WithCompletedTTL(24*time.Hour),
 		distributed.WithCleanup(true, 30*time.Minute),
 	)

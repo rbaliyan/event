@@ -418,7 +418,12 @@ func (t *Transport) Health(ctx context.Context) *transport.HealthCheckResult {
 	return result
 }
 
+// SupportsRedelivery returns false because channel transport is in-memory
+// and does not persist messages for re-delivery.
+func (t *Transport) SupportsRedelivery() bool { return false }
+
 // Compile-time interface checks
 var _ transport.Transport = (*Transport)(nil)
 var _ transport.HealthChecker = (*Transport)(nil)
+var _ transport.Redeliverable = (*Transport)(nil)
 var _ transport.Subscription = (*subscription)(nil)

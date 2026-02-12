@@ -113,6 +113,15 @@ type ConsumerLag struct {
 	PendingMessages int64         `json:"pending_messages"` // Messages delivered but not yet acked
 }
 
+// Redeliverable is an optional interface that transports can implement
+// to indicate they support automatic re-delivery of unacknowledged messages.
+// Transports that do NOT implement this interface are assumed to NOT support
+// re-delivery (safe default — the distributed package will store payload
+// for recovery if the StateManager supports it).
+type Redeliverable interface {
+	SupportsRedelivery() bool
+}
+
 // LagMonitor is an optional interface that transports can implement
 // to report consumer lag metrics for monitoring and alerting.
 type LagMonitor interface {

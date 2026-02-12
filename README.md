@@ -248,7 +248,9 @@ func main() {
 | Native Deduplication | ❌ | ✅ | ❌ | ❌ |
 | Native DLQ/DLT | ❌ | ❌ | ✅ | ❌ |
 | Publish Support | ✅ | ✅ | ✅ | ❌ |
-| WorkerPool Mode | ✅ | ✅ | ✅ | ❌ |
+| WorkerPool Mode | ✅ | ✅ | ✅ | via `distributed`* |
+
+\* MongoDB CDC supports WorkerPool mode through the `distributed` package, which emulates worker semantics using database atomic state transitions. See [Distributed WorkerPool](#distributed-workerpool).
 
 ## Health Checks
 
@@ -351,6 +353,73 @@ orderEvent.Subscribe(ctx, trackAnalytics,
 
 // Each order goes to 1 processor AND 1 analytics worker
 ```
+
+## Distributed WorkerPool
+
+The `distributed` package enables WorkerPool semantics on Broadcast-only transports (like MongoDB Change Streams) using database atomic state transitions. Only one worker processes each message, with automatic failover and payload recovery.
+
+### Basic Usage
+
+```go
+import "github.com/rbaliyan/event/v3/distributed"
+
+// Create a coordinator (Redis for distributed deployments)
+coord := distributed.NewRedisStateManager(redisClient,
+    distributed.WithCompletedTTL(48*time.Hour),
+)
+
+// Subscribe with WorkerPool emulation
+mongoEvent.Subscribe(ctx, handler,
+    event.WithMiddleware(
+        distributed.WorkerPoolMiddleware[Order](coord, 5*time.Minute),
+    ),
+)
+```
+
+### Payload Recovery
+
+For transports without re-delivery (e.g., MongoDB Change Streams), the middleware automatically stores message payload so the RecoveryRunner can re-publish stale events if a worker crashes:
+
+```go
+coord := distributed.NewMongoStateManager(db)
+
+// RecoveryRunner detects PayloadStore capability automatically
+runner := distributed.NewRecoveryRunner(coord,
+    distributed.WithPublisher(bus),     // enables re-publishing
+    distributed.WithStaleTimeout(2*time.Minute),
+    distributed.WithCheckInterval(30*time.Second),
+)
+
+go runner.Run(ctx)
+```
+
+Recovery is two-phase:
+1. **Re-publish**: Stale entries with stored payload are re-published via the bus with a new event ID
+2. **Reset**: Remaining stale entries (no payload) are reset for reacquisition
+
+### Worker Groups
+
+Use separate coordinators with different prefixes per group:
+
+```go
+smA := distributed.NewRedisStateManager(redis, distributed.WithPrefix("processors:"))
+smB := distributed.NewRedisStateManager(redis, distributed.WithPrefix("analytics:"))
+
+orderEvent.Subscribe(ctx, processOrder,
+    event.WithMiddleware(distributed.WorkerPoolMiddleware[Order](smA, ttl)))
+orderEvent.Subscribe(ctx, collectAnalytics,
+    event.WithMiddleware(distributed.WorkerPoolMiddleware[Order](smB, ttl)))
+```
+
+### Coordinator Backends
+
+| Backend | Package | Use Case |
+|---------|---------|----------|
+| Redis | `distributed.NewRedisStateManager` | Distributed deployments (recommended) |
+| MongoDB | `distributed.NewMongoStateManager` | When MongoDB is already your primary store |
+| Memory | `distributed.NewMemoryStateManager` | Single-instance or testing |
+
+All three backends implement both `Coordinator` and `PayloadStore` interfaces.
 
 ## Transactional Outbox Pattern
 
@@ -649,6 +718,7 @@ if err := orderSaga.Execute(ctx, sagaID, order); err != nil {
 | DLQ | ✅ | ✅ | ✅ | ✅ |
 | Scheduler | ✅ | ✅ | ✅ | - |
 | Saga | ✅ | ✅ | ✅ | ✅ |
+| Distributed WP | - | ✅ | ✅ | ✅ |
 
 ## Testing
 

@@ -6,6 +6,7 @@ toolchain go1.24.13
 
 require (
 	github.com/IBM/sarama v1.46.3
+	github.com/alicebob/miniredis/v2 v2.36.1
 	github.com/go-faker/faker/v4 v4.7.0
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.11.1
@@ -47,6 +48,7 @@ require (
 	github.com/xdg-go/scram v1.2.0 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/net v0.49.0 // indirect

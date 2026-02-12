@@ -4,9 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+)
+
+// Redis state status values (matching MongoDB constants for consistency).
+const (
+	redisStatusProcessing = "processing"
+	redisStatusCompleted  = "completed"
 )
 
 // redisStateValue stores state with timestamps for stale detection.
@@ -16,7 +23,14 @@ type redisStateValue struct {
 	UpdatedAt time.Time `json:"u"`
 }
 
-// RedisStateManager implements StateManager using Redis for distributed deployments.
+// redisPayloadValue stores message payload for recovery re-publishing.
+type redisPayloadValue struct {
+	Payload   []byte            `json:"p,omitempty"`
+	Metadata  map[string]string `json:"m,omitempty"`
+	EventName string            `json:"e,omitempty"`
+}
+
+// RedisStateManager implements Coordinator and PayloadStore using Redis for distributed deployments.
 //
 // RedisStateManager uses Redis SETNX (set if not exists) with TTL for atomic,
 // race-condition-free message state management. This is the recommended implementation
@@ -53,7 +67,6 @@ type redisStateValue struct {
 //	// With custom options
 //	sm := distributed.NewRedisStateManager(rdb,
 //	    distributed.WithPrefix("myapp:worker:"),
-//	    distributed.WithStateTTL(10*time.Minute),
 //	    distributed.WithCompletedTTL(48*time.Hour),
 //	)
 //
@@ -133,7 +146,7 @@ func (s *RedisStateManager) Acquire(ctx context.Context, messageID string, ttl t
 
 	// Create state value with timestamps for stale detection
 	value := redisStateValue{
-		Status:    "processing",
+		Status:    redisStatusProcessing,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -157,50 +170,53 @@ func (s *RedisStateManager) Acquire(ctx context.Context, messageID string, ttl t
 	return true, nil
 }
 
+// markProcessedScript atomically reads the existing state (preserving
+// created_at), builds a completed state value, and overwrites with new TTL.
+// All in a single Lua script — no separate round-trips, no TOCTOU race.
+//
+// KEYS[1] = state key
+// ARGV[1] = completed status string (JSON field value)
+// ARGV[2] = updated_at timestamp (RFC3339)
+// ARGV[3] = TTL in milliseconds
+//
+// Returns: 1 if updated, 0 if key no longer exists (no-op)
+var markProcessedScript = redis.NewScript(`
+local existing = redis.call("GET", KEYS[1])
+if not existing then
+  return 0
+end
+local ok, val = pcall(cjson.decode, existing)
+local created = ARGV[2]
+if ok and val and val.c then
+  created = val.c
+end
+local newVal = cjson.encode({s = ARGV[1], c = created, u = ARGV[2]})
+redis.call("SET", KEYS[1], newVal, "PX", ARGV[3])
+return 1
+`)
+
 // MarkProcessed transitions a message to "completed" state.
 //
-// Updates the state value to "completed" and extends TTL to completionTTL.
-// This prevents the message from being reprocessed if delivered again
-// within the completion window.
-//
-// Redis command: SET {prefix}{messageID} {json_value} EX {completionTTL}
+// Uses a single Lua script to atomically read the existing state (preserving
+// created_at), build the new completed value, and overwrite with completion TTL.
+// If the key was deleted between Acquire and MarkProcessed (e.g., by a
+// concurrent Reset), the update is a no-op — it will not recreate a key
+// that was intentionally removed. In this case MarkProcessed returns nil
+// (silent no-op) since the message state has already been cleared.
 //
 // Parameters:
 //   - ctx: Context for cancellation
 //   - messageID: The message that was successfully processed
 //
-// Returns nil on success, error if Redis operation fails.
+// Returns nil on success (including no-op when key was deleted).
 func (s *RedisStateManager) MarkProcessed(ctx context.Context, messageID string) error {
 	key := s.prefix + messageID
-	now := time.Now()
+	now := time.Now().Format(time.RFC3339Nano)
+	ttlMs := s.completionTTL.Milliseconds()
 
-	// Get existing value to preserve created_at
-	existingBytes, err := s.client.Get(ctx, key).Bytes()
-	var createdAt time.Time
-	if err == nil {
-		var existing redisStateValue
-		if json.Unmarshal(existingBytes, &existing) == nil {
-			createdAt = existing.CreatedAt
-		}
-	}
-	if createdAt.IsZero() {
-		createdAt = now
-	}
-
-	// Update to completed state with longer TTL
-	value := redisStateValue{
-		Status:    "completed",
-		CreatedAt: createdAt,
-		UpdatedAt: now,
-	}
-	valueBytes, err := json.Marshal(value)
+	err := markProcessedScript.Run(ctx, s.client, []string{key}, redisStatusCompleted, now, ttlMs).Err()
 	if err != nil {
-		return fmt.Errorf("marshal state value: %w", err)
-	}
-
-	err = s.client.Set(ctx, key, valueBytes, s.completionTTL).Err()
-	if err != nil {
-		return fmt.Errorf("redis set: %w", err)
+		return fmt.Errorf("redis mark processed: %w", err)
 	}
 
 	return nil
@@ -221,13 +237,66 @@ func (s *RedisStateManager) MarkProcessed(ctx context.Context, messageID string)
 func (s *RedisStateManager) Reset(ctx context.Context, messageID string) error {
 	key := s.prefix + messageID
 
-	// Delete the state so another worker can acquire immediately
-	err := s.client.Del(ctx, key).Err()
+	// Delete the state and payload so another worker can acquire immediately
+	err := s.client.Del(ctx, key, s.payloadKey(messageID)).Err()
 	if err != nil {
 		return fmt.Errorf("redis del: %w", err)
 	}
 
 	return nil
+}
+
+// scanStaleStates iterates Redis state keys via SCAN and returns stale processing entries.
+// Each entry includes the message ID and its parsed state value.
+func (s *RedisStateManager) scanStaleStates(ctx context.Context, cutoff time.Time, limit int) ([]staleEntry, error) {
+	var entries []staleEntry
+	pattern := s.prefix + "*"
+	var cursor uint64
+
+	for {
+		keys, nextCursor, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return nil, fmt.Errorf("redis scan: %w", err)
+		}
+
+		for _, key := range keys {
+			// Skip payload companion keys
+			if strings.HasSuffix(key, ":payload") {
+				continue
+			}
+
+			valueBytes, err := s.client.Get(ctx, key).Bytes()
+			if err != nil {
+				continue // Key may have expired
+			}
+
+			var value redisStateValue
+			if err := json.Unmarshal(valueBytes, &value); err != nil {
+				continue
+			}
+
+			if value.Status == redisStatusProcessing && value.UpdatedAt.Before(cutoff) {
+				messageID := key[len(s.prefix):]
+				entries = append(entries, staleEntry{messageID: messageID, value: value})
+				if limit > 0 && len(entries) >= limit {
+					return entries, nil
+				}
+			}
+		}
+
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	return entries, nil
+}
+
+// staleEntry pairs a message ID with its parsed state value.
+type staleEntry struct {
+	messageID string
+	value     redisStateValue
 }
 
 // ListStale returns message IDs of states that have been processing
@@ -244,48 +313,15 @@ func (s *RedisStateManager) Reset(ctx context.Context, messageID string) error {
 // Returns list of message IDs that are stale.
 func (s *RedisStateManager) ListStale(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error) {
 	cutoff := time.Now().Add(-staleTimeout)
-	var stale []string
-
-	// Use SCAN to iterate through keys with our prefix
-	pattern := s.prefix + "*"
-	var cursor uint64
-
-	for {
-		keys, nextCursor, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
-		if err != nil {
-			return nil, fmt.Errorf("redis scan: %w", err)
-		}
-
-		for _, key := range keys {
-			// Get value and check if it's a stale processing state
-			valueBytes, err := s.client.Get(ctx, key).Bytes()
-			if err != nil {
-				continue // Key may have expired
-			}
-
-			var value redisStateValue
-			if err := json.Unmarshal(valueBytes, &value); err != nil {
-				// Legacy format (plain string) - skip
-				continue
-			}
-
-			if value.Status == "processing" && value.UpdatedAt.Before(cutoff) {
-				// Extract message ID from key (remove prefix)
-				messageID := key[len(s.prefix):]
-				stale = append(stale, messageID)
-
-				if limit > 0 && len(stale) >= limit {
-					return stale, nil
-				}
-			}
-		}
-
-		cursor = nextCursor
-		if cursor == 0 {
-			break
-		}
+	entries, err := s.scanStaleStates(ctx, cutoff, limit)
+	if err != nil {
+		return nil, err
 	}
 
+	stale := make([]string, len(entries))
+	for i, e := range entries {
+		stale[i] = e.messageID
+	}
 	return stale, nil
 }
 
@@ -310,19 +346,121 @@ func (s *RedisStateManager) ResetStale(ctx context.Context, staleTimeout time.Du
 		return 0, nil
 	}
 
-	// Build keys to delete
-	keys := make([]string, len(stale))
-	for i, msgID := range stale {
-		keys[i] = s.prefix + msgID
+	// Build keys to delete (state + payload companion keys)
+	keys := make([]string, 0, len(stale)*2)
+	for _, msgID := range stale {
+		keys = append(keys, s.prefix+msgID, s.payloadKey(msgID))
 	}
 
-	deleted, err := s.client.Del(ctx, keys...).Result()
+	_, err = s.client.Del(ctx, keys...).Result()
 	if err != nil {
 		return 0, fmt.Errorf("redis del: %w", err)
 	}
 
-	return deleted, nil
+	// Return the number of stale messages reset (not Redis DEL count which
+	// includes payload companion keys and would be ~2x the actual count).
+	return int64(len(stale)), nil
 }
 
-// Compile-time interface check
-var _ StateManager = (*RedisStateManager)(nil)
+// payloadKey returns the Redis key for storing payload alongside state.
+func (s *RedisStateManager) payloadKey(messageID string) string {
+	return s.prefix + messageID + ":payload"
+}
+
+// storePayloadScript atomically reads the state key TTL and sets the payload
+// key with matching expiry. This avoids the TOCTOU race where the state key
+// could expire between a separate TTL read and the payload SET.
+//
+// KEYS[1] = state key
+// KEYS[2] = payload key
+// ARGV[1] = payload value (JSON)
+//
+// Returns: 1 if stored, 0 if state key has no TTL (skipped)
+var storePayloadScript = redis.NewScript(`
+local ttl = redis.call("PTTL", KEYS[1])
+if ttl <= 0 then
+  return 0
+end
+redis.call("SET", KEYS[2], ARGV[1], "PX", ttl)
+return 1
+`)
+
+// StorePayload persists payload in a separate Redis key alongside the state.
+// Uses a Lua script to atomically read the state key TTL and set the payload
+// with matching expiry, preventing orphaned payload keys.
+func (s *RedisStateManager) StorePayload(ctx context.Context, messageID string, data *MessageData) error {
+	if data == nil || len(data.Payload) == 0 {
+		return nil
+	}
+
+	pv := redisPayloadValue{
+		Payload:   data.Payload,
+		Metadata:  data.Metadata,
+		EventName: data.EventName,
+	}
+	pvBytes, err := json.Marshal(pv)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+
+	stateKey := s.prefix + messageID
+	payloadKey := s.payloadKey(messageID)
+	err = storePayloadScript.Run(ctx, s.client, []string{stateKey, payloadKey}, pvBytes).Err()
+	if err != nil {
+		return fmt.Errorf("redis store payload: %w", err)
+	}
+
+	return nil
+}
+
+// LoadStalePayloads returns stale messages that have stored payload.
+//
+// Performance note: this scans ALL stale state keys via SCAN, then checks each
+// one for a companion payload key. For large key spaces (>10k stale states),
+// consider using MongoDB-backed state management or setting a batch limit on
+// the RecoveryRunner to cap the number of entries processed per cycle.
+func (s *RedisStateManager) LoadStalePayloads(ctx context.Context, staleTimeout time.Duration, limit int) ([]*StaleMessage, error) {
+	cutoff := time.Now().Add(-staleTimeout)
+	// Scan without limit since we need to filter by payload existence after
+	entries, err := s.scanStaleStates(ctx, cutoff, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []*StaleMessage
+	for _, e := range entries {
+		// Only return entries that actually have stored payload
+		payloadBytes, err := s.client.Get(ctx, s.payloadKey(e.messageID)).Bytes()
+		if err != nil {
+			continue // no payload stored, skip
+		}
+
+		var pv redisPayloadValue
+		if json.Unmarshal(payloadBytes, &pv) != nil {
+			continue
+		}
+
+		results = append(results, &StaleMessage{
+			MessageID: e.messageID,
+			Data:      MessageData(pv),
+			CreatedAt: e.value.CreatedAt,
+		})
+		if limit > 0 && len(results) >= limit {
+			return results, nil
+		}
+	}
+
+	return results, nil
+}
+
+// ClearPayload removes stored payload for a message.
+func (s *RedisStateManager) ClearPayload(ctx context.Context, messageID string) error {
+	return s.client.Del(ctx, s.payloadKey(messageID)).Err()
+}
+
+// Compile-time interface checks
+var (
+	_ Coordinator   = (*RedisStateManager)(nil)
+	_ PayloadStore  = (*RedisStateManager)(nil)
+	_ StaleResetter = (*RedisStateManager)(nil)
+)

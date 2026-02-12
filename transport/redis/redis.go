@@ -761,8 +761,13 @@ func (s *subscription) claimOnce(ctx context.Context, logger *slog.Logger) {
 	}
 }
 
+// SupportsRedelivery returns true because Redis Streams natively supports
+// re-delivery of unacknowledged messages via consumer group pending entries.
+func (t *Transport) SupportsRedelivery() bool { return true }
+
 // Compile-time checks
 var _ transport.Transport = (*Transport)(nil)
 var _ transport.HealthChecker = (*Transport)(nil)
 var _ transport.LagMonitor = (*Transport)(nil)
+var _ transport.Redeliverable = (*Transport)(nil)
 var _ transport.Subscription = (*subscription)(nil)

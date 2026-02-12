@@ -19,8 +19,9 @@
 //
 // Key components:
 //
-//   - StateManager: Interface for atomic message state transitions
-//   - WorkerPoolMiddleware: Middleware that uses a StateManager to emulate WorkerPool
+//   - Coordinator: Interface for atomic message state transitions
+//   - PayloadStore: Optional interface for persisting message payload for recovery
+//   - WorkerPoolMiddleware: Middleware that uses a Coordinator to emulate WorkerPool
 //   - RedisStateManager: Redis-based implementation using atomic SETNX
 //   - MongoStateManager: MongoDB-based implementation using findOneAndUpdate
 //   - MemoryStateManager: In-memory implementation for single-instance or testing
@@ -45,7 +46,7 @@
 // Example usage with MongoDB transport:
 //
 //	// Create state manager (Redis for distributed deployments)
-//	sm := distributed.NewRedisStateManager(redisClient, distributed.WithStateTTL(5*time.Minute))
+//	sm := distributed.NewRedisStateManager(redisClient, distributed.WithCompletedTTL(48*time.Hour))
 //
 //	// Subscribe with middleware to emulate WorkerPool
 //	mongoEvent.Subscribe(ctx, handler,
@@ -84,9 +85,9 @@ import (
 	"time"
 )
 
-// StateManager provides atomic message state transitions for WorkerPool emulation.
+// Coordinator handles atomic state transitions for WorkerPool emulation.
 //
-// In Broadcast transports where all subscribers receive every message, a StateManager
+// In Broadcast transports where all subscribers receive every message, a Coordinator
 // ensures only one subscriber processes each message using database atomic operations.
 //
 // Implementations must be:
@@ -98,124 +99,110 @@ import (
 //   - RedisStateManager: Uses Redis atomic SETNX for distributed deployments
 //   - MongoStateManager: Uses MongoDB atomic findOneAndUpdate
 //   - MemoryStateManager: In-memory for single-instance or testing
-//
-// Example implementing a custom state manager:
-//
-//	type PostgresStateManager struct {
-//	    db  *sql.DB
-//	    ttl time.Duration
-//	}
-//
-//	func (s *PostgresStateManager) Acquire(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
-//	    // Atomic INSERT - only succeeds if row doesn't exist
-//	    result, err := s.db.ExecContext(ctx, `
-//	        INSERT INTO message_state (message_id, status, expires_at)
-//	        VALUES ($1, 'processing', $2)
-//	        ON CONFLICT (message_id) DO NOTHING
-//	    `, messageID, time.Now().Add(ttl))
-//	    if err != nil {
-//	        return false, err
-//	    }
-//	    rows, _ := result.RowsAffected()
-//	    return rows > 0, nil
-//	}
-type StateManager interface {
+type Coordinator interface {
 	// Acquire atomically transitions a message to "processing" state.
-	//
-	// If the transition succeeds, returns (true, nil) and the caller should
-	// process the message, then call MarkProcessed() on success or Reset() on failure.
-	//
-	// If the transition fails (another worker acquired it), returns (false, nil)
-	// and the caller should skip processing (return nil to ack).
-	//
-	// The ttl parameter specifies how long the state is valid. After TTL expires,
-	// another worker can acquire the message (useful for crash recovery).
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - messageID: Unique identifier for the message (from event.ContextEventID)
-	//   - ttl: How long to hold the state before it expires
 	//
 	// Returns:
 	//   - (true, nil): Acquisition successful, process the message
 	//   - (false, nil): Already acquired by another worker, skip
-	//   - (false, error): Database error (log and decide how to handle)
+	//   - (false, error): Database error
 	Acquire(ctx context.Context, messageID string, ttl time.Duration) (acquired bool, err error)
 
 	// MarkProcessed transitions a message to "completed" state.
-	//
-	// After successful processing, call MarkProcessed to update the state.
-	// This typically either:
-	//   - Extends the state TTL to prevent reprocessing during TTL window
-	//   - Marks the message as "completed" in a persistent store
-	//
-	// If MarkProcessed fails, the message may be reprocessed when the state expires.
-	// Handlers should be idempotent to handle this safely.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - messageID: The message ID that was successfully processed
-	//
-	// Returns error if the state update fails (log but don't fail the handler).
 	MarkProcessed(ctx context.Context, messageID string) error
 
 	// Reset removes the message state to allow immediate reprocessing.
-	//
-	// Call this when processing fails and you want another worker to retry
-	// immediately instead of waiting for the state to expire. This is optional;
-	// letting the state expire naturally is also valid behavior.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - messageID: The message ID to reset
-	//
-	// Returns error if the reset fails (log but don't affect error propagation).
 	Reset(ctx context.Context, messageID string) error
 
-	// ListStale returns message IDs of states that appear stale.
-	//
-	// A stale state is one that has been in "processing" state for longer than
-	// the specified staleTimeout. This typically indicates that the worker
-	// processing the message has crashed or become unresponsive.
-	//
-	// This method enables active recovery: instead of waiting for states
-	// to expire via TTL (passive), a background goroutine can periodically
-	// check for stale states and reset them for faster failover.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and timeouts
-	//   - staleTimeout: Duration after which a processing state is considered stale.
-	//     Should be longer than expected handler execution time but shorter than state TTL.
-	//   - limit: Maximum number of stale states to return (0 = no limit)
-	//
-	// Returns:
-	//   - List of message IDs that are stale
-	//   - error if the query fails
-	//
-	// Example staleTimeout values:
-	//   - Handler timeout 30s → staleTimeout 1-2 minutes
-	//   - Handler timeout 1m → staleTimeout 2-3 minutes
-	//   - No timeout → staleTimeout based on expected max processing time
+	// ListStale returns message IDs of states that have been in "processing"
+	// state for longer than staleTimeout.
 	ListStale(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error)
+}
+
+// PayloadStore persists message payload for recovery when the transport
+// cannot redeliver lost messages (e.g., MongoDB Change Streams).
+//
+// This is an optional interface that Coordinator implementations can also
+// implement. When a Coordinator also implements PayloadStore:
+//   - WorkerPoolMiddleware stores payload after acquiring state
+//   - RecoveryRunner re-publishes stale events via the injected Publisher
+//
+// Implementations:
+//   - MongoStateManager: Stores payload in the same document (atomic with state)
+//   - RedisStateManager: Stores payload in a companion key
+//   - MemoryStateManager: Stores payload in memory (for testing)
+type PayloadStore interface {
+	// StorePayload persists payload alongside a message ID.
+	// Called after a successful Acquire when the transport doesn't support
+	// re-delivery. Not required to be atomic with Acquire.
+	StorePayload(ctx context.Context, messageID string, data *MessageData) error
+
+	// LoadStalePayloads returns stale messages that have stored payload.
+	// Used by RecoveryRunner to re-publish lost events.
+	LoadStalePayloads(ctx context.Context, staleTimeout time.Duration, limit int) ([]*StaleMessage, error)
+
+	// ClearPayload removes stored payload for a message.
+	// Called after successful processing or recovery re-publish.
+	ClearPayload(ctx context.Context, messageID string) error
+}
+
+// Publisher sends events for recovery re-publishing.
+// This interface is satisfied by *event.Bus via its Send method.
+type Publisher interface {
+	Send(ctx context.Context, eventName, eventID string, payload []byte, metadata map[string]string) error
+}
+
+// MessageData holds message payload for recovery re-publishing.
+// Fields are populated from event context in WorkerPoolMiddleware:
+//   - Payload:   event.ContextRawPayload(ctx) — raw message bytes
+//   - Metadata:  event.ContextMetadata(ctx) — message metadata map
+//   - EventName: event.ContextName(ctx) — event routing name
+type MessageData struct {
+	Payload   []byte
+	Metadata  map[string]string
+	EventName string
+}
+
+// StaleMessage is a stale state entry with its stored payload.
+type StaleMessage struct {
+	MessageID string
+	Data      MessageData
+	CreatedAt time.Time
+}
+
+// HasPayload returns true if the stale message has stored payload data.
+func (s *StaleMessage) HasPayload() bool {
+	return len(s.Data.Payload) > 0
 }
 
 // Option configures a state manager implementation.
 type Option func(*stateOptions)
 
+// StaleResetter is an optional interface that Coordinator implementations
+// can provide for efficient batch stale state reset.
+type StaleResetter interface {
+	// ResetStale resets stale states in batch.
+	// Returns the number of states reset.
+	ResetStale(ctx context.Context, staleTimeout time.Duration, limit int) (int64, error)
+}
+
 // stateOptions holds common configuration for state manager implementations.
 type stateOptions struct {
 	prefix         string
-	ttl            time.Duration
 	completionTTL  time.Duration
 	cleanupEnabled bool
 	cleanupPeriod  time.Duration
+	// MongoDB-specific options (only used by NewMongoStateManager)
+	collectionName string
+	capped         bool
+	cappedSize     int64
+	cappedMaxDocs  int64
 }
 
 // defaultStateOptions returns sensible defaults for state manager configuration.
 func defaultStateOptions() *stateOptions {
 	return &stateOptions{
 		prefix:         "state:",
-		ttl:            5 * time.Minute,
 		completionTTL:  24 * time.Hour,
 		cleanupEnabled: true,
 		cleanupPeriod:  time.Hour,
@@ -233,20 +220,6 @@ func defaultStateOptions() *stateOptions {
 func WithPrefix(prefix string) Option {
 	return func(o *stateOptions) {
 		o.prefix = prefix
-	}
-}
-
-// WithStateTTL sets the default TTL for processing states.
-//
-// The TTL should be longer than your handler's maximum execution time.
-// If a worker crashes, other workers can acquire the message after TTL expires.
-//
-// Default: 5 minutes
-func WithStateTTL(ttl time.Duration) Option {
-	return func(o *stateOptions) {
-		if ttl > 0 {
-			o.ttl = ttl
-		}
 	}
 }
 
@@ -273,5 +246,43 @@ func WithCleanup(enabled bool, period time.Duration) Option {
 		if period > 0 {
 			o.cleanupPeriod = period
 		}
+	}
+}
+
+// WithCollection sets the MongoDB collection name for state storage.
+//
+// This option is only used by NewMongoStateManager and is ignored by other
+// state manager implementations.
+//
+// Default: "_message_state"
+func WithCollection(name string) Option {
+	return func(o *stateOptions) {
+		if name != "" {
+			o.collectionName = name
+		}
+	}
+}
+
+// WithCapped enables MongoDB capped collection mode for high-throughput scenarios.
+//
+// This option is only used by NewMongoStateManager and is ignored by other
+// state manager implementations.
+//
+// Capped collections are fixed-size collections that automatically remove
+// the oldest documents when the size limit is reached.
+//
+// Parameters:
+//   - sizeBytes: Maximum collection size in bytes (required, minimum 4096)
+//   - maxDocs: Maximum number of documents (0 = unlimited, size-based only)
+//
+// IMPORTANT LIMITATIONS:
+//   - Reset() becomes a no-op (MongoDB doesn't allow deletes in capped collections)
+//   - No TTL index support
+//   - Failed states wait for size-based removal
+func WithCapped(sizeBytes int64, maxDocs int64) Option {
+	return func(o *stateOptions) {
+		o.capped = true
+		o.cappedSize = sizeBytes
+		o.cappedMaxDocs = maxDocs
 	}
 }

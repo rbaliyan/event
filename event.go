@@ -648,6 +648,7 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 
 			// Build context and call handler directly (payload already decoded).
 			handlerCtx := contextWithInfoCoalesced(out.msg.Context(), out.msg.ID(), e.name, bus.ID(), sub.ID(), out.msg.Metadata(), out.msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription, out.count)
+			handlerCtx = ContextWithRawPayload(handlerCtx, out.msg.Payload())
 
 			// Best-effort: ack before handler (at-most-once delivery).
 			if bestEffort {
@@ -814,6 +815,7 @@ func (e *eventImpl[T]) processMessage(
 
 	// Update context values and call handler
 	handlerCtx := contextWithInfoCoalesced(msg.Context(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription, coalescedCount)
+	handlerCtx = ContextWithRawPayload(handlerCtx, msg.Payload())
 	handlerErr := wrappedHandler(handlerCtx, e, typedData)
 
 	if bestEffort {

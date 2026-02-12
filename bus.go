@@ -182,6 +182,16 @@ func (b *Bus) OutboxStore() OutboxStore {
 	return b.outboxStore
 }
 
+// SupportsRedelivery returns true if the underlying transport supports
+// automatic re-delivery of unacknowledged messages.
+// Returns false if transport does not implement transport.Redeliverable.
+func (b *Bus) SupportsRedelivery() bool {
+	if rd, ok := b.transport.(transport.Redeliverable); ok {
+		return rd.SupportsRedelivery()
+	}
+	return false
+}
+
 // Get returns an event by name
 func (b *Bus) Get(name string) any {
 	b.eventMutex.RLock()

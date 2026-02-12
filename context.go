@@ -18,6 +18,7 @@ type eventContextData struct {
 	eventID               string
 	subID                 string
 	metadata              map[string]string
+	rawPayload            []byte
 	messageTime           time.Time
 	logger                *slog.Logger
 	bus                   *Bus
@@ -156,22 +157,9 @@ func ContextWithMetadata(ctx context.Context, m map[string]string) context.Conte
 	}
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
-		// Create a new struct to avoid race conditions
-		newData := &eventContextData{
-			name:                  s.name,
-			source:                s.source,
-			eventID:               s.eventID,
-			subID:                 s.subID,
-			metadata:              m,
-			messageTime:           s.messageTime,
-			logger:                s.logger,
-			bus:                   s.bus,
-			deliveryMode:          s.deliveryMode,
-			subscriberName:        s.subscriberName,
-			subscriberDescription: s.subscriberDescription,
-			coalescedCount:        s.coalescedCount,
-		}
-		return context.WithValue(ctx, eventcontextKey, newData)
+		newData := *s
+		newData.metadata = m
+		return context.WithValue(ctx, eventcontextKey, &newData)
 	}
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{metadata: m})
 }
@@ -183,22 +171,9 @@ func ContextWithEventID(ctx context.Context, id string) context.Context {
 	}
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
-		// Create a new struct to avoid race conditions
-		newData := &eventContextData{
-			name:                  s.name,
-			source:                s.source,
-			eventID:               id,
-			subID:                 s.subID,
-			metadata:              s.metadata,
-			messageTime:           s.messageTime,
-			logger:                s.logger,
-			bus:                   s.bus,
-			deliveryMode:          s.deliveryMode,
-			subscriberName:        s.subscriberName,
-			subscriberDescription: s.subscriberDescription,
-			coalescedCount:        s.coalescedCount,
-		}
-		return context.WithValue(ctx, eventcontextKey, newData)
+		newData := *s
+		newData.eventID = id
+		return context.WithValue(ctx, eventcontextKey, &newData)
 	}
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{eventID: id})
 }
@@ -210,22 +185,9 @@ func ContextWithLogger(ctx context.Context, l *slog.Logger) context.Context {
 	}
 	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
 	if ok {
-		// Create a new struct to avoid race conditions
-		newData := &eventContextData{
-			name:                  s.name,
-			source:                s.source,
-			eventID:               s.eventID,
-			subID:                 s.subID,
-			metadata:              s.metadata,
-			messageTime:           s.messageTime,
-			logger:                l,
-			bus:                   s.bus,
-			deliveryMode:          s.deliveryMode,
-			subscriberName:        s.subscriberName,
-			subscriberDescription: s.subscriberDescription,
-			coalescedCount:        s.coalescedCount,
-		}
-		return context.WithValue(ctx, eventcontextKey, newData)
+		newData := *s
+		newData.logger = l
+		return context.WithValue(ctx, eventcontextKey, &newData)
 	}
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{logger: l})
 }
@@ -251,7 +213,32 @@ func contextWithInfoCoalesced(ctx context.Context, id, name, source, subID strin
 	})
 }
 
-// ContextWithEventFromContext copy context baggage
+// ContextWithRawPayload sets the raw message payload bytes in the event context data.
+func ContextWithRawPayload(ctx context.Context, payload []byte) context.Context {
+	if len(payload) == 0 {
+		return ctx
+	}
+	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
+	if ok {
+		newData := *s
+		newData.rawPayload = payload
+		return context.WithValue(ctx, eventcontextKey, &newData)
+	}
+	return context.WithValue(ctx, eventcontextKey, &eventContextData{rawPayload: payload})
+}
+
+// ContextRawPayload returns the raw message payload bytes from the context.
+// Returns nil if not set.
+func ContextRawPayload(ctx context.Context) []byte {
+	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
+	if ok {
+		return s.rawPayload
+	}
+	return nil
+}
+
+// ContextWithEventFromContext copies event context baggage (event ID, name, metadata,
+// raw payload, etc.) from one context to another.
 func ContextWithEventFromContext(to, from context.Context) context.Context {
 	s, ok := from.Value(eventcontextKey).(*eventContextData)
 	if ok {
