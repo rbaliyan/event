@@ -18,12 +18,13 @@ var (
 
 // options holds configuration for transport (unexported)
 type options struct {
-	bufferSize     uint
-	async          bool
-	workerPoolSize int64
-	timeout        time.Duration
-	onError        func(error)
-	logger         *slog.Logger
+	bufferSize      uint
+	async           bool
+	workerPoolSize  int64
+	timeout         time.Duration
+	fallbackTimeout time.Duration
+	onError         func(error)
+	logger          *slog.Logger
 }
 
 // Option configures the channel transport
@@ -60,6 +61,17 @@ func WithWorkerPoolSize(size int64) Option {
 func WithTimeout(d time.Duration) Option {
 	return func(o *options) {
 		o.timeout = d
+	}
+}
+
+// WithFallbackTimeout sets the ceiling timeout used when no explicit timeout is
+// configured. When a subscriber's channel is full, the publisher blocks for up to
+// this duration before dropping the message. Default is 30 seconds.
+func WithFallbackTimeout(d time.Duration) Option {
+	return func(o *options) {
+		if d > 0 {
+			o.fallbackTimeout = d
+		}
 	}
 }
 
