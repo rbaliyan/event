@@ -322,19 +322,21 @@ func IsTimeout(err error) bool {
 	return errors.Is(err, ErrTimeout)
 }
 
-// RequireNotNil panics if the value is nil with a descriptive message.
+// RequireNotNil returns an error wrapping ErrInvalidArgument if the value is nil.
 // Use this in constructors for required parameters that must not be nil.
 // Handles both untyped nil and typed nil (e.g., var db *sql.DB = nil).
 //
 // Example:
 //
-//	func NewStore(db *sql.DB) *Store {
-//	    errors.RequireNotNil(db, "db")
-//	    return &Store{db: db}
+//	func NewStore(db *sql.DB) (*Store, error) {
+//	    if err := errors.RequireNotNil(db, "db"); err != nil {
+//	        return nil, err
+//	    }
+//	    return &Store{db: db}, nil
 //	}
-func RequireNotNil(value any, name string) {
+func RequireNotNil(value any, name string) error {
 	if value == nil {
-		panic(fmt.Sprintf("%s must not be nil", name))
+		return fmt.Errorf("%s must not be nil: %w", name, ErrInvalidArgument)
 	}
 	// Check for typed nils using reflection
 	// This handles cases like var db *sql.DB = nil
@@ -343,39 +345,45 @@ func RequireNotNil(value any, name string) {
 	if (kind == reflect.Ptr || kind == reflect.Interface ||
 		kind == reflect.Map || kind == reflect.Slice ||
 		kind == reflect.Chan || kind == reflect.Func) && v.IsNil() {
-		panic(fmt.Sprintf("%s must not be nil", name))
+		return fmt.Errorf("%s must not be nil: %w", name, ErrInvalidArgument)
 	}
+	return nil
 }
 
-// RequireNotEmpty panics if the string is empty with a descriptive message.
+// RequireNotEmpty returns an error wrapping ErrInvalidArgument if the string is empty.
 // Use this in constructors for required string parameters.
 //
 // Example:
 //
-//	func NewSaga(name string) *Saga {
-//	    errors.RequireNotEmpty(name, "name")
-//	    return &Saga{name: name}
+//	func NewSaga(name string) (*Saga, error) {
+//	    if err := errors.RequireNotEmpty(name, "name"); err != nil {
+//	        return nil, err
+//	    }
+//	    return &Saga{name: name}, nil
 //	}
-func RequireNotEmpty(value string, name string) {
+func RequireNotEmpty(value string, name string) error {
 	if value == "" {
-		panic(fmt.Sprintf("%s must not be empty", name))
+		return fmt.Errorf("%s must not be empty: %w", name, ErrInvalidArgument)
 	}
+	return nil
 }
 
-// RequirePositive panics if the integer is not positive (> 0).
+// RequirePositive returns an error wrapping ErrInvalidArgument if the integer is not positive (> 0).
 // Use this in constructors for required positive integer parameters.
-func RequirePositive(value int, name string) {
+func RequirePositive(value int, name string) error {
 	if value <= 0 {
-		panic(fmt.Sprintf("%s must be positive, got %d", name, value))
+		return fmt.Errorf("%s must be positive, got %d: %w", name, value, ErrInvalidArgument)
 	}
+	return nil
 }
 
-// RequireNonNegative panics if the integer is negative.
+// RequireNonNegative returns an error wrapping ErrInvalidArgument if the integer is negative.
 // Use this in constructors for parameters that must be >= 0.
-func RequireNonNegative(value int, name string) {
+func RequireNonNegative(value int, name string) error {
 	if value < 0 {
-		panic(fmt.Sprintf("%s must be non-negative, got %d", name, value))
+		return fmt.Errorf("%s must be non-negative, got %d: %w", name, value, ErrInvalidArgument)
 	}
+	return nil
 }
 
 // IsMaxRetriesExceeded checks if an error indicates max retries exceeded.

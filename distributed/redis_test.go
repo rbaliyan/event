@@ -352,10 +352,13 @@ func TestRedisStateManager_RecoveryRunner(t *testing.T) {
 	sm, _ := setupRedisStateManager(t)
 	ctx := context.Background()
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
 
@@ -445,11 +448,14 @@ func TestRedisStateManager_PayloadRecovery(t *testing.T) {
 	ctx := context.Background()
 
 	pub := &mockPublisher{}
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 		WithPublisher(pub),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	// Acquire and store payload (simulates middleware behavior)
 	sm.Acquire(ctx, "msg-recovery-1", time.Hour)

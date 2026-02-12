@@ -18,24 +18,20 @@ var testBusCounter uint64
 // The transport parameter is required - use channel.New() for in-memory testing.
 // Has recovery/tracing/metrics disabled for simpler testing.
 // Each call generates a unique bus name, safe for parallel tests.
-// Panics if transport is nil (test setup error).
+// Returns an error if transport is nil or bus creation fails.
 //
 // Example:
 //
 //	import "github.com/rbaliyan/event/v3/transport/channel"
-//	bus := event.TestBus(channel.New())
-func TestBus(t transport.Transport) *Bus {
+//	bus, err := event.TestBus(channel.New())
+func TestBus(t transport.Transport) (*Bus, error) {
 	n := atomic.AddUint64(&testBusCounter, 1)
-	bus, err := NewBus(fmt.Sprintf("test-bus-%d", n),
+	return NewBus(fmt.Sprintf("test-bus-%d", n),
 		WithTransport(t),
 		WithRecovery(false),
 		WithTracing(false),
 		WithMetrics(false),
 	)
-	if err != nil {
-		panic("event.TestBus: " + err.Error())
-	}
-	return bus
 }
 
 // RecordedMessage represents a message that was published during a test
@@ -59,15 +55,15 @@ type RecordingTransport struct {
 // Example:
 //
 //	import "github.com/rbaliyan/event/v3/transport/channel"
-//	transport := event.NewRecordingTransport(channel.New())
-func NewRecordingTransport(t transport.Transport) *RecordingTransport {
+//	transport, err := event.NewRecordingTransport(channel.New())
+func NewRecordingTransport(t transport.Transport) (*RecordingTransport, error) {
 	if t == nil {
-		panic("event: transport is required for NewRecordingTransport")
+		return nil, fmt.Errorf("event: transport is required for NewRecordingTransport")
 	}
 	return &RecordingTransport{
 		Transport: t,
 		messages:  make([]RecordedMessage, 0),
-	}
+	}, nil
 }
 
 // Publish records the message and delegates to the underlying transport
@@ -246,16 +242,16 @@ type BlockingTransport struct {
 // Example:
 //
 //	import "github.com/rbaliyan/event/v3/transport/channel"
-//	transport := event.NewBlockingTransport(channel.New())
-func NewBlockingTransport(t transport.Transport) *BlockingTransport {
+//	transport, err := event.NewBlockingTransport(channel.New())
+func NewBlockingTransport(t transport.Transport) (*BlockingTransport, error) {
 	if t == nil {
-		panic("event: transport is required for NewBlockingTransport")
+		return nil, fmt.Errorf("event: transport is required for NewBlockingTransport")
 	}
 	return &BlockingTransport{
 		Transport: t,
 		blockCh:   make(chan struct{}),
 		blocked:   true,
-	}
+	}, nil
 }
 
 // Publish blocks until Release is called, then delegates to underlying transport
@@ -322,14 +318,14 @@ type FailingTransport struct {
 // Example:
 //
 //	import "github.com/rbaliyan/event/v3/transport/channel"
-//	transport := event.NewFailingTransport(channel.New())
-func NewFailingTransport(t transport.Transport) *FailingTransport {
+//	transport, err := event.NewFailingTransport(channel.New())
+func NewFailingTransport(t transport.Transport) (*FailingTransport, error) {
 	if t == nil {
-		panic("event: transport is required for NewFailingTransport")
+		return nil, fmt.Errorf("event: transport is required for NewFailingTransport")
 	}
 	return &FailingTransport{
 		Transport: t,
-	}
+	}, nil
 }
 
 // Publish fails if configured, otherwise delegates to underlying transport

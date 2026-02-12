@@ -234,10 +234,13 @@ func TestRecoveryRunner_RecoverOnce(t *testing.T) {
 	)
 	defer sm.Close()
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	// Acquire a message
 	sm.Acquire(ctx, "msg-1", time.Hour)
@@ -279,10 +282,13 @@ func TestRecoveryRunner_Run(t *testing.T) {
 	)
 	defer sm.Close()
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(30*time.Millisecond),
 		WithCheckInterval(20*time.Millisecond),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	// Start runner in background
 	go runner.Run(ctx)

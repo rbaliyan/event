@@ -211,11 +211,15 @@ func ExampleNewRecoveryRunner() {
 	defer sm.Close()
 
 	// Create recovery runner with custom settings
-	runner := distributed.NewRecoveryRunner(sm,
+	runner, err := distributed.NewRecoveryRunner(sm,
 		distributed.WithStaleTimeout(2*time.Minute),
 		distributed.WithCheckInterval(30*time.Second),
 		distributed.WithBatchLimit(100),
 	)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 
 	ctx := context.Background()
 

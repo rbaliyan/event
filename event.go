@@ -431,9 +431,11 @@ func (e *eventImpl[T]) subscribeLoop(
 				return
 			}
 
-			bus.inflightWG.Add(1)
-			e.processMessage(msg, bus, sub, subOpts, wrappedHandler, logger, bestEffort, 0)
-			bus.inflightWG.Done()
+			func() {
+				bus.inflightWG.Add(1)
+				defer bus.inflightWG.Done()
+				e.processMessage(msg, bus, sub, subOpts, wrappedHandler, logger, bestEffort, 0)
+			}()
 		}
 	}
 }
@@ -514,9 +516,11 @@ func (e *eventImpl[T]) subscribeWithRawCoalesce(
 				return
 			}
 
-			bus.inflightWG.Add(1)
-			e.processMessage(out.msg, bus, sub, subOpts, wrappedHandler, logger, bestEffort, out.count)
-			bus.inflightWG.Done()
+			func() {
+				bus.inflightWG.Add(1)
+				defer bus.inflightWG.Done()
+				e.processMessage(out.msg, bus, sub, subOpts, wrappedHandler, logger, bestEffort, out.count)
+			}()
 
 			// Signal coalescer that this key is done.
 			select {
@@ -635,29 +639,30 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 				return
 			}
 
-			bus.inflightWG.Add(1)
+			func() {
+				bus.inflightWG.Add(1)
+				defer bus.inflightWG.Done()
 
-			// Build context and call handler directly (payload already decoded).
-			handlerCtx := contextWithInfoCoalesced(out.msg.Context(), out.msg.ID(), e.name, bus.ID(), sub.ID(), out.msg.Metadata(), out.msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription, out.count)
-			handlerCtx = ContextWithRawPayload(handlerCtx, out.msg.Payload())
+				// Build context and call handler directly (payload already decoded).
+				handlerCtx := contextWithInfoCoalesced(out.msg.Context(), out.msg.ID(), e.name, bus.ID(), sub.ID(), out.msg.Metadata(), out.msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription, out.count)
+				handlerCtx = ContextWithRawPayload(handlerCtx, out.msg.Payload())
 
-			// Best-effort: ack before handler (at-most-once delivery).
-			if bestEffort {
-				_ = out.msg.Ack(nil)
-			}
-
-			handlerErr := wrappedHandler(handlerCtx, e, out.value)
-
-			if bestEffort {
-				if handlerErr != nil {
-					logger.Warn("best-effort handler error suppressed",
-						"event", e.Name(), "msg_id", out.msg.ID(), "error", handlerErr)
+				// Best-effort: ack before handler (at-most-once delivery).
+				if bestEffort {
+					_ = out.msg.Ack(nil)
 				}
-			} else {
-				e.handleResult(out.msg, handlerCtx, handlerErr, logger)
-			}
 
-			bus.inflightWG.Done()
+				handlerErr := wrappedHandler(handlerCtx, e, out.value)
+
+				if bestEffort {
+					if handlerErr != nil {
+						logger.Warn("best-effort handler error suppressed",
+							"event", e.Name(), "msg_id", out.msg.ID(), "error", handlerErr)
+					}
+				} else {
+					e.handleResult(out.msg, handlerCtx, handlerErr, logger)
+				}
+			}()
 
 			// Signal coalescer that this key is done.
 			select {

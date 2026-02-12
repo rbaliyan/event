@@ -239,10 +239,13 @@ func TestRecoveryRunner_BasicReset(t *testing.T) {
 	defer sm.Close()
 
 	// No Publisher → basic reset mode
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
 	sm.Acquire(ctx, "msg-2", time.Hour)
@@ -273,11 +276,14 @@ func TestRecoveryRunner_Phase1And2Exclusion(t *testing.T) {
 	defer sm.Close()
 
 	pub := &mockPublisher{}
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 		WithPublisher(pub),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	// msg-1: has payload (Phase 1 re-publishes)
 	sm.Acquire(ctx, "msg-1", time.Hour)
@@ -323,10 +329,13 @@ func TestRecoveryRunner_BatchLimitZero(t *testing.T) {
 	sm := NewMemoryStateManager(WithCleanup(false, 0))
 	defer sm.Close()
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(0), // No limit
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
 	sm.Acquire(ctx, "msg-2", time.Hour)
@@ -351,11 +360,14 @@ func TestRecoveryRunner_PayloadRepublish(t *testing.T) {
 
 	pub := &mockPublisher{}
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 		WithPublisher(pub),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	// Acquire and store payload
 	sm.Acquire(ctx, "msg-1", time.Hour)
@@ -416,10 +428,13 @@ func TestRecoveryRunner_PublishFailure_SkipsEntry(t *testing.T) {
 	// Publisher that always fails
 	failPub := &failingPublisher{err: errors.New("publish failed")}
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithPublisher(failPub),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
 	sm.StorePayload(ctx, "msg-1", &MessageData{
@@ -469,11 +484,14 @@ func TestRecoveryRunner_WithRealBus(t *testing.T) {
 	defer sm.Close()
 
 	// Bus satisfies Publisher interface
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 		WithPublisher(bus),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
 	sm.StorePayload(ctx, "msg-1", &MessageData{
@@ -576,18 +594,11 @@ func TestRecoveryMetrics_BatchNilSafe(t *testing.T) {
 	m.recordResetN(ctx, -1)
 }
 
-func TestNewRecoveryRunner_NilCoordinator_Panics(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for nil coordinator")
-		}
-		msg, ok := r.(string)
-		if !ok || msg != "distributed: NewRecoveryRunner requires a non-nil Coordinator" {
-			t.Fatalf("unexpected panic message: %v", r)
-		}
-	}()
-	NewRecoveryRunner(nil)
+func TestNewRecoveryRunner_NilCoordinator_ReturnsError(t *testing.T) {
+	_, err := NewRecoveryRunner(nil)
+	if err == nil {
+		t.Fatal("expected error for nil coordinator")
+	}
 }
 
 func TestRecoveryMetrics_Creation(t *testing.T) {
@@ -639,9 +650,12 @@ func TestRecoveryRunner_RecoverOnce_NoStaleEntries(t *testing.T) {
 	sm := NewMemoryStateManager(WithCleanup(false, 0))
 	defer sm.Close()
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(time.Minute),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	// No entries at all
 	recovered, err := runner.RecoverOnce(ctx)
@@ -683,10 +697,13 @@ func TestRecoveryRunner_WithMetrics(t *testing.T) {
 		t.Fatalf("failed to create metrics: %v", err)
 	}
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithRecoveryMetrics(metrics),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
 	time.Sleep(60 * time.Millisecond)

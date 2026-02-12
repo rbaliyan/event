@@ -2,6 +2,7 @@ package distributed
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -192,14 +193,14 @@ func WithPublisher(pub Publisher) RecoveryOption {
 // NewRecoveryRunner creates a new stale state recovery runner.
 //
 // Parameters:
-//   - coord: The coordinator to monitor for stale states
+//   - coord: The coordinator to monitor for stale states (must not be nil)
 //   - opts: Optional configuration (Publisher, timeouts, logger, etc.)
 //
-// Returns a configured runner. Call Run() to start background recovery
-// or RecoverOnce() for manual recovery.
-func NewRecoveryRunner(coord Coordinator, opts ...RecoveryOption) *RecoveryRunner {
+// Returns a configured runner and an error if coord is nil.
+// Call Run() to start background recovery or RecoverOnce() for manual recovery.
+func NewRecoveryRunner(coord Coordinator, opts ...RecoveryOption) (*RecoveryRunner, error) {
 	if coord == nil {
-		panic("distributed: NewRecoveryRunner requires a non-nil Coordinator")
+		return nil, fmt.Errorf("distributed: NewRecoveryRunner requires a non-nil Coordinator")
 	}
 
 	o := &recoveryOptions{
@@ -219,7 +220,7 @@ func NewRecoveryRunner(coord Coordinator, opts ...RecoveryOption) *RecoveryRunne
 		logger:        o.logger,
 		backoff:       o.backoff,
 		metrics:       o.metrics,
-	}
+	}, nil
 }
 
 // Run starts the background recovery loop.

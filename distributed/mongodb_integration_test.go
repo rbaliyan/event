@@ -288,10 +288,13 @@ func TestMongoStateManager_Integration_RecoveryRunner(t *testing.T) {
 
 	ctx := context.Background()
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	// Acquire a message
 	sm.Acquire(ctx, "recovery-1", time.Hour)
@@ -333,11 +336,14 @@ func TestMongoStateManager_Integration_PayloadRecovery(t *testing.T) {
 	// Track re-published events
 	pub := &integrationMockPublisher{}
 
-	runner := NewRecoveryRunner(sm,
+	runner, err := NewRecoveryRunner(sm,
 		WithStaleTimeout(50*time.Millisecond),
 		WithBatchLimit(10),
 		WithPublisher(pub),
 	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
 
 	// Acquire and store payload (simulates middleware with payload storage)
 	acquired, err := sm.Acquire(ctx, "payload-1", time.Hour)
