@@ -83,6 +83,8 @@ package distributed
 import (
 	"context"
 	"time"
+
+	event "github.com/rbaliyan/event/v3"
 )
 
 // Coordinator handles atomic state transitions for WorkerPool emulation.
@@ -147,10 +149,8 @@ type PayloadStore interface {
 }
 
 // Publisher sends events for recovery re-publishing.
-// This interface is satisfied by *event.Bus via its Send method.
-type Publisher interface {
-	Send(ctx context.Context, eventName, eventID string, payload []byte, metadata map[string]string) error
-}
+// This is an alias for event.Sender.
+type Publisher = event.Sender
 
 // MessageData holds message payload for recovery re-publishing.
 // Fields are populated from event context in WorkerPoolMiddleware:

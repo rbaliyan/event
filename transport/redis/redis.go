@@ -69,11 +69,6 @@ type Transport struct {
 	claimInterval time.Duration // Interval for claiming orphaned messages (0 = disabled)
 	claimMinIdle  time.Duration // Minimum idle time before claiming a message
 
-	// Reliability stores (Redis Streams doesn't have these natively)
-	idempotencyStore IdempotencyStore
-	dlqHandler       DLQHandler
-	poisonDetector   PoisonDetector
-	maxRetries       int
 }
 
 // redisEvent tracks event-specific state
@@ -94,12 +89,6 @@ type subscription struct {
 	claimMinIdle       time.Duration // Minimum idle time before claiming
 	isBroadcast        bool          // If true, consumer group is deleted on close
 
-	// Reliability stores
-	idempotencyStore IdempotencyStore
-	dlqHandler       DLQHandler
-	poisonDetector   PoisonDetector
-	maxRetries       int
-	eventName        string // For DLQ handler
 }
 
 // Default configuration
@@ -305,12 +294,6 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		claimInterval: t.claimInterval,
 		claimMinIdle:  t.claimMinIdle,
 		isBroadcast:   subOpts.DeliveryMode == transport.Broadcast,
-		// Reliability stores
-		idempotencyStore: t.idempotencyStore,
-		dlqHandler:       t.dlqHandler,
-		poisonDetector:   t.poisonDetector,
-		maxRetries:       t.maxRetries,
-		eventName:        name,
 	}
 
 	// Start consuming in background with WaitGroup tracking

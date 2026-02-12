@@ -6,11 +6,11 @@
 //
 // Simple pub/sub with at-most-once delivery. Use for ephemeral events
 // where message loss is acceptable. Optional library-level stores can
-// be injected for deduplication, DLQ, and poison detection.
+// be injected for deduplication and poison detection.
 //
 //	transport := nats.New(conn,
 //	    nats.WithIdempotencyStore(store),  // Optional dedup
-//	    nats.WithDLQHandler(handler),       // Optional DLQ
+//	    nats.WithPoisonDetector(detector), // Optional poison detection
 //	)
 //
 // # NATS JetStream (NewJetStream)

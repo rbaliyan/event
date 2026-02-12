@@ -22,6 +22,8 @@ type busOptions struct {
 	strictSchema   bool // If true, fail registration when schema provider errors occur
 	// Outbox store for transactional event publishing
 	outboxStore OutboxStore
+	// DLQ store for automatic dead letter routing
+	dlqStore DLQStore
 }
 
 // BusOption option function for bus configuration
@@ -223,6 +225,26 @@ func WithOutbox(store OutboxStore) BusOption {
 	return func(o *busOptions) {
 		if store != nil {
 			o.outboxStore = store
+		}
+	}
+}
+
+// WithDLQ configures a DLQ store for automatic dead letter routing.
+// When set, messages that fail permanently (rejected, max retries exhausted,
+// or decode errors) are automatically stored in the DLQ. This eliminates the
+// need for per-event DLQ configuration.
+//
+// Example:
+//
+//	dlqStore := dlq.NewMongoStore(db, dlq.WithCollection("_dlq"))
+//	bus, _ := event.NewBus("my-app",
+//	    event.WithTransport(transport),
+//	    event.WithDLQ(dlq.NewStoreAdapter(dlqStore, "my-service")),
+//	)
+func WithDLQ(store DLQStore) BusOption {
+	return func(o *busOptions) {
+		if store != nil {
+			o.dlqStore = store
 		}
 	}
 }

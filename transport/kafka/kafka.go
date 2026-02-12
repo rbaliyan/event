@@ -58,9 +58,6 @@ type Transport struct {
 	retention   time.Duration // Message retention time (0 = use broker default)
 	sendTimeout time.Duration // Timeout for sending to subscriber channel (backpressure)
 
-	// Native Kafka features
-	deadLetterTopic string // Topic for failed messages (empty = disabled)
-	maxRetries      int    // Max retries before sending to DLT
 }
 
 // kafkaEvent tracks event-specific state
@@ -75,10 +72,6 @@ type subscription struct {
 	topic              string               // Topic name
 	codec              codec.Codec          // Message codec
 
-	// Native Kafka features
-	producer        sarama.SyncProducer // For DLT publishing
-	deadLetterTopic string              // Topic for failed messages
-	maxRetries      int                 // Max retries before DLT
 }
 
 // Default configuration
@@ -298,10 +291,6 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		consumer:     consumer,
 		topic:        t.topicName(name),
 		codec:        t.codec,
-		// Native Kafka features
-		producer:        t.producer,
-		deadLetterTopic: t.deadLetterTopic,
-		maxRetries:      t.maxRetries,
 	}
 
 	// Start consuming in background with WaitGroup tracking
