@@ -442,11 +442,7 @@ func (s *RedisStateManager) LoadStalePayloads(ctx context.Context, staleTimeout 
 
 		results = append(results, &StaleMessage{
 			MessageID: e.messageID,
-			Data: MessageData{
-				Payload:   pv.Payload,
-				Metadata:  pv.Metadata,
-				EventName: pv.EventName,
-			},
+			Data:      MessageData(pv),
 			CreatedAt: e.value.CreatedAt,
 		})
 		if limit > 0 && len(results) >= limit {
