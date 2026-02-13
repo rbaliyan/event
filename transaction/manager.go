@@ -175,7 +175,7 @@ type Manager interface {
 	//
 	// If fn returns nil, the transaction is committed.
 	// If fn returns an error, the transaction is rolled back.
-	// If fn panics, the transaction is rolled back and the panic is re-raised.
+	// If fn panics, the transaction is rolled back and the panic is returned as an error wrapping ErrTransactionFailed.
 	Execute(ctx context.Context, fn func(tx Transaction) error) error
 }
 
