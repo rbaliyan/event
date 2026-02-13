@@ -482,24 +482,23 @@ func Example_panicRecovery() {
 	//
 	//       return nil
 	//   })
-	//   // ...the transaction is rolled back and the panic is re-raised
+	//   // ...the transaction is rolled back and an error wrapping ErrTransactionFailed is returned
 	//
 	// This ensures data consistency even when unexpected panics occur.
-	// The panic is re-raised after rollback, so it can be caught by
-	// your application's panic handler.
+	// The error wraps ErrTransactionFailed and can be checked with errors.Is().
 
 	fmt.Println("Panic recovery behavior:")
 	fmt.Println("1. Panic occurs in handler")
 	fmt.Println("2. Transaction is rolled back")
-	fmt.Println("3. Panic is re-raised")
-	fmt.Println("4. Application panic handler catches it")
+	fmt.Println("3. Error wrapping ErrTransactionFailed is returned")
+	fmt.Println("4. Caller checks with errors.Is(err, ErrTransactionFailed)")
 
 	// Output:
 	// Panic recovery behavior:
 	// 1. Panic occurs in handler
 	// 2. Transaction is rolled back
-	// 3. Panic is re-raised
-	// 4. Application panic handler catches it
+	// 3. Error wrapping ErrTransactionFailed is returned
+	// 4. Caller checks with errors.Is(err, ErrTransactionFailed)
 }
 
 // Example_keyFunctionPatterns demonstrates common patterns for idempotency key extraction.
