@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1350,6 +1351,36 @@ func TestBusLogger(t *testing.T) {
 	if !wait(ch, waitChTimeoutMS) {
 		t.Error("event not received")
 	}
+}
+
+// sanitize strings and remove special chars (test-only helper).
+func sanitize(s string) string {
+	var result strings.Builder
+	result.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if ('a' <= b && b <= 'z') ||
+			('A' <= b && b <= 'Z') ||
+			('0' <= b && b <= '9') {
+			result.WriteByte(b)
+		} else {
+			result.WriteByte(byte('_'))
+		}
+	}
+	return result.String()
+}
+
+// caller gets the caller function name (test-only helper).
+func caller(depth int) string {
+	pc, _, _, ok := runtime.Caller(depth)
+	if !ok {
+		return ""
+	}
+	details := runtime.FuncForPC(pc)
+	if details != nil {
+		return details.Name()
+	}
+	return ""
 }
 
 // TestSanitize verifies sanitize function

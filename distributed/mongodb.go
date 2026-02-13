@@ -573,13 +573,12 @@ func (s *MongoStateManager) LoadStalePayloads(ctx context.Context, staleTimeout 
 	return results, nil
 }
 
-// ClearPayload removes stored payload for a message.
+// ClearPayload removes the stored binary payload for a message.
+// Metadata and event_name are preserved for observability via the workers API.
 func (s *MongoStateManager) ClearPayload(ctx context.Context, messageID string) error {
 	_, err := s.collection.UpdateOne(ctx, bson.M{"_id": messageID}, bson.M{
 		"$unset": bson.M{
-			"payload":    "",
-			"metadata":   "",
-			"event_name": "",
+			"payload": "",
 		},
 	})
 	if err != nil {
@@ -628,27 +627,64 @@ func (s *MongoStateManager) EnsureIndexes(ctx context.Context) error {
 func (s *MongoStateManager) Indexes() []mongo.IndexModel {
 	if s.capped {
 		// Capped collections don't support TTL indexes
-		// Return a regular index for query performance
 		return []mongo.IndexModel{
 			{
 				Keys: bson.D{{Key: "expires_at", Value: 1}},
 			},
+			// Stale detection + ListWorkers with status filter and pagination
 			{
-				Keys: bson.D{{Key: "status", Value: 1}},
+				Keys: bson.D{
+					{Key: "status", Value: 1},
+					{Key: "updated_at", Value: 1},
+					{Key: "_id", Value: 1},
+				},
+			},
+			// ListWorkers pagination without status filter
+			{
+				Keys: bson.D{
+					{Key: "updated_at", Value: 1},
+					{Key: "_id", Value: 1},
+				},
+			},
+			// ListWorkers filtered by event_name with pagination
+			{
+				Keys: bson.D{
+					{Key: "event_name", Value: 1},
+					{Key: "updated_at", Value: 1},
+					{Key: "_id", Value: 1},
+				},
 			},
 		}
 	}
 
-	// Regular collection with TTL index and compound index for stale detection
+	// Regular collection
 	return []mongo.IndexModel{
+		// TTL index for automatic cleanup of expired states
 		{
 			Keys:    bson.D{{Key: "expires_at", Value: 1}},
 			Options: options.Index().SetExpireAfterSeconds(0),
 		},
+		// Stale detection + ListWorkers with status filter and pagination
 		{
 			Keys: bson.D{
 				{Key: "status", Value: 1},
 				{Key: "updated_at", Value: 1},
+				{Key: "_id", Value: 1},
+			},
+		},
+		// ListWorkers pagination without status filter
+		{
+			Keys: bson.D{
+				{Key: "updated_at", Value: 1},
+				{Key: "_id", Value: 1},
+			},
+		},
+		// ListWorkers filtered by event_name with pagination
+		{
+			Keys: bson.D{
+				{Key: "event_name", Value: 1},
+				{Key: "updated_at", Value: 1},
+				{Key: "_id", Value: 1},
 			},
 		},
 	}

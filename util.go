@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"runtime"
 	"runtime/debug"
-	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -20,23 +19,6 @@ const (
 	spanKeyEventBus            = "event.bus"
 	spanKeyEventSubscriptionID = "subscription.id"
 )
-
-// sanitize strings and remove special chars
-func sanitize(s string) string {
-	var result strings.Builder
-	result.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		b := s[i]
-		if ('a' <= b && b <= 'z') ||
-			('A' <= b && b <= 'Z') ||
-			('0' <= b && b <= '9') {
-			result.WriteByte(b)
-		} else {
-			result.WriteByte(byte('_'))
-		}
-	}
-	return result.String()
-}
 
 // AsyncHandler convert event handler to async
 // This wraps a typed handler to run in a goroutine with panic recovery.
@@ -92,15 +74,3 @@ func AsyncHandler[T any](handler Handler[T], copyContextFns ...func(to, from con
 	}
 }
 
-// caller gets the caller function name.
-func caller(depth int) string {
-	pc, _, _, ok := runtime.Caller(depth)
-	if !ok {
-		return ""
-	}
-	details := runtime.FuncForPC(pc)
-	if details != nil {
-		return details.Name()
-	}
-	return ""
-}

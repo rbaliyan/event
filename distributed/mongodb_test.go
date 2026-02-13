@@ -68,20 +68,20 @@ func TestMongoStateManager_Indexes_Regular(t *testing.T) {
 	sm := &MongoStateManager{capped: false}
 	indexes := sm.Indexes()
 
-	if len(indexes) != 2 {
-		t.Fatalf("expected 2 indexes for regular collection, got %d", len(indexes))
+	if len(indexes) != 4 {
+		t.Fatalf("expected 4 indexes for regular collection, got %d", len(indexes))
 	}
 
 	// First index: TTL index on expires_at
-	idx0 := indexes[0]
-	if idx0.Options == nil {
+	if indexes[0].Options == nil {
 		t.Fatal("expected TTL index to have options")
 	}
 
-	// Second index: compound index on (status, updated_at) for stale queries
-	idx1 := indexes[1]
-	if idx1.Options != nil {
-		t.Fatal("expected compound index to have no options (not TTL)")
+	// Remaining indexes: compound indexes without TTL options
+	for i := 1; i < len(indexes); i++ {
+		if indexes[i].Options != nil {
+			t.Fatalf("expected index %d to have no options (not TTL)", i)
+		}
 	}
 }
 
@@ -89,8 +89,8 @@ func TestMongoStateManager_Indexes_Capped(t *testing.T) {
 	sm := &MongoStateManager{capped: true}
 	indexes := sm.Indexes()
 
-	if len(indexes) != 2 {
-		t.Fatalf("expected 2 indexes for capped collection, got %d", len(indexes))
+	if len(indexes) != 4 {
+		t.Fatalf("expected 4 indexes for capped collection, got %d", len(indexes))
 	}
 
 	// Capped collections don't support TTL indexes
