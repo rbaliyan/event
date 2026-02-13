@@ -45,18 +45,24 @@ func (s *MemoryStateManager) ListWorkers(_ context.Context, filter WorkerFilter)
 		if err != nil {
 			return nil, err
 		}
+		found := false
 		for i, e := range all {
 			if filter.OrderDesc {
 				if e.UpdatedAt.Before(cur.UpdatedAt) || (e.UpdatedAt.Equal(cur.UpdatedAt) && e.MessageID < cur.ID) {
 					startIdx = i
+					found = true
 					break
 				}
 			} else {
 				if e.UpdatedAt.After(cur.UpdatedAt) || (e.UpdatedAt.Equal(cur.UpdatedAt) && e.MessageID > cur.ID) {
 					startIdx = i
+					found = true
 					break
 				}
 			}
+		}
+		if !found {
+			return &WorkerPage{Entries: nil, HasMore: false}, nil
 		}
 	}
 

@@ -458,6 +458,10 @@ func (s *RedisStateManager) ClearPayload(ctx context.Context, messageID string) 
 	return s.client.Del(ctx, s.payloadKey(messageID)).Err()
 }
 
+// RedisStateManager does not implement WorkerStore because listing
+// worker entries via Redis SCAN is O(N) and impractical at scale.
+// Use MongoStateManager or MemoryStateManager for worker observability.
+
 // Compile-time interface checks
 var (
 	_ Coordinator   = (*RedisStateManager)(nil)

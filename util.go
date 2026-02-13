@@ -21,8 +21,8 @@ const (
 	spanKeyEventSubscriptionID = "subscription.id"
 )
 
-// Sanitize strings and remove special chars
-func Sanitize(s string) string {
+// sanitize strings and remove special chars
+func sanitize(s string) string {
 	var result strings.Builder
 	result.Grow(len(s))
 	for i := 0; i < len(s); i++ {
@@ -92,8 +92,8 @@ func AsyncHandler[T any](handler Handler[T], copyContextFns ...func(to, from con
 	}
 }
 
-// Caller get caller function name
-func Caller(depth int) string {
+// caller gets the caller function name.
+func caller(depth int) string {
 	pc, _, _, ok := runtime.Caller(depth)
 	if !ok {
 		return ""

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -129,7 +130,7 @@ func (s *MongoStateManager) CountWorkers(ctx context.Context, filter WorkerFilte
 func (s *MongoStateManager) GetWorker(ctx context.Context, messageID string) (*WorkerEntry, error) {
 	var doc stateDocument
 	err := s.collection.FindOne(ctx, bson.M{"_id": messageID}).Decode(&doc)
-	if err == mongo.ErrNoDocuments {
+	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
 	}
 	if err != nil {
@@ -142,7 +143,13 @@ func (s *MongoStateManager) GetWorker(ctx context.Context, messageID string) (*W
 func (s *MongoStateManager) buildWorkerFilter(filter WorkerFilter) bson.M {
 	m := bson.M{}
 
-	if len(filter.Status) > 0 {
+	if filter.StaleTimeout > 0 {
+		// StaleTimeout implies processing status with stale updated_at.
+		// This is mutually exclusive with the Status filter.
+		cutoff := time.Now().Add(-filter.StaleTimeout)
+		m["status"] = statusProcessing
+		m["updated_at"] = bson.M{"$lt": cutoff}
+	} else if len(filter.Status) > 0 {
 		statuses := make([]string, len(filter.Status))
 		for i, st := range filter.Status {
 			statuses[i] = string(st)
@@ -154,11 +161,6 @@ func (s *MongoStateManager) buildWorkerFilter(filter WorkerFilter) bson.M {
 	}
 	if filter.WorkerID != "" {
 		m["worker_id"] = filter.WorkerID
-	}
-	if filter.StaleTimeout > 0 {
-		cutoff := time.Now().Add(-filter.StaleTimeout)
-		m["status"] = statusProcessing
-		m["updated_at"] = bson.M{"$lt": cutoff}
 	}
 	if !filter.CreatedAfter.IsZero() || !filter.CreatedBefore.IsZero() {
 		createdAt := bson.M{}

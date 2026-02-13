@@ -1352,7 +1352,7 @@ func TestBusLogger(t *testing.T) {
 	}
 }
 
-// TestSanitize verifies Sanitize function
+// TestSanitize verifies sanitize function
 func TestSanitize(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -1369,17 +1369,17 @@ func TestSanitize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			if got := Sanitize(tt.input); got != tt.expected {
-				t.Errorf("Sanitize(%s) = %s, want %s", tt.input, got, tt.expected)
+			if got := sanitize(tt.input); got != tt.expected {
+				t.Errorf("sanitize(%s) = %s, want %s", tt.input, got, tt.expected)
 			}
 		})
 	}
 }
 
-// TestCaller verifies Caller function
+// TestCaller verifies caller function
 func TestCaller(t *testing.T) {
 	// Test calling from this function
-	name := Caller(1)
+	name := caller(1)
 	if name == "" {
 		t.Error("expected non-empty caller name")
 	}
@@ -1388,7 +1388,7 @@ func TestCaller(t *testing.T) {
 	}
 
 	// Test invalid depth
-	name = Caller(100)
+	name = caller(100)
 	if name != "" {
 		t.Errorf("expected empty string for invalid depth, got %s", name)
 	}

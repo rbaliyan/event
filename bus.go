@@ -33,7 +33,7 @@ const (
 // Using the same name across distributed systems enables:
 // - WorkerPool mode: load balancing across instances (one receives)
 // - Broadcast mode: all instances receive messages
-var DefaultBusName = "event-bus"
+const DefaultBusName = "event-bus"
 
 // Bus is an event bus that manages events and their lifecycle
 type Bus struct {
