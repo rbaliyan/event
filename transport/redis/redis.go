@@ -48,7 +48,7 @@ type Client interface {
 var ErrClientRequired = errors.New("redis client is required")
 
 // DefaultBusName is used as default consumer group
-var DefaultBusName = "event-bus"
+const DefaultBusName = "event-bus"
 
 // Transport implements transport.Transport using Redis Streams
 type Transport struct {

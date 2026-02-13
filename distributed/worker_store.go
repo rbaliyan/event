@@ -39,10 +39,19 @@ type WorkerFilter struct {
 	OrderDesc     bool
 }
 
-// EffectiveLimit returns the limit to use for queries, defaulting to 50.
+// DefaultWorkerLimit is the default page size when Limit is 0.
+const DefaultWorkerLimit = 100
+
+// MaxWorkerLimit is the maximum allowed page size.
+const MaxWorkerLimit = 1000
+
+// EffectiveLimit returns the limit to use for queries, applying defaults and bounds.
 func (f WorkerFilter) EffectiveLimit() int {
-	if f.Limit <= 0 || f.Limit > 1000 {
-		return 50
+	if f.Limit <= 0 {
+		return DefaultWorkerLimit
+	}
+	if f.Limit > MaxWorkerLimit {
+		return MaxWorkerLimit
 	}
 	return f.Limit
 }

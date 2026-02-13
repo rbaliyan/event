@@ -37,7 +37,7 @@ var (
 )
 
 // DefaultBusName is used as default consumer group
-var DefaultBusName = "event-bus"
+const DefaultBusName = "event-bus"
 
 // Transport implements transport.Transport using Kafka
 type Transport struct {

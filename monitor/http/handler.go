@@ -15,13 +15,18 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// handlerOptions holds configuration for the Handler.
+type handlerOptions struct {
+	workerStore distributed.WorkerStore
+}
+
 // Option configures the Handler.
-type Option func(*Handler)
+type Option func(*handlerOptions)
 
 // WithWorkerStore enables the /v1/workers endpoints for worker pool state.
 func WithWorkerStore(ws distributed.WorkerStore) Option {
-	return func(h *Handler) {
-		h.workerStore = ws
+	return func(o *handlerOptions) {
+		o.workerStore = ws
 	}
 }
 
@@ -36,9 +41,15 @@ type Handler struct {
 
 // New creates a new HTTP handler for the monitor service.
 func New(store monitor.Store, opts ...Option) *Handler {
+	o := &handlerOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
+
 	h := &Handler{
-		store: store,
-		mux:   http.NewServeMux(),
+		store:       store,
+		workerStore: o.workerStore,
+		mux:         http.NewServeMux(),
 		marshaler: protojson.MarshalOptions{
 			EmitUnpopulated: true,
 			UseProtoNames:   true,
@@ -46,10 +57,6 @@ func New(store monitor.Store, opts ...Option) *Handler {
 		unmarshaler: protojson.UnmarshalOptions{
 			DiscardUnknown: true,
 		},
-	}
-
-	for _, opt := range opts {
-		opt(h)
 	}
 
 	// Register routes following REST conventions
@@ -300,13 +307,16 @@ func (h *Handler) writeResponse(w http.ResponseWriter, msg proto.Message) {
 func (h *Handler) writeError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	w.Write([]byte(`{"error":"` + message + `"}`))
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
 // writeJSON writes a JSON response using encoding/json (for non-protobuf types).
 func (h *Handler) writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	data, err := json.Marshal(v)
+	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(data)
 }

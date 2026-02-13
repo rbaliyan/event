@@ -421,6 +421,25 @@ orderEvent.Subscribe(ctx, collectAnalytics,
 
 All three backends implement both `Coordinator` and `PayloadStore` interfaces.
 
+### Worker Observability
+
+Query active and completed worker states using the `WorkerStore` interface
+(implemented by `MongoStateManager` and `MemoryStateManager`):
+
+```go
+page, _ := sm.ListWorkers(ctx, distributed.WorkerFilter{
+    Status: []distributed.WorkerState{distributed.WorkerStateProcessing},
+    Limit:  100,
+})
+
+count, _ := sm.CountWorkers(ctx, distributed.WorkerFilter{
+    StaleTimeout: 5 * time.Minute,
+})
+```
+
+**Note**: `RedisStateManager` does not implement `WorkerStore` due to
+Redis SCAN's O(N) cost.
+
 ## Transactional Outbox Pattern
 
 Ensure atomic publish with database writes:
@@ -549,6 +568,20 @@ Endpoints:
 - `GET /v1/monitor/entries` - List entries with filters
 - `GET /v1/monitor/entries/{event_id}` - Get entries for an event
 - `DELETE /v1/monitor/entries?older_than=1h` - Delete old entries
+
+### Worker Pool State (HTTP)
+
+When using distributed worker pools with MongoDB, expose worker state
+via the monitor HTTP handler:
+
+```go
+handler := monitorhttp.New(store, monitorhttp.WithWorkerStore(sm))
+```
+
+Endpoints:
+- `GET /v1/workers` - List workers (filters: status, event_name, stale_timeout, cursor, limit)
+- `GET /v1/workers/{message_id}` - Get single worker
+- `GET /v1/workers/count` - Count workers matching filter
 
 ## Schema Registry
 
