@@ -2,27 +2,40 @@
 package http
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/rbaliyan/event/v3/distributed"
 	"github.com/rbaliyan/event/v3/monitor"
 	pb "github.com/rbaliyan/event/v3/monitor/proto"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
+// Option configures the Handler.
+type Option func(*Handler)
+
+// WithWorkerStore enables the /v1/workers endpoints for worker pool state.
+func WithWorkerStore(ws distributed.WorkerStore) Option {
+	return func(h *Handler) {
+		h.workerStore = ws
+	}
+}
+
 // Handler implements http.Handler for the monitor service using protoJSON.
 type Handler struct {
 	store       monitor.Store
+	workerStore distributed.WorkerStore
 	mux         *http.ServeMux
 	marshaler   protojson.MarshalOptions
 	unmarshaler protojson.UnmarshalOptions
 }
 
 // New creates a new HTTP handler for the monitor service.
-func New(store monitor.Store) *Handler {
+func New(store monitor.Store, opts ...Option) *Handler {
 	h := &Handler{
 		store: store,
 		mux:   http.NewServeMux(),
@@ -35,6 +48,10 @@ func New(store monitor.Store) *Handler {
 		},
 	}
 
+	for _, opt := range opts {
+		opt(h)
+	}
+
 	// Register routes following REST conventions
 	// GET /v1/monitor/entries - List entries with query params
 	// GET /v1/monitor/entries/{event_id} - Get entries by event ID
@@ -44,6 +61,13 @@ func New(store monitor.Store) *Handler {
 	h.mux.HandleFunc("/v1/monitor/entries", h.handleEntries)
 	h.mux.HandleFunc("/v1/monitor/entries/", h.handleEntriesWithPath)
 	h.mux.HandleFunc("/v1/monitor/entries/count", h.handleCount)
+
+	// Register worker pool state endpoints if worker store is configured
+	if h.workerStore != nil {
+		h.mux.HandleFunc("/v1/workers", h.handleWorkerList)
+		h.mux.HandleFunc("/v1/workers/", h.handleWorkerByID)
+		h.mux.HandleFunc("/v1/workers/count", h.handleWorkerCount)
+	}
 
 	return h
 }
@@ -277,4 +301,12 @@ func (h *Handler) writeError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	w.Write([]byte(`{"error":"` + message + `"}`))
+}
+
+// writeJSON writes a JSON response using encoding/json (for non-protobuf types).
+func (h *Handler) writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+	}
 }
