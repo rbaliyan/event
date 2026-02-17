@@ -60,6 +60,7 @@ message Entry {
   google.protobuf.Duration duration = 12;
   string trace_id = 13;
   string span_id = 14;
+  string instance_id = 15;
 }
 
 // Filter specifies criteria for listing monitor entries.
@@ -78,6 +79,7 @@ message Filter {
   string cursor = 12;
   int32 limit = 13;
   bool order_desc = 14;
+  string instance_id = 15;
 }
 
 // ListRequest is the request for List RPC.

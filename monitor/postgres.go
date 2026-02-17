@@ -24,6 +24,7 @@ import (
 //	    subscriber_description TEXT,
 //	    event_name TEXT NOT NULL,
 //	    bus_id TEXT NOT NULL,
+//	    instance_id TEXT,
 //	    delivery_mode TEXT NOT NULL,
 //	    metadata JSONB,
 //	    status TEXT NOT NULL,
@@ -41,6 +42,7 @@ import (
 //	CREATE INDEX idx_monitor_started_at ON monitor_entries(started_at);
 //	CREATE INDEX idx_monitor_delivery_mode ON monitor_entries(delivery_mode);
 //	CREATE INDEX idx_monitor_subscriber_name ON monitor_entries(subscriber_name);
+//	CREATE INDEX idx_monitor_instance_id ON monitor_entries(instance_id);
 //
 // Example:
 //
@@ -125,10 +127,10 @@ func (s *PostgresStore) Record(ctx context.Context, entry *Entry) error {
 	query := fmt.Sprintf(`
 		INSERT INTO %s (
 			event_id, subscription_id, subscriber_name, subscriber_description,
-			event_name, bus_id, delivery_mode,
+			event_name, bus_id, instance_id, delivery_mode,
 			metadata, status, error, retry_count, started_at, completed_at,
 			duration_ms, trace_id, span_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (event_id, subscription_id) DO UPDATE SET
 			status = EXCLUDED.status,
 			error = EXCLUDED.error,
@@ -150,6 +152,7 @@ func (s *PostgresStore) Record(ctx context.Context, entry *Entry) error {
 		base.StringPtr(entry.SubscriberDescription),
 		entry.EventName,
 		entry.BusID,
+		base.StringPtr(entry.InstanceID),
 		entry.DeliveryMode.String(),
 		metadataJSON,
 		string(entry.Status),
@@ -172,7 +175,7 @@ func (s *PostgresStore) Record(ctx context.Context, entry *Entry) error {
 func (s *PostgresStore) Get(ctx context.Context, eventID, subscriptionID string) (*Entry, error) {
 	query := fmt.Sprintf(`
 		SELECT event_id, subscription_id, subscriber_name, subscriber_description,
-		       event_name, bus_id, delivery_mode,
+		       event_name, bus_id, instance_id, delivery_mode,
 		       metadata, status, error, retry_count, started_at, completed_at,
 		       duration_ms, trace_id, span_id
 		FROM %s
@@ -194,7 +197,7 @@ func (s *PostgresStore) Get(ctx context.Context, eventID, subscriptionID string)
 func (s *PostgresStore) GetByEventID(ctx context.Context, eventID string) ([]*Entry, error) {
 	query := fmt.Sprintf(`
 		SELECT event_id, subscription_id, subscriber_name, subscriber_description,
-		       event_name, bus_id, delivery_mode,
+		       event_name, bus_id, instance_id, delivery_mode,
 		       metadata, status, error, retry_count, started_at, completed_at,
 		       duration_ms, trace_id, span_id
 		FROM %s
@@ -236,6 +239,7 @@ func (s *PostgresStore) buildFilterQuery(filter Filter) (*base.QueryBuilder, err
 	qb.AddIfNotEmpty("subscriber_name = $%d", filter.SubscriberName)
 	qb.AddIfNotEmpty("event_name = $%d", filter.EventName)
 	qb.AddIfNotEmpty("bus_id = $%d", filter.BusID)
+	qb.AddIfNotEmpty("instance_id = $%d", filter.InstanceID)
 
 	if filter.DeliveryMode != nil {
 		qb.Add("delivery_mode = $%d", filter.DeliveryMode.String())
@@ -320,7 +324,7 @@ func (s *PostgresStore) List(ctx context.Context, filter Filter) (*Page, error) 
 
 	query := fmt.Sprintf(`
 		SELECT event_id, subscription_id, subscriber_name, subscriber_description,
-		       event_name, bus_id, delivery_mode,
+		       event_name, bus_id, instance_id, delivery_mode,
 		       metadata, status, error, retry_count, started_at, completed_at,
 		       duration_ms, trace_id, span_id
 		FROM %s
@@ -440,6 +444,7 @@ func (s *PostgresStore) CreateTable(ctx context.Context) error {
 			subscriber_description TEXT,
 			event_name TEXT NOT NULL,
 			bus_id TEXT NOT NULL,
+			instance_id TEXT,
 			delivery_mode TEXT NOT NULL,
 			metadata JSONB,
 			status TEXT NOT NULL,
@@ -457,7 +462,9 @@ func (s *PostgresStore) CreateTable(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_%s_started_at ON %s(started_at);
 		CREATE INDEX IF NOT EXISTS idx_%s_delivery_mode ON %s(delivery_mode);
 		CREATE INDEX IF NOT EXISTS idx_%s_subscriber_name ON %s(subscriber_name);
+		CREATE INDEX IF NOT EXISTS idx_%s_instance_id ON %s(instance_id);
 	`, s.opts.tableName,
+		s.opts.tableName, s.opts.tableName,
 		s.opts.tableName, s.opts.tableName,
 		s.opts.tableName, s.opts.tableName,
 		s.opts.tableName, s.opts.tableName,
@@ -483,6 +490,7 @@ func (s *PostgresStore) scanEntry(row *sql.Row) (*Entry, error) {
 	var durationMs sql.NullInt64
 	var traceID, spanID sql.NullString
 	var subscriberName, subscriberDescription sql.NullString
+	var instanceID sql.NullString
 
 	err := row.Scan(
 		&entry.EventID,
@@ -491,6 +499,7 @@ func (s *PostgresStore) scanEntry(row *sql.Row) (*Entry, error) {
 		&subscriberDescription,
 		&entry.EventName,
 		&entry.BusID,
+		&instanceID,
 		&deliveryMode,
 		&metadataJSON,
 		&status,
@@ -515,6 +524,7 @@ func (s *PostgresStore) scanEntry(row *sql.Row) (*Entry, error) {
 	entry.SpanID = base.NullString(spanID)
 	entry.SubscriberName = base.NullString(subscriberName)
 	entry.SubscriberDescription = base.NullString(subscriberDescription)
+	entry.InstanceID = base.NullString(instanceID)
 
 	if len(metadataJSON) > 0 {
 		metadata, err := base.UnmarshalMetadata(metadataJSON)
@@ -538,6 +548,7 @@ func (s *PostgresStore) scanEntryRows(rows *sql.Rows) (*Entry, error) {
 	var durationMs sql.NullInt64
 	var traceID, spanID sql.NullString
 	var subscriberName, subscriberDescription sql.NullString
+	var instanceID sql.NullString
 
 	err := rows.Scan(
 		&entry.EventID,
@@ -546,6 +557,7 @@ func (s *PostgresStore) scanEntryRows(rows *sql.Rows) (*Entry, error) {
 		&subscriberDescription,
 		&entry.EventName,
 		&entry.BusID,
+		&instanceID,
 		&deliveryMode,
 		&metadataJSON,
 		&status,
@@ -570,6 +582,7 @@ func (s *PostgresStore) scanEntryRows(rows *sql.Rows) (*Entry, error) {
 	entry.SpanID = base.NullString(spanID)
 	entry.SubscriberName = base.NullString(subscriberName)
 	entry.SubscriberDescription = base.NullString(subscriberDescription)
+	entry.InstanceID = base.NullString(instanceID)
 
 	if len(metadataJSON) > 0 {
 		metadata, err := base.UnmarshalMetadata(metadataJSON)

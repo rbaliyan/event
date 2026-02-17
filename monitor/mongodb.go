@@ -55,6 +55,7 @@ type MongoEntry struct {
 	SubscriberDescription string            `bson:"subscriber_description,omitempty"`
 	EventName             string            `bson:"event_name"`
 	BusID                 string            `bson:"bus_id"`
+	InstanceID            string            `bson:"instance_id,omitempty"`
 	DeliveryMode          string            `bson:"delivery_mode"`
 	Metadata              map[string]string `bson:"metadata,omitempty"`
 	Status                string            `bson:"status"`
@@ -76,6 +77,7 @@ func (m *MongoEntry) ToEntry() *Entry {
 		SubscriberDescription: m.SubscriberDescription,
 		EventName:             m.EventName,
 		BusID:                 m.BusID,
+		InstanceID:            m.InstanceID,
 		DeliveryMode:          ParseDeliveryMode(m.DeliveryMode),
 		Metadata:              m.Metadata,
 		Status:                Status(m.Status),
@@ -112,6 +114,7 @@ func FromEntry(e *Entry) *MongoEntry {
 		SubscriberDescription: e.SubscriberDescription,
 		EventName:             e.EventName,
 		BusID:                 e.BusID,
+		InstanceID:            e.InstanceID,
 		DeliveryMode:          e.DeliveryMode.String(),
 		Metadata:              e.Metadata,
 		Status:                string(e.Status),
@@ -206,6 +209,7 @@ func (s *MongoStore) Record(ctx context.Context, entry *Entry) error {
 			"subscriber_description": mongoEntry.SubscriberDescription,
 			"event_name":             mongoEntry.EventName,
 			"bus_id":                 mongoEntry.BusID,
+			"instance_id":            mongoEntry.InstanceID,
 			"delivery_mode":          mongoEntry.DeliveryMode,
 			"metadata":               mongoEntry.Metadata,
 			"status":                 mongoEntry.Status,
@@ -411,6 +415,9 @@ func (s *MongoStore) buildFilter(filter Filter) bson.M {
 	}
 	if filter.BusID != "" {
 		mongoFilter["bus_id"] = filter.BusID
+	}
+	if filter.InstanceID != "" {
+		mongoFilter["instance_id"] = filter.InstanceID
 	}
 	if filter.DeliveryMode != nil {
 		mongoFilter["delivery_mode"] = filter.DeliveryMode.String()

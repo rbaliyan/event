@@ -8,10 +8,37 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Middleware creates a middleware that records event processing in the monitor store.
+// MiddlewareOption configures the monitor middleware.
+type MiddlewareOption func(*middlewareOptions)
+
+// middlewareOptions holds configuration for the monitor middleware.
+type middlewareOptions struct {
+	mode       *DeliveryMode
+	instanceID string
+}
+
+// WithMiddlewareMode sets an explicit delivery mode for the middleware.
+// When nil (default), the mode is auto-detected from the subscription context.
+func WithMiddlewareMode(mode DeliveryMode) MiddlewareOption {
+	return func(o *middlewareOptions) {
+		o.mode = &mode
+	}
+}
+
+// WithMiddlewareInstanceID sets the instance identifier recorded on each entry.
+// This is typically the Kubernetes pod name or hostname, used to correlate
+// monitor entries to a specific process instance.
+func WithMiddlewareInstanceID(id string) MiddlewareOption {
+	return func(o *middlewareOptions) {
+		o.instanceID = id
+	}
+}
+
+// NewMiddleware creates a middleware that records event processing in the monitor store.
 //
-// The delivery mode is automatically detected from the subscription context.
-// Use MiddlewareWithMode for explicit mode configuration.
+// Options:
+//   - WithMiddlewareMode: Set explicit delivery mode (default: auto-detect from context)
+//   - WithMiddlewareInstanceID: Set instance identifier for pod/host correlation
 //
 // The middleware:
 //  1. Records a pending entry when the handler starts
@@ -23,26 +50,17 @@ import (
 //	store := monitor.NewPostgresStore(db)
 //	orderEvent.Subscribe(ctx, handler,
 //	    event.AsWorker[Order](),
-//	    event.WithMiddleware(monitor.Middleware[Order](store)),
+//	    event.WithMiddleware(monitor.NewMiddleware[Order](store,
+//	        monitor.WithMiddlewareMode(monitor.WorkerPool),
+//	        monitor.WithMiddlewareInstanceID(os.Getenv("POD_NAME")),
+//	    )),
 //	)
-func Middleware[T any](store Store) event.Middleware[T] {
-	return MiddlewareWithMode[T](store, nil)
-}
+func NewMiddleware[T any](store Store, opts ...MiddlewareOption) event.Middleware[T] {
+	o := &middlewareOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
 
-// MiddlewareWithMode creates a middleware with explicit mode configuration.
-//
-// Use this when mode auto-detection is not desired or when you want to
-// force a specific mode regardless of the subscription configuration.
-//
-// Parameters:
-//   - store: The monitor store to write entries to
-//   - mode: Explicit delivery mode (nil = auto-detect from context)
-//
-// Example:
-//
-//	// Force WorkerPool mode
-//	middleware := monitor.MiddlewareWithMode[Order](store, &monitor.WorkerPool)
-func MiddlewareWithMode[T any](store Store, mode *DeliveryMode) event.Middleware[T] {
 	return func(next event.Handler[T]) event.Handler[T] {
 		return func(ctx context.Context, ev event.Event[T], data T) error {
 			// Extract context data
@@ -55,7 +73,7 @@ func MiddlewareWithMode[T any](store Store, mode *DeliveryMode) event.Middleware
 			subscriberDescription := event.ContextSubscriberDescription(ctx)
 
 			// Determine delivery mode
-			deliveryMode := detectDeliveryMode(ctx, mode)
+			deliveryMode := detectDeliveryMode(ctx, o.mode)
 
 			// For WorkerPool mode, subscription ID is recorded but not key
 			subIDForEntry := subscriptionID
@@ -71,6 +89,7 @@ func MiddlewareWithMode[T any](store Store, mode *DeliveryMode) event.Middleware
 				SubscriberDescription: subscriberDescription,
 				EventName:             eventName,
 				BusID:                 busID,
+				InstanceID:            o.instanceID,
 				DeliveryMode:          deliveryMode,
 				Metadata:              metadata,
 				Status:                StatusPending,
@@ -123,6 +142,35 @@ func MiddlewareWithMode[T any](store Store, mode *DeliveryMode) event.Middleware
 			return handlerErr
 		}
 	}
+}
+
+// Middleware creates a middleware that records event processing in the monitor store.
+//
+// The delivery mode is automatically detected from the subscription context.
+// Use NewMiddleware for more configuration options.
+//
+// Example:
+//
+//	store := monitor.NewPostgresStore(db)
+//	orderEvent.Subscribe(ctx, handler,
+//	    event.AsWorker[Order](),
+//	    event.WithMiddleware(monitor.Middleware[Order](store)),
+//	)
+func Middleware[T any](store Store) event.Middleware[T] {
+	return NewMiddleware[T](store)
+}
+
+// MiddlewareWithMode creates a middleware with explicit mode configuration.
+//
+// Use this when mode auto-detection is not desired or when you want to
+// force a specific mode regardless of the subscription configuration.
+//
+// Deprecated: Use NewMiddleware with WithMiddlewareMode instead.
+func MiddlewareWithMode[T any](store Store, mode *DeliveryMode) event.Middleware[T] {
+	if mode != nil {
+		return NewMiddleware[T](store, WithMiddlewareMode(*mode))
+	}
+	return NewMiddleware[T](store)
 }
 
 // detectDeliveryMode determines the delivery mode from context or explicit configuration.

@@ -242,6 +242,9 @@ func (s *MemoryStore) matchesFilter(entry *Entry, filter Filter) bool {
 	if filter.BusID != "" && entry.BusID != filter.BusID {
 		return false
 	}
+	if filter.InstanceID != "" && entry.InstanceID != filter.InstanceID {
+		return false
+	}
 	if filter.DeliveryMode != nil && entry.DeliveryMode != *filter.DeliveryMode {
 		return false
 	}
