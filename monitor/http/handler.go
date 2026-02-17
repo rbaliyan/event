@@ -243,6 +243,9 @@ func (h *Handler) parseFilterFromQuery(r *http.Request) monitor.Filter {
 	if v := q.Get("bus_id"); v != "" {
 		filter.BusID = v
 	}
+	if v := q.Get("instance_id"); v != "" {
+		filter.InstanceID = v
+	}
 	if v := q.Get("delivery_mode"); v != "" {
 		dm := monitor.ParseDeliveryMode(v)
 		filter.DeliveryMode = &dm

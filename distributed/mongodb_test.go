@@ -7,9 +7,10 @@ import (
 )
 
 func TestGenerateWorkerID(t *testing.T) {
-	// Generate two IDs and verify they are unique and have correct length
-	id1 := generateWorkerID()
-	id2 := generateWorkerID()
+	// Without instance ID: generates 24-character hex strings
+	sm := &MongoStateManager{}
+	id1 := sm.generateWorkerID()
+	id2 := sm.generateWorkerID()
 
 	if id1 == "" {
 		t.Fatal("expected non-empty worker ID")
@@ -22,6 +23,26 @@ func TestGenerateWorkerID(t *testing.T) {
 		t.Fatalf("expected worker ID length 24, got %d", len(id1))
 	}
 	if id1 == id2 {
+		t.Fatal("expected unique worker IDs")
+	}
+}
+
+func TestGenerateWorkerID_WithInstanceID(t *testing.T) {
+	sm := &MongoStateManager{instanceID: "compass-7d8f9b6c4-x2k9p"}
+	id := sm.generateWorkerID()
+
+	// Format: "instanceID:randomHex"
+	if len(id) != len("compass-7d8f9b6c4-x2k9p")+1+24 {
+		t.Fatalf("expected worker ID length %d, got %d: %s",
+			len("compass-7d8f9b6c4-x2k9p")+1+24, len(id), id)
+	}
+	if id[:len("compass-7d8f9b6c4-x2k9p")+1] != "compass-7d8f9b6c4-x2k9p:" {
+		t.Fatalf("expected prefix 'compass-7d8f9b6c4-x2k9p:', got %s", id)
+	}
+
+	// Two calls should produce different IDs (different random nonce)
+	id2 := sm.generateWorkerID()
+	if id == id2 {
 		t.Fatal("expected unique worker IDs")
 	}
 }

@@ -120,6 +120,7 @@ type stateDocument struct {
 type MongoStateManager struct {
 	collection    *mongo.Collection
 	completionTTL time.Duration
+	instanceID    string
 	capped        bool
 	cappedSize    int64 // Size in bytes
 	cappedMaxDocs int64 // Max documents (0 = unlimited)
@@ -162,6 +163,7 @@ func NewMongoStateManager(db *mongo.Database, opts ...Option) *MongoStateManager
 	return &MongoStateManager{
 		collection:    db.Collection(collName),
 		completionTTL: o.completionTTL,
+		instanceID:    o.instanceID,
 		capped:        o.capped,
 		cappedSize:    o.cappedSize,
 		cappedMaxDocs: o.cappedMaxDocs,
@@ -223,10 +225,16 @@ func isNamespaceExistsError(err error) bool {
 }
 
 // generateWorkerID creates a unique identifier for an Acquire call.
-func generateWorkerID() string {
+// If instanceID is set, the format is "instanceID:randomHex".
+// Otherwise, the format is just "randomHex" (backward compatible).
+func (s *MongoStateManager) generateWorkerID() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	nonce := hex.EncodeToString(b)
+	if s.instanceID != "" {
+		return s.instanceID + ":" + nonce
+	}
+	return nonce
 }
 
 // Acquire atomically transitions a message to "processing" state using MongoDB findOneAndUpdate.
@@ -251,7 +259,7 @@ func generateWorkerID() string {
 func (s *MongoStateManager) Acquire(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
 	now := time.Now()
 	expiresAt := now.Add(ttl)
-	workerID := generateWorkerID()
+	workerID := s.generateWorkerID()
 
 	filter := bson.M{
 		"_id": messageID,

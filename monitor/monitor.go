@@ -103,6 +103,7 @@ type Entry struct {
 	// Event context
 	EventName    string            `json:"event_name"`
 	BusID        string            `json:"bus_id"`
+	InstanceID   string            `json:"instance_id,omitempty"`
 	DeliveryMode DeliveryMode      `json:"delivery_mode"`
 	Metadata     map[string]string `json:"metadata,omitempty"`
 

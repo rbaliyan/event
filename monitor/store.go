@@ -51,6 +51,7 @@ type Filter struct {
 	SubscriptionID string // Exact match on subscription ID (only meaningful for Broadcast)
 	EventName      string // Filter by event name
 	BusID          string // Filter by bus ID
+	InstanceID     string // Filter by instance ID (pod/hostname)
 	SubscriberName string // Exact match on subscriber name (human-readable identifier)
 
 	// Mode filter
