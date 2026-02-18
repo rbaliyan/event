@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"runtime"
 	"runtime/debug"
 
 	"go.opentelemetry.io/otel"
@@ -16,8 +15,7 @@ const (
 	spanKeyEventID             = "event.id"
 	spanKeyEventName           = "event.name"
 	spanKeyEventSource         = "event.source"
-	spanKeyEventBus            = "event.bus"
-	spanKeyEventSubscriptionID = "subscription.id"
+	spanKeyEventBus = "event.bus"
 )
 
 // AsyncHandler convert event handler to async
@@ -29,12 +27,9 @@ func AsyncHandler[T any](handler Handler[T], copyContextFns ...func(to, from con
 		// Call handler with go routine
 		go func() {
 			defer func() {
-				_, file, l, _ := runtime.Caller(1)
 				if err := recover(); err != nil {
 					slog.Error("async handler panic recovered",
 						"event", ev.Name(),
-						"line", l,
-						"file", file,
 						"error", err,
 						"stack", string(debug.Stack()),
 					)

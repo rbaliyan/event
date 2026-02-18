@@ -644,7 +644,13 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 				defer bus.inflightWG.Done()
 
 				// Build context and call handler directly (payload already decoded).
-				handlerCtx := contextWithInfoCoalesced(out.msg.Context(), out.msg.ID(), e.name, bus.ID(), sub.ID(), out.msg.Metadata(), out.msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription, out.count)
+				handlerCtx := contextWithInfo(out.msg.Context(), contextInfo{
+					id: out.msg.ID(), name: e.name, source: bus.ID(), subID: sub.ID(),
+					metadata: out.msg.Metadata(), msgTime: out.msg.Timestamp(),
+					logger: logger, bus: bus, mode: subOpts.mode,
+					subscriberName: subOpts.subscriberName, subscriberDescription: subOpts.subscriberDescription,
+					coalescedCount: out.count,
+				})
 				handlerCtx = ContextWithRawPayload(handlerCtx, out.msg.Payload())
 
 				// Best-effort: ack before handler (at-most-once delivery).
@@ -755,7 +761,12 @@ func (e *eventImpl[T]) processMessage(
 		}
 
 		// Custom decode error handler decides the action
-		decodeCtx := contextWithInfo(detachedContext(msg.Context()), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription)
+		decodeCtx := contextWithInfo(detachedContext(msg.Context()), contextInfo{
+			id: msg.ID(), name: e.name, source: bus.ID(), subID: subID,
+			metadata: msg.Metadata(), msgTime: msg.Timestamp(),
+			logger: logger, bus: bus, mode: subOpts.mode,
+			subscriberName: subOpts.subscriberName, subscriberDescription: subOpts.subscriberDescription,
+		})
 		decodeResult := e.decodeErrorHandler(decodeCtx, msg, err)
 
 		if bestEffort {
@@ -792,7 +803,13 @@ func (e *eventImpl[T]) processMessage(
 	}
 
 	// Update context values and call handler
-	handlerCtx := contextWithInfoCoalesced(msg.Context(), msg.ID(), e.name, bus.ID(), subID, msg.Metadata(), msg.Timestamp(), logger, bus, subOpts.mode, subOpts.subscriberName, subOpts.subscriberDescription, coalescedCount)
+	handlerCtx := contextWithInfo(msg.Context(), contextInfo{
+		id: msg.ID(), name: e.name, source: bus.ID(), subID: subID,
+		metadata: msg.Metadata(), msgTime: msg.Timestamp(),
+		logger: logger, bus: bus, mode: subOpts.mode,
+		subscriberName: subOpts.subscriberName, subscriberDescription: subOpts.subscriberDescription,
+		coalescedCount: coalescedCount,
+	})
 	handlerCtx = ContextWithRawPayload(handlerCtx, msg.Payload())
 	handlerErr := wrappedHandler(handlerCtx, e, typedData)
 

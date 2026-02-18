@@ -42,9 +42,10 @@ const (
 var (
 	// DefaultSubscriberTimeout default subscriber timeout (0 = no timeout)
 	DefaultSubscriberTimeout time.Duration = 0
-	// DefaultMaxRetries default max retry attempts (0 = unlimited)
-	DefaultMaxRetries = 0
 )
+
+// DefaultMaxRetries is the default max retry attempts (0 = unlimited).
+const DefaultMaxRetries = 0
 
 // eventOptions holds configuration for events (unexported)
 // These are event-level concerns, not bus-level infrastructure
@@ -403,10 +404,30 @@ func (o *subscribeOptions[T]) transportOptions() []transport.SubscribeOption {
 	}
 
 	if o.ackPolicy != AckExplicit {
-		opts = append(opts, transport.WithAckPolicy(transport.AckPolicy(o.ackPolicy)))
+		opts = append(opts, transport.WithAckPolicy(o.ackPolicy))
 	}
 
 	return opts
+}
+
+// AsWorker configures the subscription for WorkerPool delivery mode.
+// Each message is delivered to only ONE subscriber (load balancing).
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler, event.AsWorker[Order]())
+func AsWorker[T any]() SubscribeOption[T] {
+	return WithDeliveryMode[T](WorkerPool)
+}
+
+// AsBroadcast configures the subscription for Broadcast delivery mode.
+// All subscribers receive every message. This is the default mode.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler, event.AsBroadcast[Order]())
+func AsBroadcast[T any]() SubscribeOption[T] {
+	return WithDeliveryMode[T](Broadcast)
 }
 
 // WithDeliveryMode sets the message delivery mode.

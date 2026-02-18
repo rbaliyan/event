@@ -174,12 +174,10 @@ func TestContextCoalescedCount_DefaultZero(t *testing.T) {
 }
 
 func TestContextCoalescedCount_Set(t *testing.T) {
-	ctx := contextWithInfoCoalesced(
-		context.Background(),
-		"id", "name", "source", "sub",
-		nil, time.Now(), nil, nil,
-		Broadcast, "", "", 5,
-	)
+	ctx := contextWithInfo(context.Background(), contextInfo{
+		id: "id", name: "name", source: "source", subID: "sub",
+		msgTime: time.Now(), mode: Broadcast, coalescedCount: 5,
+	})
 	if count := ContextCoalescedCount(ctx); count != 5 {
 		t.Errorf("expected 5, got %d", count)
 	}
