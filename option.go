@@ -39,7 +39,7 @@ const (
 )
 
 // Default event configuration values
-var (
+const (
 	// DefaultSubscriberTimeout default subscriber timeout (0 = no timeout)
 	DefaultSubscriberTimeout time.Duration = 0
 )

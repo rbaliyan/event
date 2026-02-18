@@ -82,8 +82,8 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		name = DefaultBusName
 	}
 
-	// Transport is required - use WithBusTransport() to set it
-	// For channel transport: NewBus(name, WithBusTransport(channel.New()))
+	// Transport is required - use WithTransport() to set it
+	// For channel transport: NewBus(name, WithTransport(channel.New()))
 	transport := o.transport
 	if transport == nil {
 		return nil, ErrTransportRequired
