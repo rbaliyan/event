@@ -192,24 +192,36 @@ func ContextWithLogger(ctx context.Context, l *slog.Logger) context.Context {
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{logger: l})
 }
 
-func contextWithInfo(ctx context.Context, id, name, source, subID string, metadata map[string]string, msgTime time.Time, l *slog.Logger, b *Bus, mode DeliveryMode, subscriberName, subscriberDescription string) context.Context {
-	return contextWithInfoCoalesced(ctx, id, name, source, subID, metadata, msgTime, l, b, mode, subscriberName, subscriberDescription, 0)
+// contextInfo groups parameters for contextWithInfo to avoid long parameter lists.
+type contextInfo struct {
+	id                    string
+	name                  string
+	source                string
+	subID                 string
+	metadata              map[string]string
+	msgTime               time.Time
+	logger                *slog.Logger
+	bus                   *Bus
+	mode                  DeliveryMode
+	subscriberName        string
+	subscriberDescription string
+	coalescedCount        int
 }
 
-func contextWithInfoCoalesced(ctx context.Context, id, name, source, subID string, metadata map[string]string, msgTime time.Time, l *slog.Logger, b *Bus, mode DeliveryMode, subscriberName, subscriberDescription string, coalescedCount int) context.Context {
+func contextWithInfo(ctx context.Context, info contextInfo) context.Context {
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{
-		eventID:               id,
-		name:                  name,
-		subID:                 subID,
-		source:                source,
-		metadata:              metadata,
-		messageTime:           msgTime,
-		logger:                l,
-		bus:                   b,
-		deliveryMode:          mode,
-		subscriberName:        subscriberName,
-		subscriberDescription: subscriberDescription,
-		coalescedCount:        coalescedCount,
+		eventID:               info.id,
+		name:                  info.name,
+		subID:                 info.subID,
+		source:                info.source,
+		metadata:              info.metadata,
+		messageTime:           info.msgTime,
+		logger:                info.logger,
+		bus:                   info.bus,
+		deliveryMode:          info.mode,
+		subscriberName:        info.subscriberName,
+		subscriberDescription: info.subscriberDescription,
+		coalescedCount:        info.coalescedCount,
 	})
 }
 
