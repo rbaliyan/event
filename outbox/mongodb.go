@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -355,7 +356,7 @@ func (s *MongoStore) GetPending(ctx context.Context, limit int) ([]*Message, err
 	for i := 0; i < limit; i++ {
 		msg, err := s.claimNextPending(ctx)
 		if err != nil {
-			if err == mongo.ErrNoDocuments {
+			if errors.Is(err, mongo.ErrNoDocuments) {
 				break // No more pending messages
 			}
 			return messages, fmt.Errorf("claim pending: %w", err)
@@ -398,7 +399,7 @@ func (s *MongoStore) GetPendingMongo(ctx context.Context, limit int) ([]*MongoMe
 	for i := 0; i < limit; i++ {
 		msg, err := s.claimNextPendingMongo(ctx)
 		if err != nil {
-			if err == mongo.ErrNoDocuments {
+			if errors.Is(err, mongo.ErrNoDocuments) {
 				break // No more pending messages
 			}
 			return messages, fmt.Errorf("claim pending: %w", err)

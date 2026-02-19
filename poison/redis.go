@@ -2,6 +2,7 @@ package poison
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -136,7 +137,7 @@ func (s *RedisStore) GetFailureCount(ctx context.Context, messageID string) (int
 	key := s.failurePrefix + messageID
 
 	val, err := s.client.Get(ctx, key).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return 0, nil
 	}
 	if err != nil {

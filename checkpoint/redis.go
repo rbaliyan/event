@@ -17,6 +17,7 @@ package checkpoint
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
@@ -109,7 +110,7 @@ func (s *RedisStore) Save(ctx context.Context, subscriberID string, position tim
 // Returns zero time and nil error if no checkpoint exists.
 func (s *RedisStore) Load(ctx context.Context, subscriberID string) (time.Time, error) {
 	value, err := s.client.HGet(ctx, s.key, subscriberID).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		// No checkpoint exists - this is not an error
 		return time.Time{}, nil
 	}

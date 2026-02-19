@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -60,7 +61,7 @@ func (s *MongoResumeTokenStore) Load(ctx context.Context) (bson.Raw, error) {
 		Token bson.Raw `bson:"token"`
 	}
 	err := s.collection.FindOne(ctx, filter).Decode(&result)
-	if err == mongo.ErrNoDocuments {
+	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
 	}
 	if err != nil {

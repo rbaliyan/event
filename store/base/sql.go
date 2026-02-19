@@ -3,9 +3,18 @@ package base
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// validIdentifier matches safe SQL identifiers (alphanumeric and underscores).
+var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// ValidIdentifier returns true if name is a safe SQL identifier.
+func ValidIdentifier(name string) bool {
+	return validIdentifier.MatchString(name)
+}
 
 // QueryBuilder helps construct SQL queries with dynamic conditions.
 // It handles parameter numbering automatically for PostgreSQL-style placeholders ($1, $2, etc.).

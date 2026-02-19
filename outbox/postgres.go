@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rbaliyan/event/v3/store/base"
 	"github.com/rbaliyan/event/v3/transport/codec"
 )
 
@@ -19,9 +20,10 @@ type postgresStoreOptions struct {
 }
 
 // WithTable sets a custom table name for the PostgreSQL outbox store.
+// The name must be a valid SQL identifier (alphanumeric and underscores only).
 func WithTable(table string) PostgresStoreOption {
 	return func(o *postgresStoreOptions) {
-		if table != "" {
+		if table != "" && base.ValidIdentifier(table) {
 			o.table = table
 		}
 	}

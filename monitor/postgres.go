@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -183,7 +184,7 @@ func (s *PostgresStore) Get(ctx context.Context, eventID, subscriptionID string)
 	`, s.opts.tableName)
 
 	entry, err := s.scanEntry(s.db.QueryRowContext(ctx, query, eventID, subscriptionID))
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

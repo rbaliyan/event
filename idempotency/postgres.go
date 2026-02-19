@@ -111,7 +111,9 @@ func WithPostgresTTL(ttl time.Duration) PostgresOption {
 //	)
 func WithPostgresTable(table string) PostgresOption {
 	return func(s *PostgresStore) {
-		s.table = table
+		if base.ValidIdentifier(table) {
+			s.table = table
+		}
 	}
 }
 

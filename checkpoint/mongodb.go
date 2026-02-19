@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -135,7 +136,7 @@ func (s *MongoStore) Save(ctx context.Context, subscriberID string, position tim
 func (s *MongoStore) Load(ctx context.Context, subscriberID string) (time.Time, error) {
 	var doc checkpointDoc
 	err := s.collection.FindOne(ctx, bson.M{"_id": subscriberID}).Decode(&doc)
-	if err == mongo.ErrNoDocuments {
+	if errors.Is(err, mongo.ErrNoDocuments) {
 		// No checkpoint exists - this is not an error
 		return time.Time{}, nil
 	}
@@ -201,7 +202,7 @@ func (s *MongoStore) GetAll(ctx context.Context) (map[string]time.Time, error) {
 func (s *MongoStore) GetCheckpointInfo(ctx context.Context, subscriberID string) (*CheckpointInfo, error) {
 	var doc checkpointDoc
 	err := s.collection.FindOne(ctx, bson.M{"_id": subscriberID}).Decode(&doc)
-	if err == mongo.ErrNoDocuments {
+	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
 	}
 	if err != nil {

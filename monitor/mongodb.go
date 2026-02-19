@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -245,7 +246,7 @@ func (s *MongoStore) Get(ctx context.Context, eventID, subscriptionID string) (*
 
 	var doc MongoEntry
 	err := s.collection.FindOne(ctx, filter).Decode(&doc)
-	if err == mongo.ErrNoDocuments {
+	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
 	}
 	if err != nil {

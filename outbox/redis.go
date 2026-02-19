@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -223,7 +224,7 @@ func (s *RedisStore) GetPending(ctx context.Context, count int64) ([]*RedisMessa
 	}).Result()
 
 	if err != nil {
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			return pendingMsgs, nil // No new messages
 		}
 		return pendingMsgs, fmt.Errorf("xreadgroup: %w", err)
@@ -257,7 +258,7 @@ func (s *RedisStore) claimPendingMessages(ctx context.Context, count int64) ([]*
 	}).Result()
 
 	if err != nil {
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			return nil, nil
 		}
 		return nil, err
@@ -393,7 +394,7 @@ func (s *RedisStore) RecoverStuck(ctx context.Context, stuckDuration time.Durati
 	}).Result()
 
 	if err != nil {
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("xpending: %w", err)
