@@ -9,7 +9,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.36.1
 	github.com/go-faker/faker/v4 v4.7.0
 	github.com/google/uuid v1.6.0
-	github.com/lib/pq v1.11.1
+	github.com/lib/pq v1.11.2
 	github.com/nats-io/nats.go v1.48.0
 	github.com/redis/go-redis/v9 v9.17.3
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
