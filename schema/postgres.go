@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/rbaliyan/event/v3/store/base"
 )
 
 // PostgresProvider implements SchemaProvider using PostgreSQL.
@@ -49,7 +52,9 @@ type PostgresOption func(*PostgresProvider)
 // WithTableName sets a custom table name (default: "event_schemas").
 func WithTableName(name string) PostgresOption {
 	return func(p *PostgresProvider) {
-		p.tableName = name
+		if base.ValidIdentifier(name) {
+			p.tableName = name
+		}
 	}
 }
 
@@ -89,7 +94,7 @@ func (p *PostgresProvider) Get(ctx context.Context, eventName string) (*EventSch
 
 	row := p.db.QueryRowContext(ctx, query, eventName)
 	schema, err := p.scanRow(row)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

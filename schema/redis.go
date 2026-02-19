@@ -3,6 +3,7 @@ package schema
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -69,7 +70,7 @@ func (p *RedisProvider) Get(ctx context.Context, eventName string) (*EventSchema
 	p.mu.RUnlock()
 
 	data, err := p.client.HGet(ctx, p.key, eventName).Bytes()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	}
 	if err != nil {

@@ -2,6 +2,7 @@ package schema
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -168,7 +169,7 @@ func (p *MongoProvider) Get(ctx context.Context, eventName string) (*EventSchema
 
 	var m mongoSchema
 	err := p.collection.FindOne(ctx, bson.M{"_id": eventName}).Decode(&m)
-	if err == mongo.ErrNoDocuments {
+	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
 	}
 	if err != nil {

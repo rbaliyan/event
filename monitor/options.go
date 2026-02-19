@@ -2,6 +2,8 @@ package monitor
 
 import (
 	"time"
+
+	"github.com/rbaliyan/event/v3/store/base"
 )
 
 // storeOptions holds configuration for monitor stores.
@@ -43,7 +45,7 @@ type StoreOption func(*storeOptions)
 //	)
 func WithTableName(name string) StoreOption {
 	return func(o *storeOptions) {
-		if name != "" {
+		if name != "" && base.ValidIdentifier(name) {
 			o.tableName = name
 		}
 	}

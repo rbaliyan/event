@@ -3,6 +3,7 @@ package poison
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -75,7 +76,9 @@ type PostgresStoreOption func(*PostgresStore)
 //	)
 func WithPostgresFailuresTable(table string) PostgresStoreOption {
 	return func(s *PostgresStore) {
-		s.failuresTable = table
+		if base.ValidIdentifier(table) {
+			s.failuresTable = table
+		}
 	}
 }
 
@@ -90,7 +93,9 @@ func WithPostgresFailuresTable(table string) PostgresStoreOption {
 //	)
 func WithPostgresQuarantineTable(table string) PostgresStoreOption {
 	return func(s *PostgresStore) {
-		s.quarantineTable = table
+		if base.ValidIdentifier(table) {
+			s.quarantineTable = table
+		}
 	}
 }
 
@@ -237,7 +242,7 @@ func (s *PostgresStore) GetFailureCount(ctx context.Context, messageID string) (
 
 	var count int
 	err := s.db.QueryRowContext(ctx, query, messageID).Scan(&count)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	if err != nil {
