@@ -35,11 +35,15 @@ type MongoResumeTokenStore struct {
 // Parameters:
 //   - db: MongoDB database
 //   - relayID: Unique identifier for this relay instance (allows multiple relays)
-func NewMongoResumeTokenStore(db *mongo.Database, relayID string) *MongoResumeTokenStore {
+func NewMongoResumeTokenStore(db *mongo.Database, relayID string) (*MongoResumeTokenStore, error) {
+	if db == nil {
+		return nil, errors.New("outbox: database is required")
+	}
+
 	return &MongoResumeTokenStore{
 		collection: db.Collection("outbox_resume_tokens"),
 		relayID:    relayID,
-	}
+	}, nil
 }
 
 func (s *MongoResumeTokenStore) Save(ctx context.Context, token bson.Raw) error {

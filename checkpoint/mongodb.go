@@ -66,14 +66,18 @@ type checkpointDoc struct {
 //	// With TTL (checkpoints expire after 7 days)
 //	store := checkpoint.NewMongoStore(collection,
 //	    checkpoint.WithMongoTTL(7*24*time.Hour))
-func NewMongoStore(collection *mongo.Collection, opts ...MongoOption) *MongoStore {
+func NewMongoStore(collection *mongo.Collection, opts ...MongoOption) (*MongoStore, error) {
+	if collection == nil {
+		return nil, errors.New("checkpoint: collection is required")
+	}
+
 	s := &MongoStore{
 		collection: collection,
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
-	return s
+	return s, nil
 }
 
 // Indexes returns the index models for the checkpoint collection.

@@ -36,11 +36,14 @@ func setupPostgresStore(t *testing.T) (*PostgresStore, func()) {
 	}
 
 	tableName := "idempotency_test_" + time.Now().Format("20060102150405")
-	store := NewPostgresStore(db,
+	store, err := NewPostgresStore(db,
 		WithPostgresTTL(time.Hour),
 		WithPostgresTable(tableName),
 		WithPostgresCleanupInterval(0), // Disable cleanup for tests
 	)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
 
 	if err := store.CreateTable(context.Background()); err != nil {
 		t.Fatalf("failed to create table: %v", err)

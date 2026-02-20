@@ -141,10 +141,14 @@ type MongoStore struct {
 //	client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
 //	db := client.Database("mydb")
 //	store := monitor.NewMongoStore(db)
-func NewMongoStore(db *mongo.Database) *MongoStore {
+func NewMongoStore(db *mongo.Database) (*MongoStore, error) {
+	if db == nil {
+		return nil, errors.New("mongodb: database is required")
+	}
+
 	return &MongoStore{
 		collection: db.Collection("monitor_entries"),
-	}
+	}, nil
 }
 
 // WithCollection sets a custom collection name.

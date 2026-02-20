@@ -14,7 +14,11 @@ func setupRedisStateManager(t *testing.T, opts ...Option) (*RedisStateManager, *
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	return NewRedisStateManager(client, opts...), mr
+	sm, err := NewRedisStateManager(client, opts...)
+	if err != nil {
+		t.Fatalf("failed to create state manager: %v", err)
+	}
+	return sm, mr
 }
 
 func TestRedisStateManager_Acquire(t *testing.T) {

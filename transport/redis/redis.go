@@ -92,7 +92,7 @@ type subscription struct {
 }
 
 // Default configuration
-var (
+const (
 	DefaultMaxLen    = int64(0) // unlimited
 	DefaultBlockTime = 5 * time.Second
 )

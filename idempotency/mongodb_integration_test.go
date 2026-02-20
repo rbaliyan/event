@@ -39,10 +39,13 @@ func setupMongoStore(t *testing.T) (*MongoStore, func()) {
 	collName := "idempotency_" + time.Now().Format("20060102150405")
 	db := client.Database(dbName)
 
-	store := NewMongoStoreWithCollection(db, collName,
+	store, err := NewMongoStoreWithCollection(db, collName,
 		WithMongoTTL(time.Hour),
 		WithMongoCleanupInterval(0), // Disable cleanup for tests
 	)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
 
 	if err := store.EnsureIndexes(context.Background()); err != nil {
 		t.Fatalf("failed to ensure indexes: %v", err)

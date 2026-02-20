@@ -34,7 +34,10 @@ func setupRedisStore(t *testing.T) (*RedisStore, func()) {
 	}
 
 	prefix := "test:idemp:" + time.Now().Format("20060102150405") + ":"
-	store := NewRedisStore(client, time.Hour, WithPrefix(prefix))
+	store, err := NewRedisStore(client, time.Hour, WithPrefix(prefix))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
 
 	cleanup := func() {
 		ctx := context.Background()
@@ -183,7 +186,10 @@ func TestRedisStore_Integration_TTLExpiry(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a store with very short TTL for testing expiry
-	shortTTLStore := NewRedisStore(store.client, 100*time.Millisecond, WithPrefix(store.prefix+"short:"))
+	shortTTLStore, err := NewRedisStore(store.client, 100*time.Millisecond, WithPrefix(store.prefix+"short:"))
+	if err != nil {
+		t.Fatalf("failed to create short TTL store: %v", err)
+	}
 
 	msgID := "msg-expiry-1"
 	if err := shortTTLStore.MarkProcessed(ctx, msgID); err != nil {

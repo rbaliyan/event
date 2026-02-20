@@ -75,7 +75,11 @@ type PostgresStore struct {
 //	    monitor.WithCleanupInterval(5 * time.Minute),
 //	)
 //	defer store.Close()
-func NewPostgresStore(db *sql.DB, opts ...StoreOption) *PostgresStore {
+func NewPostgresStore(db *sql.DB, opts ...StoreOption) (*PostgresStore, error) {
+	if db == nil {
+		return nil, errors.New("postgres: db is required")
+	}
+
 	o := defaultStoreOptions()
 	for _, opt := range opts {
 		opt(o)
@@ -95,7 +99,7 @@ func NewPostgresStore(db *sql.DB, opts ...StoreOption) *PostgresStore {
 		})
 	}
 
-	return s
+	return s, nil
 }
 
 // Record creates or updates a monitor entry.
