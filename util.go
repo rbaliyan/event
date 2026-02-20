@@ -15,7 +15,7 @@ const (
 	spanKeyEventID             = "event.id"
 	spanKeyEventName           = "event.name"
 	spanKeyEventSource         = "event.source"
-	spanKeyEventBus = "event.bus"
+	spanKeyEventBus            = "event.bus"
 )
 
 // AsyncHandler convert event handler to async

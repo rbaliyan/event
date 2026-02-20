@@ -2,6 +2,7 @@ package idempotency
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -121,7 +122,11 @@ func WithPrefix(prefix string) RedisStoreOption {
 	}
 }
 
-func NewRedisStore(client redis.Cmdable, ttl time.Duration, opts ...RedisStoreOption) *RedisStore {
+func NewRedisStore(client redis.Cmdable, ttl time.Duration, opts ...RedisStoreOption) (*RedisStore, error) {
+	if client == nil {
+		return nil, errors.New("idempotency: client is required")
+	}
+
 	o := &redisStoreOptions{
 		prefix: "idemp:",
 	}
@@ -133,7 +138,7 @@ func NewRedisStore(client redis.Cmdable, ttl time.Duration, opts ...RedisStoreOp
 		client: client,
 		ttl:    ttl,
 		prefix: o.prefix,
-	}
+	}, nil
 }
 
 // IsDuplicate checks if a message ID has already been processed.

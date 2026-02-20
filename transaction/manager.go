@@ -272,8 +272,12 @@ type SQLManager struct {
 //	defer db.Close()
 //
 //	manager := transaction.NewSQLManager(db)
-func NewSQLManager(db *sql.DB) *SQLManager {
-	return &SQLManager{db: db}
+func NewSQLManager(db *sql.DB) (*SQLManager, error) {
+	if db == nil {
+		return nil, errors.New("sql: db is required")
+	}
+
+	return &SQLManager{db: db}, nil
 }
 
 // Begin starts a new SQL transaction.

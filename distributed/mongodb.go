@@ -149,7 +149,11 @@ type MongoStateManager struct {
 //
 //	// Don't forget to create indexes for TTL cleanup
 //	sm.EnsureIndexes(ctx)
-func NewMongoStateManager(db *mongo.Database, opts ...Option) *MongoStateManager {
+func NewMongoStateManager(db *mongo.Database, opts ...Option) (*MongoStateManager, error) {
+	if db == nil {
+		return nil, errors.New("distributed: database is required")
+	}
+
 	o := defaultStateOptions()
 	for _, opt := range opts {
 		opt(o)
@@ -167,7 +171,7 @@ func NewMongoStateManager(db *mongo.Database, opts ...Option) *MongoStateManager
 		capped:        o.capped,
 		cappedSize:    o.cappedSize,
 		cappedMaxDocs: o.cappedMaxDocs,
-	}
+	}, nil
 }
 
 // CreateCollection creates the state collection.

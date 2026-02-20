@@ -91,7 +91,7 @@ type jsSubscription struct {
 }
 
 // Default configuration
-var (
+const (
 	DefaultReplicas = 1
 	DefaultMaxAge   = 24 * time.Hour
 )

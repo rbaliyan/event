@@ -124,7 +124,11 @@ type RedisStore struct {
 
 // NewRedisStore creates a new Redis outbox store with consumer group support.
 // Each relay instance should have a unique consumerName for proper HA operation.
-func NewRedisStore(client redis.Cmdable, opts ...RedisStoreOption) *RedisStore {
+func NewRedisStore(client redis.Cmdable, opts ...RedisStoreOption) (*RedisStore, error) {
+	if client == nil {
+		return nil, errors.New("redis: client is required")
+	}
+
 	o := &redisStoreOptions{
 		consumerName: uuid.New().String(),
 		groupName:    "outbox-relay",
@@ -142,7 +146,7 @@ func NewRedisStore(client redis.Cmdable, opts ...RedisStoreOption) *RedisStore {
 		groupName:    o.groupName,
 		consumerName: o.consumerName,
 		maxLen:       o.maxLen,
-	}
+	}, nil
 }
 
 // Insert adds a message to the outbox
@@ -500,11 +504,16 @@ type RedisPublisher struct {
 }
 
 // NewRedisPublisher creates a new Redis outbox publisher
-func NewRedisPublisher(client redis.Cmdable) *RedisPublisher {
-	return &RedisPublisher{
-		store: NewRedisStore(client),
-		codec: codec.Default(),
+func NewRedisPublisher(client redis.Cmdable) (*RedisPublisher, error) {
+	store, err := NewRedisStore(client)
+	if err != nil {
+		return nil, err
 	}
+
+	return &RedisPublisher{
+		store: store,
+		codec: codec.Default(),
+	}, nil
 }
 
 // WithCodec sets a custom codec

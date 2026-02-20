@@ -175,7 +175,11 @@ type idempotencyEntry struct {
 //	if err := store.EnsureIndexes(ctx); err != nil {
 //	    log.Fatal("failed to create indexes:", err)
 //	}
-func NewMongoStore(db *mongo.Database, opts ...MongoOption) *MongoStore {
+func NewMongoStore(db *mongo.Database, opts ...MongoOption) (*MongoStore, error) {
+	if db == nil {
+		return nil, errors.New("idempotency: database is required")
+	}
+
 	s := &MongoStore{
 		collectionName:  "event_idempotency",
 		ttl:             24 * time.Hour,
@@ -196,7 +200,7 @@ func NewMongoStore(db *mongo.Database, opts ...MongoOption) *MongoStore {
 		go base.SimpleCleanupLoop(s.cleanupInterval, s.stopCleanup, s.cleanup)
 	}
 
-	return s
+	return s, nil
 }
 
 // NewMongoStoreWithCollection creates a new MongoDB-based idempotency store
@@ -212,7 +216,11 @@ func NewMongoStore(db *mongo.Database, opts ...MongoOption) *MongoStore {
 //	store := idempotency.NewMongoStoreWithCollection(db, "payment_idempotency",
 //	    idempotency.WithMongoTTL(7*24*time.Hour),
 //	)
-func NewMongoStoreWithCollection(db *mongo.Database, collectionName string, opts ...MongoOption) *MongoStore {
+func NewMongoStoreWithCollection(db *mongo.Database, collectionName string, opts ...MongoOption) (*MongoStore, error) {
+	if db == nil {
+		return nil, errors.New("idempotency: database is required")
+	}
+
 	s := &MongoStore{
 		collection:      db.Collection(collectionName),
 		ttl:             24 * time.Hour,
@@ -229,7 +237,7 @@ func NewMongoStoreWithCollection(db *mongo.Database, collectionName string, opts
 		go base.SimpleCleanupLoop(s.cleanupInterval, s.stopCleanup, s.cleanup)
 	}
 
-	return s
+	return s, nil
 }
 
 // IsDuplicate checks if a message ID has already been processed.

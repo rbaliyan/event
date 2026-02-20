@@ -8,7 +8,7 @@ import (
 )
 
 // Default configuration values
-var (
+const (
 	// DefaultBufferSize is the buffer size when async is enabled
 	DefaultBufferSize uint = 100
 

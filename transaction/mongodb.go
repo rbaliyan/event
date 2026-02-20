@@ -2,6 +2,7 @@ package transaction
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -149,8 +150,12 @@ type MongoManager struct {
 //	defer client.Disconnect(ctx)
 //
 //	manager := transaction.NewMongoManager(client)
-func NewMongoManager(client *mongo.Client) *MongoManager {
-	return &MongoManager{client: client}
+func NewMongoManager(client *mongo.Client) (*MongoManager, error) {
+	if client == nil {
+		return nil, errors.New("mongodb: client is required")
+	}
+
+	return &MongoManager{client: client}, nil
 }
 
 // Begin starts a new MongoDB transaction.

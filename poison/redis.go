@@ -98,7 +98,11 @@ func WithFailureTTL(ttl time.Duration) RedisStoreOption {
 //	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 //	store := poison.NewRedisStore(rdb)
 //	detector := poison.NewDetector(store)
-func NewRedisStore(client redis.Cmdable, opts ...RedisStoreOption) *RedisStore {
+func NewRedisStore(client redis.Cmdable, opts ...RedisStoreOption) (*RedisStore, error) {
+	if client == nil {
+		return nil, errors.New("poison: client is required")
+	}
+
 	s := &RedisStore{
 		client:           client,
 		failurePrefix:    "poison:failures:",
@@ -110,7 +114,7 @@ func NewRedisStore(client redis.Cmdable, opts ...RedisStoreOption) *RedisStore {
 		opt(s)
 	}
 
-	return s
+	return s, nil
 }
 
 // IncrementFailure atomically increments and returns the failure count.

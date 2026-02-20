@@ -124,12 +124,19 @@ type MongoProvider struct {
 //
 // The publisher callback is called when a schema is set, to notify
 // subscribers via the transport. It can be nil if Watch is not needed.
-func NewMongoProvider(db *mongo.Database, publisher func(context.Context, SchemaChangeEvent) error) *MongoProvider {
+func NewMongoProvider(db *mongo.Database, publisher func(context.Context, SchemaChangeEvent) error) (*MongoProvider, error) {
+	if db == nil {
+		return nil, errors.New("schema: database is required")
+	}
+	if publisher == nil {
+		return nil, errors.New("schema: publisher is required")
+	}
+
 	return &MongoProvider{
 		collection: db.Collection("event_schemas"),
 		publisher:  publisher,
 		closeChan:  make(chan struct{}),
-	}
+	}, nil
 }
 
 // WithCollection sets a custom collection name.
