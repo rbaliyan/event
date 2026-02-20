@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -60,7 +61,11 @@ type PostgresStore struct {
 //
 // The provided database connection should be configured and connected.
 // The default table name is "event_outbox".
-func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) *PostgresStore {
+func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) (*PostgresStore, error) {
+	if db == nil {
+		return nil, errors.New("postgres: db is required")
+	}
+
 	o := &postgresStoreOptions{
 		table: "event_outbox",
 	}
@@ -71,7 +76,7 @@ func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) *PostgresStore {
 	return &PostgresStore{
 		db:        db,
 		tableName: o.table,
-	}
+	}, nil
 }
 
 // Insert adds a message to the outbox within a transaction.
@@ -383,11 +388,16 @@ type PostgresPublisher struct {
 // Example:
 //
 //	publisher := outbox.NewPostgresPublisher(db)
-func NewPostgresPublisher(db *sql.DB) *PostgresPublisher {
-	return &PostgresPublisher{
-		store: NewPostgresStore(db),
-		codec: codec.Default(),
+func NewPostgresPublisher(db *sql.DB) (*PostgresPublisher, error) {
+	store, err := NewPostgresStore(db)
+	if err != nil {
+		return nil, err
 	}
+
+	return &PostgresPublisher{
+		store: store,
+		codec: codec.Default(),
+	}, nil
 }
 
 // WithCodec sets a custom codec for encoding payloads.

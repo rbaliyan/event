@@ -122,7 +122,11 @@ type MongoStore struct {
 }
 
 // NewMongoStore creates a new MongoDB outbox store.
-func NewMongoStore(db *mongo.Database, opts ...MongoStoreOption) *MongoStore {
+func NewMongoStore(db *mongo.Database, opts ...MongoStoreOption) (*MongoStore, error) {
+	if db == nil {
+		return nil, errors.New("mongodb: database is required")
+	}
+
 	o := &mongoStoreOptions{
 		collection: "event_outbox",
 	}
@@ -132,7 +136,7 @@ func NewMongoStore(db *mongo.Database, opts ...MongoStoreOption) *MongoStore {
 
 	return &MongoStore{
 		collection: db.Collection(o.collection),
-	}
+	}, nil
 }
 
 // Collection returns the underlying MongoDB collection
@@ -620,12 +624,21 @@ type MongoPublisher struct {
 }
 
 // NewMongoPublisher creates a new MongoDB outbox publisher.
-func NewMongoPublisher(client *mongo.Client, db *mongo.Database, opts ...MongoStoreOption) *MongoPublisher {
+func NewMongoPublisher(client *mongo.Client, db *mongo.Database, opts ...MongoStoreOption) (*MongoPublisher, error) {
+	if client == nil {
+		return nil, errors.New("mongodb: client is required")
+	}
+
+	store, err := NewMongoStore(db, opts...)
+	if err != nil {
+		return nil, err
+	}
+
 	return &MongoPublisher{
-		store:  NewMongoStore(db, opts...),
+		store:  store,
 		client: client,
 		codec:  codec.Default(),
-	}
+	}, nil
 }
 
 // WithCodec sets a custom codec for encoding payloads

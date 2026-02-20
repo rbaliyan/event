@@ -75,7 +75,7 @@ type subscription struct {
 }
 
 // Default configuration
-var (
+const (
 	DefaultPartitions  = int32(1)
 	DefaultReplication = int16(1)
 )

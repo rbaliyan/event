@@ -39,10 +39,13 @@ func setupMongoStateManager(t *testing.T) (*MongoStateManager, func()) {
 	collName := "state_" + time.Now().Format("20060102150405")
 	db := client.Database(dbName)
 
-	sm := NewMongoStateManager(db,
+	sm, err := NewMongoStateManager(db,
 		WithCollection(collName),
 		WithCompletedTTL(time.Hour),
 	)
+	if err != nil {
+		t.Fatalf("failed to create state manager: %v", err)
+	}
 
 	if err := sm.EnsureIndexes(context.Background()); err != nil {
 		t.Fatalf("failed to ensure indexes: %v", err)

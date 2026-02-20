@@ -78,7 +78,11 @@ func WithTTL(ttl time.Duration) RedisOption {
 //	// With TTL (checkpoints expire after 7 days)
 //	store := checkpoint.NewRedisStore(client, "events:checkpoints",
 //	    checkpoint.WithTTL(7*24*time.Hour))
-func NewRedisStore(client redis.Cmdable, key string, opts ...RedisOption) *RedisStore {
+func NewRedisStore(client redis.Cmdable, key string, opts ...RedisOption) (*RedisStore, error) {
+	if client == nil {
+		return nil, errors.New("checkpoint: client is required")
+	}
+
 	s := &RedisStore{
 		client: client,
 		key:    key,
@@ -86,7 +90,7 @@ func NewRedisStore(client redis.Cmdable, key string, opts ...RedisOption) *Redis
 	for _, opt := range opts {
 		opt(s)
 	}
-	return s
+	return s, nil
 }
 
 // Save persists the checkpoint position for a subscriber.

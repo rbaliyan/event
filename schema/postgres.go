@@ -62,7 +62,14 @@ func WithTableName(name string) PostgresOption {
 //
 // The publisher callback is called when a schema is set, to notify
 // subscribers via the transport. It can be nil if Watch is not needed.
-func NewPostgresProvider(db *sql.DB, publisher func(context.Context, SchemaChangeEvent) error, opts ...PostgresOption) *PostgresProvider {
+func NewPostgresProvider(db *sql.DB, publisher func(context.Context, SchemaChangeEvent) error, opts ...PostgresOption) (*PostgresProvider, error) {
+	if db == nil {
+		return nil, errors.New("schema: db is required")
+	}
+	if publisher == nil {
+		return nil, errors.New("schema: publisher is required")
+	}
+
 	p := &PostgresProvider{
 		db:        db,
 		tableName: "event_schemas",
@@ -72,7 +79,7 @@ func NewPostgresProvider(db *sql.DB, publisher func(context.Context, SchemaChang
 	for _, opt := range opts {
 		opt(p)
 	}
-	return p
+	return p, nil
 }
 
 // Get retrieves a schema by event name.

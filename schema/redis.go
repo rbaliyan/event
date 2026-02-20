@@ -47,7 +47,14 @@ func WithKey(key string) RedisOption {
 //
 // The publisher callback is called when a schema is set, to notify
 // subscribers via the transport. It can be nil if Watch is not needed.
-func NewRedisProvider(client redis.UniversalClient, publisher func(context.Context, SchemaChangeEvent) error, opts ...RedisOption) *RedisProvider {
+func NewRedisProvider(client redis.UniversalClient, publisher func(context.Context, SchemaChangeEvent) error, opts ...RedisOption) (*RedisProvider, error) {
+	if client == nil {
+		return nil, errors.New("schema: client is required")
+	}
+	if publisher == nil {
+		return nil, errors.New("schema: publisher is required")
+	}
+
 	p := &RedisProvider{
 		client:    client,
 		key:       "event:schemas",
@@ -57,7 +64,7 @@ func NewRedisProvider(client redis.UniversalClient, publisher func(context.Conte
 	for _, opt := range opts {
 		opt(p)
 	}
-	return p
+	return p, nil
 }
 
 // Get retrieves a schema by event name.

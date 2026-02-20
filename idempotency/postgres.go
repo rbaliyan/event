@@ -3,6 +3,7 @@ package idempotency
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -157,7 +158,11 @@ func WithPostgresCleanupInterval(interval time.Duration) PostgresOption {
 //	    idempotency.WithPostgresTable("order_idempotency"),
 //	)
 //	defer store.Close()
-func NewPostgresStore(db *sql.DB, opts ...PostgresOption) *PostgresStore {
+func NewPostgresStore(db *sql.DB, opts ...PostgresOption) (*PostgresStore, error) {
+	if db == nil {
+		return nil, errors.New("postgres: db is required")
+	}
+
 	s := &PostgresStore{
 		db:              db,
 		table:           "event_idempotency",
@@ -175,7 +180,7 @@ func NewPostgresStore(db *sql.DB, opts ...PostgresOption) *PostgresStore {
 		go base.SimpleCleanupLoop(s.cleanupInterval, s.stopCleanup, s.cleanup)
 	}
 
-	return s
+	return s, nil
 }
 
 // IsDuplicate checks if a message ID has already been processed.

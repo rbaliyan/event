@@ -159,7 +159,11 @@ func WithPostgresCleanupInterval(interval time.Duration) PostgresStoreOption {
 //	defer store.Close()
 //
 //	detector := poison.NewDetector(store)
-func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) *PostgresStore {
+func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) (*PostgresStore, error) {
+	if db == nil {
+		return nil, errors.New("postgres: db is required")
+	}
+
 	s := &PostgresStore{
 		db:              db,
 		failuresTable:   "poison_failures",
@@ -178,7 +182,7 @@ func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) *PostgresStore {
 		go base.SimpleCleanupLoop(s.cleanupInterval, s.stopCleanup, s.cleanup)
 	}
 
-	return s
+	return s, nil
 }
 
 // IncrementFailure atomically increments and returns the failure count.

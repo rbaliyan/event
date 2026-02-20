@@ -34,10 +34,13 @@ func setupRedisStateManager(t *testing.T) (*RedisStateManager, func()) {
 	}
 
 	prefix := "test:state:" + time.Now().Format("20060102150405") + ":"
-	sm := NewRedisStateManager(client,
+	sm, err := NewRedisStateManager(client,
 		WithPrefix(prefix),
 		WithCompletedTTL(time.Hour),
 	)
+	if err != nil {
+		t.Fatalf("failed to create state manager: %v", err)
+	}
 
 	cleanup := func() {
 		ctx := context.Background()

@@ -3,6 +3,7 @@ package distributed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -110,7 +111,11 @@ type RedisStateManager struct {
 //	    Addrs: []string{"node1:6379", "node2:6379"},
 //	})
 //	sm := distributed.NewRedisStateManager(rdb)
-func NewRedisStateManager(client redis.Cmdable, opts ...Option) *RedisStateManager {
+func NewRedisStateManager(client redis.Cmdable, opts ...Option) (*RedisStateManager, error) {
+	if client == nil {
+		return nil, errors.New("distributed: client is required")
+	}
+
 	o := defaultStateOptions()
 	for _, opt := range opts {
 		opt(o)
@@ -120,7 +125,7 @@ func NewRedisStateManager(client redis.Cmdable, opts ...Option) *RedisStateManag
 		client:        client,
 		prefix:        o.prefix,
 		completionTTL: o.completionTTL,
-	}
+	}, nil
 }
 
 // Acquire atomically transitions a message to "processing" state using Redis SETNX.
