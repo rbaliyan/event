@@ -120,6 +120,9 @@ type Entry struct {
 	// Tracing correlation (OpenTelemetry)
 	TraceID string `json:"trace_id,omitempty"`
 	SpanID  string `json:"span_id,omitempty"`
+
+	// Worker group name (for WorkerPool mode with named groups)
+	WorkerGroup string `json:"worker_group,omitempty"`
 }
 
 // IsComplete returns true if the entry represents a completed processing attempt.

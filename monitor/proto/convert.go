@@ -29,6 +29,7 @@ func EntryToProto(e *monitor.Entry) *Entry {
 		Duration:       durationpb.New(e.Duration),
 		TraceId:        e.TraceID,
 		SpanId:         e.SpanID,
+		WorkerGroup:    e.WorkerGroup,
 	}
 
 	if e.CompletedAt != nil {
@@ -57,6 +58,7 @@ func ProtoToEntry(pb *Entry) *monitor.Entry {
 		RetryCount:     int(pb.RetryCount),
 		TraceID:        pb.TraceId,
 		SpanID:         pb.SpanId,
+		WorkerGroup:    pb.WorkerGroup,
 	}
 
 	if pb.StartedAt != nil {
@@ -85,6 +87,7 @@ func ProtoToFilter(pb *Filter) monitor.Filter {
 		EventName:      pb.EventName,
 		BusID:          pb.BusId,
 		InstanceID:     pb.InstanceId,
+		WorkerGroup:    pb.WorkerGroup,
 		MinRetries:     int(pb.MinRetries),
 		Cursor:         pb.Cursor,
 		Limit:          int(pb.Limit),
@@ -128,6 +131,7 @@ func FilterToProto(f monitor.Filter) *Filter {
 		EventName:      f.EventName,
 		BusId:          f.BusID,
 		InstanceId:     f.InstanceID,
+		WorkerGroup:    f.WorkerGroup,
 		MinRetries:     int32(f.MinRetries),
 		Cursor:         f.Cursor,
 		Limit:          int32(f.Limit),

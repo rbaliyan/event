@@ -392,7 +392,7 @@ func TestMemoryStore(t *testing.T) {
 		store := NewMemoryStore()
 		defer store.Close()
 
-		err := store.RecordStart(ctx, "event-1", "sub-1", "order.created", "bus-1", false, map[string]string{"key": "value"}, "trace-1", "span-1", "test-subscriber", "Test subscriber description")
+		err := store.RecordStart(ctx, "event-1", "sub-1", "order.created", "bus-1", false, map[string]string{"key": "value"}, "trace-1", "span-1", "test-subscriber", "Test subscriber description", "")
 		if err != nil {
 			t.Fatalf("RecordStart failed: %v", err)
 		}

@@ -482,9 +482,10 @@ type MonitorStore interface {
 	// RecordStart records when event processing begins.
 	// workerPool indicates the delivery mode (true = WorkerPool, false = Broadcast)
 	// subscriberName and subscriberDescription are optional human-readable identifiers
+	// workerGroup is the worker group name (empty for broadcast or default group)
 	RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string,
 		workerPool bool, metadata map[string]string, traceID, spanID string,
-		subscriberName, subscriberDescription string) error
+		subscriberName, subscriberDescription, workerGroup string) error
 
 	// RecordComplete updates the entry with the final result.
 	// status: "completed" (success), "failed" (rejected), "retrying" (will retry)
@@ -552,8 +553,9 @@ func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 			}
 
 			// Record start (best effort)
+			workerGroup := ContextWorkerGroup(ctx)
 			if err := store.RecordStart(ctx, eventID, subIDForEntry, eventName, busID,
-				workerPool, metadata, traceID, spanID, subscriberName, subscriberDescription); err != nil {
+				workerPool, metadata, traceID, spanID, subscriberName, subscriberDescription, workerGroup); err != nil {
 				logger := ContextLogger(ctx)
 				if logger != nil {
 					logger.Warn("monitor record start failed", "error", err)

@@ -113,6 +113,13 @@ type ConsumerLag struct {
 	PendingMessages int64         `json:"pending_messages"` // Messages delivered but not yet acked
 }
 
+// Named is an optional interface that transports can implement
+// to identify themselves with a human-readable name.
+// Used by topology reporting to label transport types.
+type Named interface {
+	Name() string
+}
+
 // Redeliverable is an optional interface that transports can implement
 // to indicate they support automatic re-delivery of unacknowledged messages.
 // Transports that do NOT implement this interface are assumed to NOT support

@@ -53,6 +53,7 @@ type Filter struct {
 	BusID          string // Filter by bus ID
 	InstanceID     string // Filter by instance ID (pod/hostname)
 	SubscriberName string // Exact match on subscriber name (human-readable identifier)
+	WorkerGroup    string // Exact match on worker group name
 
 	// Mode filter
 	DeliveryMode *DeliveryMode // Filter by delivery mode (nil = all modes)

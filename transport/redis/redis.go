@@ -748,9 +748,13 @@ func (s *subscription) claimOnce(ctx context.Context, logger *slog.Logger) {
 // re-delivery of unacknowledged messages via consumer group pending entries.
 func (t *Transport) SupportsRedelivery() bool { return true }
 
+// Name returns the transport name.
+func (t *Transport) Name() string { return "redis" }
+
 // Compile-time checks
 var _ transport.Transport = (*Transport)(nil)
 var _ transport.HealthChecker = (*Transport)(nil)
+var _ transport.Named = (*Transport)(nil)
 var _ transport.LagMonitor = (*Transport)(nil)
 var _ transport.Redeliverable = (*Transport)(nil)
 var _ transport.Subscription = (*subscription)(nil)

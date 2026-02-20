@@ -71,6 +71,7 @@ func NewMiddleware[T any](store Store, opts ...MiddlewareOption) event.Middlewar
 			metadata := event.ContextMetadata(ctx)
 			subscriberName := event.ContextSubscriberName(ctx)
 			subscriberDescription := event.ContextSubscriberDescription(ctx)
+			workerGroup := event.ContextWorkerGroup(ctx)
 
 			// Determine delivery mode
 			deliveryMode := detectDeliveryMode(ctx, o.mode)
@@ -94,6 +95,7 @@ func NewMiddleware[T any](store Store, opts ...MiddlewareOption) event.Middlewar
 				Metadata:              metadata,
 				Status:                StatusPending,
 				StartedAt:             time.Now(),
+				WorkerGroup:           workerGroup,
 			}
 
 			// Extract trace context if available

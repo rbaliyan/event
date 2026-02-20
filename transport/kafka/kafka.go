@@ -648,9 +648,13 @@ func (h *consumerHandler) ConsumeClaim(session sarama.ConsumerGroupSession, clai
 // re-delivery of uncommitted messages via consumer group offset management.
 func (t *Transport) SupportsRedelivery() bool { return true }
 
+// Name returns the transport name.
+func (t *Transport) Name() string { return "kafka" }
+
 // Compile-time checks
 var _ transport.Transport = (*Transport)(nil)
 var _ transport.HealthChecker = (*Transport)(nil)
+var _ transport.Named = (*Transport)(nil)
 var _ transport.LagMonitor = (*Transport)(nil)
 var _ transport.Redeliverable = (*Transport)(nil)
 var _ transport.Subscription = (*subscription)(nil)

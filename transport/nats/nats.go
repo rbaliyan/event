@@ -605,9 +605,13 @@ func (s *jsSubscription) consumeLoop(ctx context.Context, logger *slog.Logger) {
 // re-delivery of unacknowledged messages.
 func (t *JetStreamTransport) SupportsRedelivery() bool { return true }
 
+// Name returns the transport name.
+func (t *JetStreamTransport) Name() string { return "nats-jetstream" }
+
 // Compile-time checks
 var _ transport.Transport = (*JetStreamTransport)(nil)
 var _ transport.HealthChecker = (*JetStreamTransport)(nil)
+var _ transport.Named = (*JetStreamTransport)(nil)
 var _ transport.LagMonitor = (*JetStreamTransport)(nil)
 var _ transport.Redeliverable = (*JetStreamTransport)(nil)
 var _ transport.Subscription = (*jsSubscription)(nil)
