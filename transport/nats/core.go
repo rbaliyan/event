@@ -399,8 +399,12 @@ func (s *coreSubscription) handleMessage(msg *nats.Msg) {
 	}
 }
 
+// Name returns the transport name.
+func (t *CoreTransport) Name() string { return "nats" }
+
 // Compile-time checks
 var (
 	_ transport.Transport     = (*CoreTransport)(nil)
 	_ transport.HealthChecker = (*CoreTransport)(nil)
+	_ transport.Named         = (*CoreTransport)(nil)
 )

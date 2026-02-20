@@ -26,6 +26,7 @@ type eventContextData struct {
 	subscriberName        string
 	subscriberDescription string
 	coalescedCount        int
+	workerGroup           string
 }
 
 // contextKey
@@ -150,6 +151,16 @@ func ContextCoalescedCount(ctx context.Context) int {
 	return 0
 }
 
+// ContextWorkerGroup returns the worker group name stored in context.
+// Returns empty string if not set or not in WorkerPool mode.
+func ContextWorkerGroup(ctx context.Context) string {
+	s, ok := ctx.Value(eventcontextKey).(*eventContextData)
+	if ok {
+		return s.workerGroup
+	}
+	return ""
+}
+
 // ContextWithMetadata generate a context with event metadata
 func ContextWithMetadata(ctx context.Context, m map[string]string) context.Context {
 	if m == nil {
@@ -206,6 +217,7 @@ type contextInfo struct {
 	subscriberName        string
 	subscriberDescription string
 	coalescedCount        int
+	workerGroup           string
 }
 
 func contextWithInfo(ctx context.Context, info contextInfo) context.Context {
@@ -222,6 +234,7 @@ func contextWithInfo(ctx context.Context, info contextInfo) context.Context {
 		subscriberName:        info.subscriberName,
 		subscriberDescription: info.subscriberDescription,
 		coalescedCount:        info.coalescedCount,
+		workerGroup:           info.workerGroup,
 	})
 }
 

@@ -36,7 +36,8 @@ Document structure:
     "completed_at": ISODate,
     "duration_ms": int64,
     "trace_id": string,
-    "span_id": string
+    "span_id": string,
+    "worker_group": string
 }
 
 Indexes:
@@ -67,6 +68,7 @@ type MongoEntry struct {
 	DurationMs            *int64            `bson:"duration_ms,omitempty"`
 	TraceID               string            `bson:"trace_id,omitempty"`
 	SpanID                string            `bson:"span_id,omitempty"`
+	WorkerGroup           string            `bson:"worker_group,omitempty"`
 }
 
 // ToEntry converts MongoEntry to Entry.
@@ -88,6 +90,7 @@ func (m *MongoEntry) ToEntry() *Entry {
 		CompletedAt:           m.CompletedAt,
 		TraceID:               m.TraceID,
 		SpanID:                m.SpanID,
+		WorkerGroup:           m.WorkerGroup,
 	}
 	if m.DurationMs != nil {
 		entry.Duration = time.Duration(*m.DurationMs) * time.Millisecond
@@ -126,6 +129,7 @@ func FromEntry(e *Entry) *MongoEntry {
 		DurationMs:            durationMs,
 		TraceID:               e.TraceID,
 		SpanID:                e.SpanID,
+		WorkerGroup:           e.WorkerGroup,
 	}
 }
 
@@ -225,6 +229,7 @@ func (s *MongoStore) Record(ctx context.Context, entry *Entry) error {
 			"duration_ms":            mongoEntry.DurationMs,
 			"trace_id":               mongoEntry.TraceID,
 			"span_id":                mongoEntry.SpanID,
+			"worker_group":           mongoEntry.WorkerGroup,
 		},
 		"$setOnInsert": bson.M{
 			"event_id":        mongoEntry.EventID,
@@ -462,6 +467,9 @@ func (s *MongoStore) buildFilter(filter Filter) bson.M {
 	if filter.MinRetries > 0 {
 		mongoFilter["retry_count"] = bson.M{"$gte": filter.MinRetries}
 	}
+	if filter.WorkerGroup != "" {
+		mongoFilter["worker_group"] = filter.WorkerGroup
+	}
 
 	return mongoFilter
 }
@@ -537,7 +545,7 @@ func decodeMongoCursor(str string) (mongoCursor, error) {
 // Implements event.MonitorStore interface.
 func (s *MongoStore) RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string,
 	workerPool bool, metadata map[string]string, traceID, spanID string,
-	subscriberName, subscriberDescription string) error {
+	subscriberName, subscriberDescription, workerGroup string) error {
 
 	mode := Broadcast
 	if workerPool {
@@ -557,6 +565,7 @@ func (s *MongoStore) RecordStart(ctx context.Context, eventID, subscriptionID, e
 		StartedAt:             time.Now(),
 		TraceID:               traceID,
 		SpanID:                spanID,
+		WorkerGroup:           workerGroup,
 	}
 
 	return s.Record(ctx, entry)

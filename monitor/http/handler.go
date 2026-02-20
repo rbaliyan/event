@@ -17,7 +17,9 @@ import (
 
 // handlerOptions holds configuration for the Handler.
 type handlerOptions struct {
-	workerStore distributed.WorkerStore
+	workerStore   distributed.WorkerStore
+	dlqProvider   DLQProvider
+	schedProvider SchedulerProvider
 }
 
 // Option configures the Handler.
@@ -30,13 +32,29 @@ func WithWorkerStore(ws distributed.WorkerStore) Option {
 	}
 }
 
+// WithDLQProvider enables the /v1/system endpoints with DLQ statistics and health.
+func WithDLQProvider(p DLQProvider) Option {
+	return func(o *handlerOptions) {
+		o.dlqProvider = p
+	}
+}
+
+// WithSchedulerProvider enables the /v1/system endpoints with scheduler statistics and health.
+func WithSchedulerProvider(p SchedulerProvider) Option {
+	return func(o *handlerOptions) {
+		o.schedProvider = p
+	}
+}
+
 // Handler implements http.Handler for the monitor service using protoJSON.
 type Handler struct {
-	store       monitor.Store
-	workerStore distributed.WorkerStore
-	mux         *http.ServeMux
-	marshaler   protojson.MarshalOptions
-	unmarshaler protojson.UnmarshalOptions
+	store         monitor.Store
+	workerStore   distributed.WorkerStore
+	dlqProvider   DLQProvider
+	schedProvider SchedulerProvider
+	mux           *http.ServeMux
+	marshaler     protojson.MarshalOptions
+	unmarshaler   protojson.UnmarshalOptions
 }
 
 // New creates a new HTTP handler for the monitor service.
@@ -47,9 +65,11 @@ func New(store monitor.Store, opts ...Option) *Handler {
 	}
 
 	h := &Handler{
-		store:       store,
-		workerStore: o.workerStore,
-		mux:         http.NewServeMux(),
+		store:         store,
+		workerStore:   o.workerStore,
+		dlqProvider:   o.dlqProvider,
+		schedProvider: o.schedProvider,
+		mux:           http.NewServeMux(),
 		marshaler: protojson.MarshalOptions{
 			EmitUnpopulated: true,
 			UseProtoNames:   true,
@@ -68,6 +88,14 @@ func New(store monitor.Store, opts ...Option) *Handler {
 	h.mux.HandleFunc("/v1/monitor/entries", h.handleEntries)
 	h.mux.HandleFunc("/v1/monitor/entries/", h.handleEntriesWithPath)
 	h.mux.HandleFunc("/v1/monitor/entries/count", h.handleCount)
+
+	// Register topology endpoints
+	h.mux.HandleFunc("/v1/topology", h.handleTopology)
+	h.mux.HandleFunc("/v1/topology/", h.handleTopologyWithPath)
+
+	// Register system view endpoints
+	h.mux.HandleFunc("/v1/system", h.handleSystemView)
+	h.mux.HandleFunc("/v1/system/health", h.handleSystemHealth)
 
 	// Register worker pool state endpoints if worker store is configured
 	if h.workerStore != nil {
@@ -245,6 +273,9 @@ func (h *Handler) parseFilterFromQuery(r *http.Request) monitor.Filter {
 	}
 	if v := q.Get("instance_id"); v != "" {
 		filter.InstanceID = v
+	}
+	if v := q.Get("worker_group"); v != "" {
+		filter.WorkerGroup = v
 	}
 	if v := q.Get("delivery_mode"); v != "" {
 		dm := monitor.ParseDeliveryMode(v)

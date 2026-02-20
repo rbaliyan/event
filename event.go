@@ -102,11 +102,17 @@ type eventImpl[T any] struct {
 	messageFilter      func(map[string]string) bool                                    // pre-decode message filter (nil = accept all)
 	decodeErrorHandler func(ctx context.Context, msg message.Message, err error) error // decode error handler (nil = default DLQ+ack)
 	schema             schemaFlags                                                     // schema-based configuration
+	subscriptions      subscriptionRegistry                                            // active subscription metadata for topology
 }
 
 func (e *eventImpl[T]) String() string {
 	return e.name
 }
+
+// eventTopology interface implementation for generic-free topology access.
+func (e *eventImpl[T]) eventName() string                  { return e.name }
+func (e *eventImpl[T]) subscriberCount() int64             { return atomic.LoadInt64(&e.size) }
+func (e *eventImpl[T]) subscriptionInfos() []SubscriptionInfo { return e.subscriptions.all() }
 
 // Name event name
 func (e *eventImpl[T]) Name() string {
@@ -344,6 +350,16 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 	atomic.AddInt64(&e.size, 1)
 	subID := sub.ID()
 
+	// Track subscription metadata for topology reporting
+	e.subscriptions.add(&SubscriptionInfo{
+		SubscriptionID:        subID,
+		DeliveryMode:          subOpts.mode,
+		WorkerGroup:           subOpts.workerGroup,
+		SubscriberName:        subOpts.subscriberName,
+		SubscriberDescription: subOpts.subscriberDescription,
+		StartedAt:             time.Now(),
+	})
+
 	// Apply middleware chain (innermost to outermost):
 	// 1. Recovery (innermost) - catch panics
 	// 2. Timeout - enforce handler timeout
@@ -411,6 +427,7 @@ func (e *eventImpl[T]) subscribeLoop(
 ) {
 	subID := sub.ID()
 	defer func() {
+		e.subscriptions.remove(subID)
 		atomic.AddInt64(&e.size, -1)
 		_ = sub.Close(context.Background())
 	}()
@@ -455,6 +472,7 @@ func (e *eventImpl[T]) subscribeWithRawCoalesce(
 
 	defer func() {
 		coal.Close()
+		e.subscriptions.remove(subID)
 		atomic.AddInt64(&e.size, -1)
 		_ = sub.Close(context.Background())
 	}()
@@ -546,6 +564,7 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 
 	defer func() {
 		coal.Close()
+		e.subscriptions.remove(subID)
 		atomic.AddInt64(&e.size, -1)
 		_ = sub.Close(context.Background())
 	}()
@@ -650,6 +669,7 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 					logger: logger, bus: bus, mode: subOpts.mode,
 					subscriberName: subOpts.subscriberName, subscriberDescription: subOpts.subscriberDescription,
 					coalescedCount: out.count,
+					workerGroup: subOpts.workerGroup,
 				})
 				handlerCtx = ContextWithRawPayload(handlerCtx, out.msg.Payload())
 
@@ -766,6 +786,7 @@ func (e *eventImpl[T]) processMessage(
 			metadata: msg.Metadata(), msgTime: msg.Timestamp(),
 			logger: logger, bus: bus, mode: subOpts.mode,
 			subscriberName: subOpts.subscriberName, subscriberDescription: subOpts.subscriberDescription,
+			workerGroup: subOpts.workerGroup,
 		})
 		decodeResult := e.decodeErrorHandler(decodeCtx, msg, err)
 
@@ -809,6 +830,7 @@ func (e *eventImpl[T]) processMessage(
 		logger: logger, bus: bus, mode: subOpts.mode,
 		subscriberName: subOpts.subscriberName, subscriberDescription: subOpts.subscriberDescription,
 		coalescedCount: coalescedCount,
+		workerGroup: subOpts.workerGroup,
 	})
 	handlerCtx = ContextWithRawPayload(handlerCtx, msg.Payload())
 	handlerErr := wrappedHandler(handlerCtx, e, typedData)

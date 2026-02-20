@@ -432,4 +432,8 @@ func (t *Transport) SupportsRedelivery() bool { return false }
 var _ transport.Transport = (*Transport)(nil)
 var _ transport.HealthChecker = (*Transport)(nil)
 var _ transport.Redeliverable = (*Transport)(nil)
+var _ transport.Named = (*Transport)(nil)
+
+// Name returns the transport name.
+func (t *Transport) Name() string { return "channel" }
 var _ transport.Subscription = (*subscription)(nil)

@@ -61,6 +61,7 @@ message Entry {
   string trace_id = 13;
   string span_id = 14;
   string instance_id = 15;
+  string worker_group = 16;
 }
 
 // Filter specifies criteria for listing monitor entries.
@@ -80,6 +81,7 @@ message Filter {
   int32 limit = 13;
   bool order_desc = 14;
   string instance_id = 15;
+  string worker_group = 16;
 }
 
 // ListRequest is the request for List RPC.

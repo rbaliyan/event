@@ -2777,7 +2777,7 @@ func newMockMonitorStore() *mockMonitorStore {
 	}
 }
 
-func (s *mockMonitorStore) RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string, workerPool bool, metadata map[string]string, traceID, spanID string, subscriberName, subscriberDescription string) error {
+func (s *mockMonitorStore) RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string, workerPool bool, metadata map[string]string, traceID, spanID string, subscriberName, subscriberDescription, workerGroup string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.started[eventID] = true

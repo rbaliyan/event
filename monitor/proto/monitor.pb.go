@@ -147,6 +147,7 @@ type Entry struct {
 	TraceId        string                 `protobuf:"bytes,13,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	SpanId         string                 `protobuf:"bytes,14,opt,name=span_id,json=spanId,proto3" json:"span_id,omitempty"`
 	InstanceId     string                 `protobuf:"bytes,15,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	WorkerGroup    string                 `protobuf:"bytes,16,opt,name=worker_group,json=workerGroup,proto3" json:"worker_group,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -286,6 +287,13 @@ func (x *Entry) GetInstanceId() string {
 	return ""
 }
 
+func (x *Entry) GetWorkerGroup() string {
+	if x != nil {
+		return x.WorkerGroup
+	}
+	return ""
+}
+
 // Filter specifies criteria for listing monitor entries.
 type Filter struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -304,6 +312,7 @@ type Filter struct {
 	Limit          int32                  `protobuf:"varint,13,opt,name=limit,proto3" json:"limit,omitempty"`
 	OrderDesc      bool                   `protobuf:"varint,14,opt,name=order_desc,json=orderDesc,proto3" json:"order_desc,omitempty"`
 	InstanceId     string                 `protobuf:"bytes,15,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	WorkerGroup    string                 `protobuf:"bytes,16,opt,name=worker_group,json=workerGroup,proto3" json:"worker_group,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -439,6 +448,13 @@ func (x *Filter) GetOrderDesc() bool {
 func (x *Filter) GetInstanceId() string {
 	if x != nil {
 		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *Filter) GetWorkerGroup() string {
+	if x != nil {
+		return x.WorkerGroup
 	}
 	return ""
 }
