@@ -645,5 +645,154 @@ func (s *PostgresStore) RecordComplete(ctx context.Context, eventID, subscriptio
 	return s.UpdateStatus(ctx, eventID, subscriptionID, Status(status), handlerErr, duration)
 }
 
+// Summary returns aggregated statistics using SQL GROUP BY queries.
+func (s *PostgresStore) Summary(ctx context.Context, filter Filter) (*Summary, error) {
+	qb, err := s.buildFilterQuery(filter)
+	if err != nil {
+		return nil, err
+	}
+
+	// Default to last 24h if no time range specified
+	if filter.StartTime.IsZero() && filter.EndTime.IsZero() {
+		qb.Add("started_at >= $%d", time.Now().Add(-24*time.Hour))
+	}
+
+	where := qb.WhereClause()
+	args := qb.Args()
+
+	query := fmt.Sprintf(`
+		SELECT
+			COUNT(*) AS total,
+			COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
+			COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
+			COUNT(*) FILTER (WHERE status = 'completed') AS completed_count,
+			COUNT(*) FILTER (WHERE status = 'retrying') AS retrying_count,
+			COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
+			MIN(started_at) AS oldest,
+			MAX(started_at) AS newest
+		FROM %s
+		%s
+	`, s.opts.tableName, where)
+
+	var total, failedCount, completedCount, retryingCount, pendingCount int64
+	var avgDurMs float64
+	var oldest, newest sql.NullTime
+
+	err = s.db.QueryRowContext(ctx, query, args...).Scan(
+		&total, &avgDurMs, &failedCount, &completedCount, &retryingCount, &pendingCount,
+		&oldest, &newest,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("summary global: %w", err)
+	}
+
+	summary := &Summary{
+		TotalEntries: total,
+		AvgDurationMs: int64(avgDurMs),
+		ByStatus:     make(map[Status]int64),
+		ByEventName:  make(map[string]*EventStats),
+	}
+
+	if total > 0 {
+		summary.ErrorRate = float64(failedCount) / float64(total)
+	}
+	if completedCount > 0 {
+		summary.ByStatus[StatusCompleted] = completedCount
+	}
+	if failedCount > 0 {
+		summary.ByStatus[StatusFailed] = failedCount
+	}
+	if retryingCount > 0 {
+		summary.ByStatus[StatusRetrying] = retryingCount
+	}
+	if pendingCount > 0 {
+		summary.ByStatus[StatusPending] = pendingCount
+	}
+	if oldest.Valid {
+		t := oldest.Time
+		summary.TimeRange.Oldest = &t
+	}
+	if newest.Valid {
+		t := newest.Time
+		summary.TimeRange.Newest = &t
+	}
+
+	// Per-event stats
+	eventQuery := fmt.Sprintf(`
+		SELECT
+			event_name,
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+			COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+			COUNT(*) FILTER (WHERE status = 'retrying') AS retrying,
+			COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+			COALESCE(AVG(duration_ms), 0) AS avg_duration_ms
+		FROM %s
+		%s
+		GROUP BY event_name
+	`, s.opts.tableName, where)
+
+	rows, err := s.db.QueryContext(ctx, eventQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("summary by event: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var name string
+		var es EventStats
+		var avgDur float64
+		if err := rows.Scan(&name, &es.Total, &es.Completed, &es.Failed, &es.Retrying, &es.Pending, &avgDur); err != nil {
+			return nil, fmt.Errorf("scan event stats: %w", err)
+		}
+		es.AvgDurationMs = int64(avgDur)
+		if es.Total > 0 {
+			es.ErrorRate = float64(es.Failed) / float64(es.Total)
+		}
+		summary.ByEventName[name] = &es
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("event rows: %w", err)
+	}
+
+	// Per-instance counts — use WHERE TRUE as baseline when where is empty
+	// to safely append AND conditions
+	instanceWhere := where
+	if instanceWhere == "" {
+		instanceWhere = "WHERE TRUE"
+	}
+	instanceQuery := fmt.Sprintf(`
+		SELECT instance_id, COUNT(*) AS count
+		FROM %s
+		%s AND instance_id IS NOT NULL AND instance_id != ''
+		GROUP BY instance_id
+	`, s.opts.tableName, instanceWhere)
+
+	instRows, err := s.db.QueryContext(ctx, instanceQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("summary by instance: %w", err)
+	}
+	defer func() { _ = instRows.Close() }()
+
+	byInstance := make(map[string]int64)
+	for instRows.Next() {
+		var id string
+		var count int64
+		if err := instRows.Scan(&id, &count); err != nil {
+			return nil, fmt.Errorf("scan instance: %w", err)
+		}
+		byInstance[id] = count
+	}
+	if err := instRows.Err(); err != nil {
+		return nil, fmt.Errorf("instance rows: %w", err)
+	}
+	if len(byInstance) > 0 {
+		summary.ByInstance = byInstance
+	}
+
+	return summary, nil
+}
+
 // Compile-time check that PostgresStore implements Store.
 var _ Store = (*PostgresStore)(nil)
+var _ SummaryProvider = (*PostgresStore)(nil)

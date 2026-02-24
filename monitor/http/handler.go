@@ -89,6 +89,9 @@ func New(store monitor.Store, opts ...Option) *Handler {
 	h.mux.HandleFunc("/v1/monitor/entries/", h.handleEntriesWithPath)
 	h.mux.HandleFunc("/v1/monitor/entries/count", h.handleCount)
 
+	// Register summary endpoint
+	h.mux.HandleFunc("/v1/monitor/summary", h.handleSummary)
+
 	// Register topology endpoints
 	h.mux.HandleFunc("/v1/topology", h.handleTopology)
 	h.mux.HandleFunc("/v1/topology/", h.handleTopologyWithPath)
