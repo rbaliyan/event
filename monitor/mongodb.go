@@ -579,5 +579,179 @@ func (s *MongoStore) RecordComplete(ctx context.Context, eventID, subscriptionID
 	return s.UpdateStatus(ctx, eventID, subscriptionID, Status(status), handlerErr, duration)
 }
 
+// Summary returns aggregated statistics using a MongoDB $facet aggregation pipeline.
+func (s *MongoStore) Summary(ctx context.Context, filter Filter) (*Summary, error) {
+	matchStage := s.buildFilter(filter)
+
+	// Default to last 24h if no time range specified to avoid full collection scan
+	if filter.StartTime.IsZero() && filter.EndTime.IsZero() {
+		if existing, ok := matchStage["started_at"].(bson.M); ok {
+			existing["$gte"] = time.Now().Add(-24 * time.Hour)
+		} else {
+			matchStage["started_at"] = bson.M{"$gte": time.Now().Add(-24 * time.Hour)}
+		}
+	}
+
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: matchStage}},
+		{{Key: "$facet", Value: bson.M{
+			"by_status": mongo.Pipeline{
+				{{Key: "$group", Value: bson.M{
+					"_id":   "$status",
+					"count": bson.M{"$sum": 1},
+				}}},
+			},
+			"by_event": mongo.Pipeline{
+				{{Key: "$group", Value: bson.M{
+					"_id":       "$event_name",
+					"total":     bson.M{"$sum": 1},
+					"completed": bson.M{"$sum": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$status", "completed"}}, 1, 0}}},
+					"failed":    bson.M{"$sum": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$status", "failed"}}, 1, 0}}},
+					"retrying":  bson.M{"$sum": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$status", "retrying"}}, 1, 0}}},
+					"pending":   bson.M{"$sum": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$status", "pending"}}, 1, 0}}},
+					"avg_dur":   bson.M{"$avg": "$duration_ms"},
+				}}},
+			},
+			"by_instance": mongo.Pipeline{
+				{{Key: "$match", Value: bson.M{"instance_id": bson.M{"$ne": ""}}}},
+				{{Key: "$group", Value: bson.M{
+					"_id":   "$instance_id",
+					"count": bson.M{"$sum": 1},
+				}}},
+			},
+			"global": mongo.Pipeline{
+				{{Key: "$group", Value: bson.M{
+					"_id":     nil,
+					"total":   bson.M{"$sum": 1},
+					"avg_dur": bson.M{"$avg": "$duration_ms"},
+					"failed":  bson.M{"$sum": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$status", "failed"}}, 1, 0}}},
+				}}},
+			},
+			"oldest": mongo.Pipeline{
+				{{Key: "$sort", Value: bson.M{"started_at": 1}}},
+				{{Key: "$limit", Value: 1}},
+				{{Key: "$project", Value: bson.M{"started_at": 1}}},
+			},
+			"newest": mongo.Pipeline{
+				{{Key: "$sort", Value: bson.M{"started_at": -1}}},
+				{{Key: "$limit", Value: 1}},
+				{{Key: "$project", Value: bson.M{"started_at": 1}}},
+			},
+		}}},
+	}
+
+	cursor, err := s.collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("summary aggregate: %w", err)
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+
+	var results []struct {
+		ByStatus []struct {
+			ID    string `bson:"_id"`
+			Count int64  `bson:"count"`
+		} `bson:"by_status"`
+		ByEvent []struct {
+			ID        string   `bson:"_id"`
+			Total     int64    `bson:"total"`
+			Completed int64    `bson:"completed"`
+			Failed    int64    `bson:"failed"`
+			Retrying  int64    `bson:"retrying"`
+			Pending   int64    `bson:"pending"`
+			AvgDur    *float64 `bson:"avg_dur"`
+		} `bson:"by_event"`
+		ByInstance []struct {
+			ID    string `bson:"_id"`
+			Count int64  `bson:"count"`
+		} `bson:"by_instance"`
+		Global []struct {
+			Total  int64    `bson:"total"`
+			AvgDur *float64 `bson:"avg_dur"`
+			Failed int64    `bson:"failed"`
+		} `bson:"global"`
+		Oldest []struct {
+			StartedAt time.Time `bson:"started_at"`
+		} `bson:"oldest"`
+		Newest []struct {
+			StartedAt time.Time `bson:"started_at"`
+		} `bson:"newest"`
+	}
+
+	if !cursor.Next(ctx) {
+		return &Summary{
+			ByStatus:    make(map[Status]int64),
+			ByEventName: make(map[string]*EventStats),
+		}, nil
+	}
+	if err := cursor.Decode(&results); err != nil {
+		return nil, fmt.Errorf("decode summary: %w", err)
+	}
+
+	// This should not happen but guard anyway
+	if len(results) == 0 {
+		return &Summary{
+			ByStatus:    make(map[Status]int64),
+			ByEventName: make(map[string]*EventStats),
+		}, nil
+	}
+
+	r := results[0]
+	summary := &Summary{
+		ByStatus:    make(map[Status]int64, len(r.ByStatus)),
+		ByEventName: make(map[string]*EventStats, len(r.ByEvent)),
+	}
+
+	for _, s := range r.ByStatus {
+		summary.ByStatus[Status(s.ID)] = s.Count
+	}
+
+	for _, e := range r.ByEvent {
+		es := &EventStats{
+			Total:     e.Total,
+			Completed: e.Completed,
+			Failed:    e.Failed,
+			Retrying:  e.Retrying,
+			Pending:   e.Pending,
+		}
+		if e.AvgDur != nil {
+			es.AvgDurationMs = int64(*e.AvgDur)
+		}
+		if es.Total > 0 {
+			es.ErrorRate = float64(es.Failed) / float64(es.Total)
+		}
+		summary.ByEventName[e.ID] = es
+	}
+
+	if len(r.ByInstance) > 0 {
+		summary.ByInstance = make(map[string]int64, len(r.ByInstance))
+		for _, inst := range r.ByInstance {
+			summary.ByInstance[inst.ID] = inst.Count
+		}
+	}
+
+	if len(r.Global) > 0 {
+		g := r.Global[0]
+		summary.TotalEntries = g.Total
+		if g.AvgDur != nil {
+			summary.AvgDurationMs = int64(*g.AvgDur)
+		}
+		if g.Total > 0 {
+			summary.ErrorRate = float64(g.Failed) / float64(g.Total)
+		}
+	}
+
+	if len(r.Oldest) > 0 {
+		t := r.Oldest[0].StartedAt
+		summary.TimeRange.Oldest = &t
+	}
+	if len(r.Newest) > 0 {
+		t := r.Newest[0].StartedAt
+		summary.TimeRange.Newest = &t
+	}
+
+	return summary, nil
+}
+
 // Compile-time check that MongoStore implements Store.
 var _ Store = (*MongoStore)(nil)
+var _ SummaryProvider = (*MongoStore)(nil)

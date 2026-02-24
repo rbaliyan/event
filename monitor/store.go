@@ -107,3 +107,37 @@ func (f *Filter) EffectiveLimit() int {
 	}
 	return f.Limit
 }
+
+// SummaryProvider is an optional interface for stores that support aggregated summary queries.
+// Implementations should use database-level aggregation (e.g., $facet, GROUP BY) for efficiency.
+type SummaryProvider interface {
+	Summary(ctx context.Context, filter Filter) (*Summary, error)
+}
+
+// Summary contains aggregated statistics for monitor entries matching a filter.
+type Summary struct {
+	TotalEntries  int64                  `json:"total_entries"`
+	ByStatus      map[Status]int64       `json:"by_status"`
+	ByEventName   map[string]*EventStats `json:"by_event_name"`
+	ByInstance    map[string]int64       `json:"by_instance,omitempty"`
+	AvgDurationMs int64                  `json:"avg_duration_ms"`
+	ErrorRate     float64                `json:"error_rate"`
+	TimeRange     TimeRange              `json:"time_range"`
+}
+
+// EventStats contains per-event aggregated statistics.
+type EventStats struct {
+	Total         int64   `json:"total"`
+	Completed     int64   `json:"completed"`
+	Failed        int64   `json:"failed"`
+	Retrying      int64   `json:"retrying"`
+	Pending       int64   `json:"pending"`
+	AvgDurationMs int64   `json:"avg_duration_ms"`
+	ErrorRate     float64 `json:"error_rate"`
+}
+
+// TimeRange contains the oldest and newest timestamps in a result set.
+type TimeRange struct {
+	Oldest *time.Time `json:"oldest,omitempty"`
+	Newest *time.Time `json:"newest,omitempty"`
+}

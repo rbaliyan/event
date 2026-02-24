@@ -410,5 +410,104 @@ func (s *MemoryStore) RecordComplete(ctx context.Context, eventID, subscriptionI
 	return s.UpdateStatus(ctx, eventID, subscriptionID, Status(status), handlerErr, duration)
 }
 
+// Summary returns aggregated statistics for entries matching the filter.
+func (s *MemoryStore) Summary(ctx context.Context, filter Filter) (*Summary, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, fmt.Errorf("store is closed")
+	}
+
+	summary := &Summary{
+		ByStatus:    make(map[Status]int64),
+		ByEventName: make(map[string]*EventStats),
+		ByInstance:  make(map[string]int64),
+	}
+
+	type durationAcc struct {
+		totalMs int64
+		count   int64
+	}
+	var globalDur durationAcc
+	eventDurations := make(map[string]*durationAcc)
+
+	for _, entry := range s.entries {
+		if !s.matchesFilter(entry, filter) {
+			continue
+		}
+
+		summary.TotalEntries++
+		summary.ByStatus[entry.Status]++
+
+		// Per-event stats
+		es, ok := summary.ByEventName[entry.EventName]
+		if !ok {
+			es = &EventStats{}
+			summary.ByEventName[entry.EventName] = es
+			eventDurations[entry.EventName] = &durationAcc{}
+		}
+		es.Total++
+		switch entry.Status {
+		case StatusCompleted:
+			es.Completed++
+		case StatusFailed:
+			es.Failed++
+		case StatusRetrying:
+			es.Retrying++
+		case StatusPending:
+			es.Pending++
+		}
+
+		if entry.Duration > 0 {
+			ms := entry.Duration.Milliseconds()
+			globalDur.totalMs += ms
+			globalDur.count++
+			ed := eventDurations[entry.EventName]
+			ed.totalMs += ms
+			ed.count++
+		}
+
+		if entry.InstanceID != "" {
+			summary.ByInstance[entry.InstanceID]++
+		}
+
+		t := entry.StartedAt
+		if summary.TimeRange.Oldest == nil || t.Before(*summary.TimeRange.Oldest) {
+			cp := t
+			summary.TimeRange.Oldest = &cp
+		}
+		if summary.TimeRange.Newest == nil || t.After(*summary.TimeRange.Newest) {
+			cp := t
+			summary.TimeRange.Newest = &cp
+		}
+	}
+
+	// Compute global averages and rates
+	if globalDur.count > 0 {
+		summary.AvgDurationMs = globalDur.totalMs / globalDur.count
+	}
+	if summary.TotalEntries > 0 {
+		summary.ErrorRate = float64(summary.ByStatus[StatusFailed]) / float64(summary.TotalEntries)
+	}
+
+	// Compute per-event averages and error rates
+	for name, es := range summary.ByEventName {
+		if ed := eventDurations[name]; ed.count > 0 {
+			es.AvgDurationMs = ed.totalMs / ed.count
+		}
+		if es.Total > 0 {
+			es.ErrorRate = float64(es.Failed) / float64(es.Total)
+		}
+	}
+
+	if len(summary.ByInstance) == 0 {
+		summary.ByInstance = nil
+	}
+
+	return summary, nil
+}
+
 // Compile-time check that MemoryStore implements Store.
 var _ Store = (*MemoryStore)(nil)
+var _ SummaryProvider = (*MemoryStore)(nil)
