@@ -11,7 +11,6 @@ type WorkerState string
 const (
 	WorkerStateProcessing WorkerState = "processing"
 	WorkerStateCompleted  WorkerState = "completed"
-	WorkerStateReleased   WorkerState = "released"
 )
 
 // WorkerEntry represents a worker state entry for API responses.

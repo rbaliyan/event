@@ -268,10 +268,12 @@ func (b *Bus) Close(ctx context.Context) error {
 			b.inflightWG.Wait()
 			close(done)
 		}()
+		timer := time.NewTimer(b.drainTimeout)
+		defer timer.Stop()
 		select {
 		case <-done:
 			b.logger.Info("all in-flight handlers completed")
-		case <-time.After(b.drainTimeout):
+		case <-timer.C:
 			b.logger.Warn("drain timeout exceeded, proceeding with shutdown",
 				"timeout", b.drainTimeout)
 		}

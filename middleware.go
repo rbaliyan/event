@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rbaliyan/event/v3/schema"
@@ -237,185 +236,6 @@ func DeduplicationMiddleware[T any](store DeduplicationStore) Middleware[T] {
 	}
 }
 
-// CircuitState represents the state of the circuit breaker
-type CircuitState int
-
-const (
-	// CircuitClosed means the circuit is functioning normally
-	CircuitClosed CircuitState = iota
-	// CircuitOpen means the circuit is open due to failures (requests fail fast)
-	CircuitOpen
-	// CircuitHalfOpen means the circuit is testing if the service recovered
-	CircuitHalfOpen
-)
-
-// CircuitBreaker provides circuit breaker functionality for event handlers.
-// When failures exceed a threshold, the circuit opens and requests fail fast.
-// In half-open state, only one probe request is allowed at a time to prevent
-// overwhelming a recovering service.
-type CircuitBreaker struct {
-	mu sync.RWMutex
-
-	// configuration
-	failureThreshold int           // number of failures before opening
-	successThreshold int           // number of successes needed to close from half-open
-	timeout          time.Duration // how long to wait before trying half-open
-
-	// state (unexported to prevent external modification)
-	state          CircuitState
-	failures       int
-	successes      int
-	lastStateTime  time.Time
-	halfOpenProbes int32 // atomic counter for concurrent half-open probes
-}
-
-// NewCircuitBreaker creates a new circuit breaker.
-// failureThreshold: number of consecutive failures before opening (default: 5)
-// successThreshold: number of consecutive successes in half-open before closing (default: 2)
-// timeout: time to wait before attempting half-open (default: 30s)
-func NewCircuitBreaker(failureThreshold, successThreshold int, timeout time.Duration) *CircuitBreaker {
-	if failureThreshold <= 0 {
-		failureThreshold = 5
-	}
-	if successThreshold <= 0 {
-		successThreshold = 2
-	}
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-
-	return &CircuitBreaker{
-		failureThreshold: failureThreshold,
-		successThreshold: successThreshold,
-		timeout:          timeout,
-		state:            CircuitClosed,
-		lastStateTime:    time.Now(),
-	}
-}
-
-// State returns the current circuit state
-func (cb *CircuitBreaker) State() CircuitState {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
-	return cb.state
-}
-
-// OpenUntil returns the time when the circuit breaker will transition to half-open.
-// Returns zero time if the circuit is not open.
-func (cb *CircuitBreaker) OpenUntil() time.Time {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
-	if cb.state == CircuitOpen {
-		return cb.lastStateTime.Add(cb.timeout)
-	}
-	return time.Time{}
-}
-
-// Allow checks if a request should be allowed.
-// Returns true if the request can proceed, false if it should fail fast.
-func (cb *CircuitBreaker) Allow() bool {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	switch cb.state {
-	case CircuitClosed:
-		return true
-	case CircuitOpen:
-		// Check if timeout has passed
-		if time.Since(cb.lastStateTime) > cb.timeout {
-			cb.state = CircuitHalfOpen
-			cb.successes = 0
-			cb.lastStateTime = time.Now()
-			return true
-		}
-		return false
-	case CircuitHalfOpen:
-		// Limit concurrent probes in half-open state to prevent thundering herd
-		if atomic.AddInt32(&cb.halfOpenProbes, 1) > int32(cb.successThreshold) {
-			atomic.AddInt32(&cb.halfOpenProbes, -1)
-			return false
-		}
-		return true
-	default:
-		return true
-	}
-}
-
-// RecordSuccess records a successful request
-func (cb *CircuitBreaker) RecordSuccess() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	cb.failures = 0
-
-	if cb.state == CircuitHalfOpen {
-		atomic.AddInt32(&cb.halfOpenProbes, -1)
-		cb.successes++
-		if cb.successes >= cb.successThreshold {
-			cb.state = CircuitClosed
-			cb.successes = 0
-			atomic.StoreInt32(&cb.halfOpenProbes, 0)
-			cb.lastStateTime = time.Now()
-		}
-	}
-}
-
-// RecordFailure records a failed request
-func (cb *CircuitBreaker) RecordFailure() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	cb.successes = 0
-	cb.failures++
-
-	if cb.state == CircuitClosed && cb.failures >= cb.failureThreshold {
-		cb.state = CircuitOpen
-		cb.lastStateTime = time.Now()
-	} else if cb.state == CircuitHalfOpen {
-		atomic.AddInt32(&cb.halfOpenProbes, -1)
-		// Any failure in half-open goes back to open
-		cb.state = CircuitOpen
-		atomic.StoreInt32(&cb.halfOpenProbes, 0)
-		cb.lastStateTime = time.Now()
-	}
-}
-
-// CircuitBreakerMiddleware creates a middleware that implements circuit breaker pattern.
-// When failures exceed the threshold, subsequent requests fail fast until the timeout.
-//
-// Example usage:
-//
-//	cb := event.NewCircuitBreaker(5, 2, 30*time.Second)
-//	ev.Subscribe(ctx, handler, event.WithMiddleware(event.CircuitBreakerMiddleware[string](cb)))
-func CircuitBreakerMiddleware[T any](cb *CircuitBreaker) Middleware[T] {
-	return func(next Handler[T]) Handler[T] {
-		return func(ctx context.Context, ev Event[T], data T) error {
-			// Check if circuit allows request
-			if !cb.Allow() {
-				ContextLogger(ctx).Warn("circuit breaker open, failing fast",
-					"event", ev.Name(),
-					"state", cb.State())
-				return &CircuitOpenError{
-					Name:      ev.Name(),
-					OpenUntil: cb.OpenUntil(),
-				}
-			}
-
-			// Execute handler
-			err := next(ctx, ev, data)
-
-			// Record result
-			if err == nil {
-				cb.RecordSuccess()
-			} else {
-				cb.RecordFailure()
-			}
-
-			return err
-		}
-	}
-}
-
 // IdempotencyMiddleware creates a middleware that prevents duplicate message processing.
 // Uses IdempotencyStore to check and mark messages as processed.
 //
@@ -457,6 +277,21 @@ func IdempotencyMiddleware[T any](store IdempotencyStore) Middleware[T] {
 	}
 }
 
+// RecordStartParams contains the parameters for recording the start of event processing.
+type RecordStartParams struct {
+	EventID               string
+	SubscriptionID        string
+	EventName             string
+	BusID                 string
+	WorkerPool            bool
+	Metadata              map[string]string
+	TraceID               string
+	SpanID                string
+	SubscriberName        string
+	SubscriberDescription string
+	WorkerGroup           string
+}
+
 // MonitorStore is a minimal interface for event processing monitoring in middleware.
 //
 // This interface provides the two methods needed by MonitorMiddleware to record
@@ -480,17 +315,14 @@ func IdempotencyMiddleware[T any](store IdempotencyStore) Middleware[T] {
 //	))
 type MonitorStore interface {
 	// RecordStart records when event processing begins.
-	// workerPool indicates the delivery mode (true = WorkerPool, false = Broadcast)
-	// subscriberName and subscriberDescription are optional human-readable identifiers
-	// workerGroup is the worker group name (empty for broadcast or default group)
-	RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string,
-		workerPool bool, metadata map[string]string, traceID, spanID string,
-		subscriberName, subscriberDescription, workerGroup string) error
+	// params.WorkerPool indicates the delivery mode (true = WorkerPool, false = Broadcast)
+	// params.SubscriberName and params.SubscriberDescription are optional human-readable identifiers
+	// params.WorkerGroup is the worker group name (empty for broadcast or default group)
+	RecordStart(ctx context.Context, params RecordStartParams) error
 
 	// RecordComplete updates the entry with the final result.
-	// status: "completed" (success), "failed" (rejected), "retrying" (will retry)
-	RecordComplete(ctx context.Context, eventID, subscriptionID, status string,
-		handlerErr error, duration time.Duration) error
+	// Status: "completed" (success), "failed" (rejected), "retrying" (will retry)
+	RecordComplete(ctx context.Context, params RecordCompleteParams) error
 }
 
 // SchemaProvider is an alias for schema.SchemaProvider.
@@ -519,6 +351,15 @@ type EventSchema = schema.EventSchema
 // SchemaChangeEvent is published when a schema is updated, enabling
 // real-time schema synchronization across distributed systems.
 type SchemaChangeEvent = schema.SchemaChangeEvent
+
+// RecordCompleteParams contains the parameters for recording the completion of event processing.
+type RecordCompleteParams struct {
+	EventID        string
+	SubscriptionID string
+	Status         string
+	Error          error
+	Duration       time.Duration
+}
 
 // MonitorMiddleware creates a middleware that records event processing metrics.
 // Records start time, duration, status, and any errors for each event processed.
@@ -554,8 +395,19 @@ func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 
 			// Record start (best effort)
 			workerGroup := ContextWorkerGroup(ctx)
-			if err := store.RecordStart(ctx, eventID, subIDForEntry, eventName, busID,
-				workerPool, metadata, traceID, spanID, subscriberName, subscriberDescription, workerGroup); err != nil {
+			if err := store.RecordStart(ctx, RecordStartParams{
+				EventID:               eventID,
+				SubscriptionID:        subIDForEntry,
+				EventName:             eventName,
+				BusID:                 busID,
+				WorkerPool:            workerPool,
+				Metadata:              metadata,
+				TraceID:               traceID,
+				SpanID:                spanID,
+				SubscriberName:        subscriberName,
+				SubscriberDescription: subscriberDescription,
+				WorkerGroup:           workerGroup,
+			}); err != nil {
 				logger := ContextLogger(ctx)
 				if logger != nil {
 					logger.Warn("monitor record start failed", "error", err)
@@ -584,7 +436,13 @@ func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 			}
 
 			// Record complete (best effort)
-			if err := store.RecordComplete(ctx, eventID, subIDForEntry, status, handlerErr, duration); err != nil {
+			if err := store.RecordComplete(ctx, RecordCompleteParams{
+				EventID:        eventID,
+				SubscriptionID: subIDForEntry,
+				Status:         status,
+				Error:          handlerErr,
+				Duration:       duration,
+			}); err != nil {
 				logger := ContextLogger(ctx)
 				if logger != nil {
 					logger.Warn("monitor record complete failed", "error", err)

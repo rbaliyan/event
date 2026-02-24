@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	event "github.com/rbaliyan/event/v3"
 )
 
 // MemoryStore implements Store using in-memory storage.
@@ -374,29 +376,26 @@ func (s *MemoryStore) Len() int {
 
 // RecordStart records when event processing begins.
 // Implements event.MonitorStore interface.
-func (s *MemoryStore) RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string,
-	workerPool bool, metadata map[string]string, traceID, spanID string,
-	subscriberName, subscriberDescription, workerGroup string) error {
-
+func (s *MemoryStore) RecordStart(ctx context.Context, params event.RecordStartParams) error {
 	mode := Broadcast
-	if workerPool {
+	if params.WorkerPool {
 		mode = WorkerPool
 	}
 
 	entry := &Entry{
-		EventID:               eventID,
-		SubscriptionID:        subscriptionID,
-		SubscriberName:        subscriberName,
-		SubscriberDescription: subscriberDescription,
-		EventName:             eventName,
-		BusID:                 busID,
+		EventID:               params.EventID,
+		SubscriptionID:        params.SubscriptionID,
+		SubscriberName:        params.SubscriberName,
+		SubscriberDescription: params.SubscriberDescription,
+		EventName:             params.EventName,
+		BusID:                 params.BusID,
 		DeliveryMode:          mode,
-		Metadata:              metadata,
+		Metadata:              params.Metadata,
 		Status:                StatusPending,
 		StartedAt:             time.Now(),
-		TraceID:               traceID,
-		SpanID:                spanID,
-		WorkerGroup:           workerGroup,
+		TraceID:               params.TraceID,
+		SpanID:                params.SpanID,
+		WorkerGroup:           params.WorkerGroup,
 	}
 
 	return s.Record(ctx, entry)
@@ -404,10 +403,8 @@ func (s *MemoryStore) RecordStart(ctx context.Context, eventID, subscriptionID, 
 
 // RecordComplete updates the entry with the final result.
 // Implements event.MonitorStore interface.
-func (s *MemoryStore) RecordComplete(ctx context.Context, eventID, subscriptionID, status string,
-	handlerErr error, duration time.Duration) error {
-
-	return s.UpdateStatus(ctx, eventID, subscriptionID, Status(status), handlerErr, duration)
+func (s *MemoryStore) RecordComplete(ctx context.Context, params event.RecordCompleteParams) error {
+	return s.UpdateStatus(ctx, params.EventID, params.SubscriptionID, Status(params.Status), params.Error, params.Duration)
 }
 
 // Summary returns aggregated statistics for entries matching the filter.

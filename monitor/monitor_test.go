@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	event "github.com/rbaliyan/event/v3"
 )
 
 func TestDeliveryMode(t *testing.T) {
@@ -392,7 +394,18 @@ func TestMemoryStore(t *testing.T) {
 		store := NewMemoryStore()
 		defer store.Close()
 
-		err := store.RecordStart(ctx, "event-1", "sub-1", "order.created", "bus-1", false, map[string]string{"key": "value"}, "trace-1", "span-1", "test-subscriber", "Test subscriber description", "")
+		err := store.RecordStart(ctx, event.RecordStartParams{
+			EventID:               "event-1",
+			SubscriptionID:        "sub-1",
+			EventName:             "order.created",
+			BusID:                 "bus-1",
+			WorkerPool:            false,
+			Metadata:              map[string]string{"key": "value"},
+			TraceID:               "trace-1",
+			SpanID:                "span-1",
+			SubscriberName:        "test-subscriber",
+			SubscriberDescription: "Test subscriber description",
+		})
 		if err != nil {
 			t.Fatalf("RecordStart failed: %v", err)
 		}
@@ -411,7 +424,13 @@ func TestMemoryStore(t *testing.T) {
 			t.Errorf("expected subscriber description 'Test subscriber description', got %s", entry.SubscriberDescription)
 		}
 
-		err = store.RecordComplete(ctx, "event-1", "sub-1", string(StatusCompleted), nil, 100*time.Millisecond)
+		err = store.RecordComplete(ctx, event.RecordCompleteParams{
+			EventID:        "event-1",
+			SubscriptionID: "sub-1",
+			Status:         string(StatusCompleted),
+			Error:          nil,
+			Duration:       100 * time.Millisecond,
+		})
 		if err != nil {
 			t.Fatalf("RecordComplete failed: %v", err)
 		}

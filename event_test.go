@@ -2777,17 +2777,17 @@ func newMockMonitorStore() *mockMonitorStore {
 	}
 }
 
-func (s *mockMonitorStore) RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string, workerPool bool, metadata map[string]string, traceID, spanID string, subscriberName, subscriberDescription, workerGroup string) error {
+func (s *mockMonitorStore) RecordStart(ctx context.Context, params RecordStartParams) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.started[eventID] = true
+	s.started[params.EventID] = true
 	return nil
 }
 
-func (s *mockMonitorStore) RecordComplete(ctx context.Context, eventID, subscriptionID, status string, handlerErr error, duration time.Duration) error {
+func (s *mockMonitorStore) RecordComplete(ctx context.Context, params RecordCompleteParams) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.status[eventID] = status
+	s.status[params.EventID] = params.Status
 	return nil
 }
 

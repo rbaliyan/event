@@ -7,7 +7,6 @@ import (
 
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // RelayMode defines how the relay watches for new messages.
@@ -228,7 +227,7 @@ func (r *MongoRelay) processExistingPending(ctx context.Context) {
 	r.log().Info("processing existing pending messages")
 
 	for {
-		messages, err := r.store.GetPendingMongo(ctx, r.batchSize)
+		messages, err := r.store.getPendingMongo(ctx, r.batchSize)
 		if err != nil {
 			r.log().Error("failed to get pending messages", "error", err)
 			return
@@ -263,7 +262,7 @@ func (r *MongoRelay) processExistingPending(ctx context.Context) {
 
 // publishPending fetches and publishes pending messages
 func (r *MongoRelay) publishPending(ctx context.Context) {
-	messages, err := r.store.GetPendingMongo(ctx, r.batchSize)
+	messages, err := r.store.getPendingMongo(ctx, r.batchSize)
 	if err != nil {
 		r.log().Error("failed to get pending messages", "error", err)
 		return
@@ -295,7 +294,7 @@ func (r *MongoRelay) publishPending(ctx context.Context) {
 }
 
 // publishMessage publishes a single message to the transport
-func (r *MongoRelay) publishMessage(ctx context.Context, msg *MongoMessage) error {
+func (r *MongoRelay) publishMessage(ctx context.Context, msg *mongoMessage) error {
 	// msg.Payload is already []byte - pass directly to transport
 	transportMsg := message.New(
 		msg.EventID,
@@ -340,26 +339,3 @@ func (r *MongoRelay) PublishOnce(ctx context.Context) error {
 	return nil
 }
 
-// MongoMessageWithID is a helper struct for operations that need both ObjectID and int64 ID
-type MongoMessageWithID struct {
-	ObjectID bson.ObjectID
-	Message  *Message
-}
-
-// GetPendingWithIDs returns pending messages with their MongoDB ObjectIDs
-func (s *MongoStore) GetPendingWithIDs(ctx context.Context, limit int) ([]*MongoMessageWithID, error) {
-	messages, err := s.GetPendingMongo(ctx, limit)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]*MongoMessageWithID, len(messages))
-	for i, msg := range messages {
-		result[i] = &MongoMessageWithID{
-			ObjectID: msg.ID,
-			Message:  msg.ToMessage(),
-		}
-	}
-
-	return result, nil
-}
