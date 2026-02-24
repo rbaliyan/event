@@ -59,8 +59,8 @@ db.event_outbox.createIndex({ "status": 1, "created_at": 1 })
 db.event_outbox.createIndex({ "published_at": 1 }, { sparse: true })
 */
 
-// MongoMessage represents a message document in MongoDB
-type MongoMessage struct {
+// mongoMessage represents a message document in MongoDB
+type mongoMessage struct {
 	ID          bson.ObjectID     `bson:"_id,omitempty"`
 	EventName   string            `bson:"event_name"`
 	EventID     string            `bson:"event_id"`
@@ -74,8 +74,8 @@ type MongoMessage struct {
 	LastError   string            `bson:"last_error,omitempty"`
 }
 
-// ToMessage converts MongoMessage to Message
-func (m *MongoMessage) ToMessage() *Message {
+// toMessage converts mongoMessage to Message
+func (m *mongoMessage) toMessage() *Message {
 	return &Message{
 		ID:          m.ID.Timestamp().Unix(), // Use timestamp as int64 ID for compatibility
 		EventName:   m.EventName,
@@ -90,8 +90,8 @@ func (m *MongoMessage) ToMessage() *Message {
 	}
 }
 
-// CappedInfo contains information about a capped collection
-type CappedInfo struct {
+// cappedInfo contains information about a capped collection
+type cappedInfo struct {
 	Capped   bool  // Whether the collection is capped
 	Size     int64 // Maximum size in bytes
 	MaxDocs  int64 // Maximum number of documents (0 = unlimited)
@@ -118,7 +118,7 @@ func WithCollection(name string) MongoStoreOption {
 // MongoStore defines the interface for MongoDB outbox storage
 type MongoStore struct {
 	collection *mongo.Collection
-	cappedInfo *CappedInfo // Cached capped info (nil = not checked yet)
+	cappedInfo *cappedInfo // Cached capped info (nil = not checked yet)
 }
 
 // NewMongoStore creates a new MongoDB outbox store.
@@ -177,16 +177,16 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 // IsCapped returns whether the collection is a capped collection.
 // The result is cached after the first call.
 func (s *MongoStore) IsCapped(ctx context.Context) (bool, error) {
-	info, err := s.GetCappedInfo(ctx)
+	info, err := s.getCappedInfo(ctx)
 	if err != nil {
 		return false, err
 	}
 	return info.Capped, nil
 }
 
-// GetCappedInfo returns detailed information about the collection's capped status.
+// getCappedInfo returns detailed information about the collection's capped status.
 // The result is cached after the first call.
-func (s *MongoStore) GetCappedInfo(ctx context.Context) (*CappedInfo, error) {
+func (s *MongoStore) getCappedInfo(ctx context.Context) (*cappedInfo, error) {
 	if s.cappedInfo != nil {
 		return s.cappedInfo, nil
 	}
@@ -200,14 +200,8 @@ func (s *MongoStore) GetCappedInfo(ctx context.Context) (*CappedInfo, error) {
 	return info, nil
 }
 
-// RefreshCappedInfo forces a refresh of the cached capped collection info.
-func (s *MongoStore) RefreshCappedInfo(ctx context.Context) (*CappedInfo, error) {
-	s.cappedInfo = nil
-	return s.GetCappedInfo(ctx)
-}
-
 // fetchCappedInfo queries MongoDB for collection stats to determine if capped.
-func (s *MongoStore) fetchCappedInfo(ctx context.Context) (*CappedInfo, error) {
+func (s *MongoStore) fetchCappedInfo(ctx context.Context) (*cappedInfo, error) {
 	var result bson.M
 	err := s.collection.Database().RunCommand(ctx, bson.D{
 		{Key: "collStats", Value: s.collection.Name()},
@@ -217,12 +211,12 @@ func (s *MongoStore) fetchCappedInfo(ctx context.Context) (*CappedInfo, error) {
 		// Collection might not exist yet - treat as non-capped
 		// MongoDB returns "ns not found" or similar for missing collections
 		if isNamespaceNotFoundError(err) {
-			return &CappedInfo{Capped: false}, nil
+			return &cappedInfo{Capped: false}, nil
 		}
 		return nil, fmt.Errorf("collStats: %w", err)
 	}
 
-	info := &CappedInfo{}
+	info := &cappedInfo{}
 
 	if capped, ok := result["capped"].(bool); ok {
 		info.Capped = capped
@@ -285,7 +279,7 @@ func (s *MongoStore) CreateCapped(ctx context.Context, sizeBytes int64, maxDocs 
 
 // InsertInSession adds a message to the outbox within a MongoDB session/transaction.
 // In MongoDB driver v2, pass the session context directly as ctx.
-func (s *MongoStore) InsertInSession(ctx context.Context, msg *MongoMessage) error {
+func (s *MongoStore) InsertInSession(ctx context.Context, msg *mongoMessage) error {
 	if msg.ID.IsZero() {
 		msg.ID = bson.NewObjectID()
 	}
@@ -299,7 +293,7 @@ func (s *MongoStore) InsertInSession(ctx context.Context, msg *MongoMessage) err
 }
 
 // Insert adds a message to the outbox (without transaction)
-func (s *MongoStore) Insert(ctx context.Context, msg *MongoMessage) error {
+func (s *MongoStore) Insert(ctx context.Context, msg *mongoMessage) error {
 	if msg.ID.IsZero() {
 		msg.ID = bson.NewObjectID()
 	}
@@ -328,7 +322,7 @@ func (s *MongoStore) Insert(ctx context.Context, msg *MongoMessage) error {
 //	    return nil, orderEvent.Publish(ctx, order)  // Routed to Store()
 //	})
 func (s *MongoStore) Store(ctx context.Context, eventName string, eventID string, payload []byte, metadata map[string]string) error {
-	msg := &MongoMessage{
+	msg := &mongoMessage{
 		ID:        bson.NewObjectID(),
 		EventName: eventName,
 		EventID:   eventID,
@@ -385,20 +379,20 @@ func (s *MongoStore) claimNextPending(ctx context.Context) (*Message, error) {
 		SetSort(bson.D{{Key: "created_at", Value: 1}}).
 		SetReturnDocument(options.After)
 
-	var mongoMsg MongoMessage
+	var mongoMsg mongoMessage
 	err := s.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&mongoMsg)
 	if err != nil {
 		return nil, err
 	}
 
-	return mongoMsg.ToMessage(), nil
+	return mongoMsg.toMessage(), nil
 }
 
-// GetPendingMongo retrieves pending messages as MongoMessage with atomic claiming.
+// getPendingMongo retrieves pending messages as mongoMessage with atomic claiming.
 // Uses FindOneAndUpdate to atomically claim messages, preventing duplicate
 // processing by multiple relay instances in HA deployments.
-func (s *MongoStore) GetPendingMongo(ctx context.Context, limit int) ([]*MongoMessage, error) {
-	var messages []*MongoMessage
+func (s *MongoStore) getPendingMongo(ctx context.Context, limit int) ([]*mongoMessage, error) {
+	var messages []*mongoMessage
 
 	for i := 0; i < limit; i++ {
 		msg, err := s.claimNextPendingMongo(ctx)
@@ -415,7 +409,7 @@ func (s *MongoStore) GetPendingMongo(ctx context.Context, limit int) ([]*MongoMe
 }
 
 // claimNextPendingMongo atomically claims a single pending message for processing.
-func (s *MongoStore) claimNextPendingMongo(ctx context.Context) (*MongoMessage, error) {
+func (s *MongoStore) claimNextPendingMongo(ctx context.Context) (*mongoMessage, error) {
 	filter := bson.M{"status": StatusPending}
 	update := bson.M{
 		"$set": bson.M{
@@ -427,7 +421,7 @@ func (s *MongoStore) claimNextPendingMongo(ctx context.Context) (*MongoMessage, 
 		SetSort(bson.D{{Key: "created_at", Value: 1}}).
 		SetReturnDocument(options.After)
 
-	var mongoMsg MongoMessage
+	var mongoMsg mongoMessage
 	err := s.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&mongoMsg)
 	if err != nil {
 		return nil, err
@@ -665,7 +659,7 @@ func (p *MongoPublisher) PublishInSession(
 		return fmt.Errorf("encode payload: %w", err)
 	}
 
-	msg := &MongoMessage{
+	msg := &mongoMessage{
 		EventName: eventName,
 		EventID:   uuid.New().String(),
 		Payload:   encoded,
@@ -689,7 +683,7 @@ func (p *MongoPublisher) PublishWithTransaction(
 		return fmt.Errorf("encode payload: %w", err)
 	}
 
-	msg := &MongoMessage{
+	msg := &mongoMessage{
 		EventName: eventName,
 		EventID:   uuid.New().String(),
 		Payload:   encoded,
@@ -733,7 +727,7 @@ func (p *MongoPublisher) Publish(
 		return fmt.Errorf("encode payload: %w", err)
 	}
 
-	msg := &MongoMessage{
+	msg := &mongoMessage{
 		EventName: eventName,
 		EventID:   uuid.New().String(),
 		Payload:   encoded,

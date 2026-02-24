@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	event "github.com/rbaliyan/event/v3"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -49,8 +50,8 @@ db.monitor_entries.createIndex({"delivery_mode": 1})
 db.monitor_entries.createIndex({"subscriber_name": 1})
 */
 
-// MongoEntry represents a monitor entry document in MongoDB.
-type MongoEntry struct {
+// mongoEntry represents a monitor entry document in MongoDB.
+type mongoEntry struct {
 	EventID               string            `bson:"event_id"`
 	SubscriptionID        string            `bson:"subscription_id"`
 	SubscriberName        string            `bson:"subscriber_name,omitempty"`
@@ -71,8 +72,8 @@ type MongoEntry struct {
 	WorkerGroup           string            `bson:"worker_group,omitempty"`
 }
 
-// ToEntry converts MongoEntry to Entry.
-func (m *MongoEntry) ToEntry() *Entry {
+// toEntry converts mongoEntry to Entry.
+func (m *mongoEntry) toEntry() *Entry {
 	entry := &Entry{
 		EventID:               m.EventID,
 		SubscriptionID:        m.SubscriptionID,
@@ -98,8 +99,8 @@ func (m *MongoEntry) ToEntry() *Entry {
 	return entry
 }
 
-// FromEntry creates a MongoEntry from Entry.
-func FromEntry(e *Entry) *MongoEntry {
+// fromEntry creates a mongoEntry from Entry.
+func fromEntry(e *Entry) *mongoEntry {
 	var durationMs *int64
 	if e.Duration > 0 {
 		ms := e.Duration.Milliseconds()
@@ -111,7 +112,7 @@ func FromEntry(e *Entry) *MongoEntry {
 		subscriptionID = ""
 	}
 
-	return &MongoEntry{
+	return &mongoEntry{
 		EventID:               e.EventID,
 		SubscriptionID:        subscriptionID,
 		SubscriberName:        e.SubscriberName,
@@ -205,7 +206,7 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 
 // Record creates or updates a monitor entry.
 func (s *MongoStore) Record(ctx context.Context, entry *Entry) error {
-	mongoEntry := FromEntry(entry)
+	mongoEntry := fromEntry(entry)
 
 	filter := bson.M{
 		"event_id":        mongoEntry.EventID,
@@ -253,7 +254,7 @@ func (s *MongoStore) Get(ctx context.Context, eventID, subscriptionID string) (*
 		"subscription_id": subscriptionID,
 	}
 
-	var doc MongoEntry
+	var doc mongoEntry
 	err := s.collection.FindOne(ctx, filter).Decode(&doc)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
@@ -262,7 +263,7 @@ func (s *MongoStore) Get(ctx context.Context, eventID, subscriptionID string) (*
 		return nil, fmt.Errorf("get monitor: %w", err)
 	}
 
-	return doc.ToEntry(), nil
+	return doc.toEntry(), nil
 }
 
 // GetByEventID returns all entries for an event ID.
@@ -278,11 +279,11 @@ func (s *MongoStore) GetByEventID(ctx context.Context, eventID string) ([]*Entry
 
 	var entries []*Entry
 	for cursor.Next(ctx) {
-		var doc MongoEntry
+		var doc mongoEntry
 		if err := cursor.Decode(&doc); err != nil {
 			return nil, fmt.Errorf("decode entry: %w", err)
 		}
-		entries = append(entries, doc.ToEntry())
+		entries = append(entries, doc.toEntry())
 	}
 
 	return entries, cursor.Err()
@@ -373,11 +374,11 @@ func (s *MongoStore) List(ctx context.Context, filter Filter) (*Page, error) {
 
 	var entries []*Entry
 	for cursor.Next(ctx) {
-		var doc MongoEntry
+		var doc mongoEntry
 		if err := cursor.Decode(&doc); err != nil {
 			return nil, fmt.Errorf("decode entry: %w", err)
 		}
-		entries = append(entries, doc.ToEntry())
+		entries = append(entries, doc.toEntry())
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, fmt.Errorf("cursor error: %w", err)
@@ -543,29 +544,26 @@ func decodeMongoCursor(str string) (mongoCursor, error) {
 
 // RecordStart records when event processing begins.
 // Implements event.MonitorStore interface.
-func (s *MongoStore) RecordStart(ctx context.Context, eventID, subscriptionID, eventName, busID string,
-	workerPool bool, metadata map[string]string, traceID, spanID string,
-	subscriberName, subscriberDescription, workerGroup string) error {
-
+func (s *MongoStore) RecordStart(ctx context.Context, params event.RecordStartParams) error {
 	mode := Broadcast
-	if workerPool {
+	if params.WorkerPool {
 		mode = WorkerPool
 	}
 
 	entry := &Entry{
-		EventID:               eventID,
-		SubscriptionID:        subscriptionID,
-		SubscriberName:        subscriberName,
-		SubscriberDescription: subscriberDescription,
-		EventName:             eventName,
-		BusID:                 busID,
+		EventID:               params.EventID,
+		SubscriptionID:        params.SubscriptionID,
+		SubscriberName:        params.SubscriberName,
+		SubscriberDescription: params.SubscriberDescription,
+		EventName:             params.EventName,
+		BusID:                 params.BusID,
 		DeliveryMode:          mode,
-		Metadata:              metadata,
+		Metadata:              params.Metadata,
 		Status:                StatusPending,
 		StartedAt:             time.Now(),
-		TraceID:               traceID,
-		SpanID:                spanID,
-		WorkerGroup:           workerGroup,
+		TraceID:               params.TraceID,
+		SpanID:                params.SpanID,
+		WorkerGroup:           params.WorkerGroup,
 	}
 
 	return s.Record(ctx, entry)
@@ -573,10 +571,8 @@ func (s *MongoStore) RecordStart(ctx context.Context, eventID, subscriptionID, e
 
 // RecordComplete updates the entry with the final result.
 // Implements event.MonitorStore interface.
-func (s *MongoStore) RecordComplete(ctx context.Context, eventID, subscriptionID, status string,
-	handlerErr error, duration time.Duration) error {
-
-	return s.UpdateStatus(ctx, eventID, subscriptionID, Status(status), handlerErr, duration)
+func (s *MongoStore) RecordComplete(ctx context.Context, params event.RecordCompleteParams) error {
+	return s.UpdateStatus(ctx, params.EventID, params.SubscriptionID, Status(params.Status), params.Error, params.Duration)
 }
 
 // Summary returns aggregated statistics using a MongoDB $facet aggregation pipeline.

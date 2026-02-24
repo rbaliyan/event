@@ -289,14 +289,14 @@ func (r *ChangeStreamRelay) watch(ctx context.Context) error {
 // changeEvent represents a MongoDB change stream event.
 type changeEvent struct {
 	OperationType string        `bson:"operationType"`
-	FullDocument  *MongoMessage `bson:"fullDocument"`
+	FullDocument  *mongoMessage `bson:"fullDocument"`
 	DocumentKey   struct {
 		ID bson.ObjectID `bson:"_id"`
 	} `bson:"documentKey"`
 }
 
 // processDocument handles a single inserted document.
-func (r *ChangeStreamRelay) processDocument(ctx context.Context, msg *MongoMessage) {
+func (r *ChangeStreamRelay) processDocument(ctx context.Context, msg *mongoMessage) {
 	// Only process pending messages
 	if msg.Status != StatusPending {
 		return
@@ -361,7 +361,7 @@ func (r *ChangeStreamRelay) claimMessage(ctx context.Context, id bson.ObjectID) 
 }
 
 // publishMessage publishes a single message to the transport.
-func (r *ChangeStreamRelay) publishMessage(ctx context.Context, msg *MongoMessage) error {
+func (r *ChangeStreamRelay) publishMessage(ctx context.Context, msg *mongoMessage) error {
 	// msg.Payload is already []byte - pass directly to transport
 	transportMsg := message.New(
 		msg.EventID,
@@ -391,7 +391,7 @@ func (r *ChangeStreamRelay) processExistingPending(ctx context.Context) {
 	r.log().Info("processing existing pending messages")
 
 	for {
-		messages, err := r.store.GetPendingMongo(ctx, r.batchSize)
+		messages, err := r.store.getPendingMongo(ctx, r.batchSize)
 		if err != nil {
 			r.log().Error("failed to get pending messages", "error", err)
 			return

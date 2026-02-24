@@ -3,7 +3,6 @@ package event
 import (
 	"errors"
 	"fmt"
-	"time"
 )
 
 // Bus errors
@@ -170,25 +169,6 @@ func (e *RetryExhaustedError) Unwrap() error {
 func IsRetryExhausted(err error) bool {
 	var exhausted *RetryExhaustedError
 	return errors.As(err, &exhausted)
-}
-
-// CircuitOpenError indicates the circuit breaker is open.
-type CircuitOpenError struct {
-	Name      string
-	OpenUntil time.Time
-}
-
-func (e *CircuitOpenError) Error() string {
-	if e.OpenUntil.IsZero() {
-		return fmt.Sprintf("circuit breaker %q is open", e.Name)
-	}
-	return fmt.Sprintf("circuit breaker %q is open until %s", e.Name, e.OpenUntil.Format(time.RFC3339))
-}
-
-// IsCircuitOpen checks if an error indicates an open circuit breaker.
-func IsCircuitOpen(err error) bool {
-	var circuitErr *CircuitOpenError
-	return errors.As(err, &circuitErr)
 }
 
 // DuplicateMessageError indicates a duplicate message was detected.
