@@ -642,7 +642,7 @@ func (s *MongoStore) Summary(ctx context.Context, filter Filter) (*Summary, erro
 	}
 	defer func() { _ = cursor.Close(ctx) }()
 
-	var results []struct {
+	var r struct {
 		ByStatus []struct {
 			ID    string `bson:"_id"`
 			Count int64  `bson:"count"`
@@ -679,19 +679,9 @@ func (s *MongoStore) Summary(ctx context.Context, filter Filter) (*Summary, erro
 			ByEventName: make(map[string]*EventStats),
 		}, nil
 	}
-	if err := cursor.Decode(&results); err != nil {
+	if err := cursor.Decode(&r); err != nil {
 		return nil, fmt.Errorf("decode summary: %w", err)
 	}
-
-	// This should not happen but guard anyway
-	if len(results) == 0 {
-		return &Summary{
-			ByStatus:    make(map[Status]int64),
-			ByEventName: make(map[string]*EventStats),
-		}, nil
-	}
-
-	r := results[0]
 	summary := &Summary{
 		ByStatus:    make(map[Status]int64, len(r.ByStatus)),
 		ByEventName: make(map[string]*EventStats, len(r.ByEvent)),
