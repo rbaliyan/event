@@ -6,7 +6,7 @@ toolchain go1.24.13
 
 require (
 	github.com/IBM/sarama v1.46.3
-	github.com/alicebob/miniredis/v2 v2.36.1
+	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/go-faker/faker/v4 v4.7.0
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.11.2
