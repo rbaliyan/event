@@ -130,6 +130,21 @@ func (s *PostgresStore) Record(ctx context.Context, entry *Entry) error {
 		subscriptionID = ""
 	}
 
+	// In WorkerPool mode, use DO NOTHING so the first writer (the likely winner)
+	// keeps its data. In Broadcast mode, each subscription has its own row so
+	// updating on conflict is safe.
+	var conflictClause string
+	if entry.DeliveryMode == WorkerPool {
+		conflictClause = "ON CONFLICT (event_id, subscription_id) DO NOTHING"
+	} else {
+		conflictClause = `ON CONFLICT (event_id, subscription_id) DO UPDATE SET
+			status = EXCLUDED.status,
+			error = EXCLUDED.error,
+			retry_count = EXCLUDED.retry_count,
+			completed_at = EXCLUDED.completed_at,
+			duration_ms = EXCLUDED.duration_ms`
+	}
+
 	query := fmt.Sprintf(`
 		INSERT INTO %s (
 			event_id, subscription_id, subscriber_name, subscriber_description,
@@ -137,13 +152,8 @@ func (s *PostgresStore) Record(ctx context.Context, entry *Entry) error {
 			metadata, status, error, retry_count, started_at, completed_at,
 			duration_ms, trace_id, span_id, worker_group
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-		ON CONFLICT (event_id, subscription_id) DO UPDATE SET
-			status = EXCLUDED.status,
-			error = EXCLUDED.error,
-			retry_count = EXCLUDED.retry_count,
-			completed_at = EXCLUDED.completed_at,
-			duration_ms = EXCLUDED.duration_ms
-	`, s.opts.tableName)
+		%s
+	`, s.opts.tableName, conflictClause)
 
 	var durationMs *int64
 	if entry.Duration > 0 {

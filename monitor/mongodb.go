@@ -205,6 +205,11 @@ func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
 }
 
 // Record creates or updates a monitor entry.
+//
+// In WorkerPool mode, fields are written with $setOnInsert so that only the
+// first pod to call Record() (the one most likely to win acquisition) populates
+// the entry. Subsequent pods that lose the worker pool race will not overwrite
+// instance_id, started_at, trace_id, or span_id of the winning pod.
 func (s *MongoStore) Record(ctx context.Context, entry *Entry) error {
 	mongoEntry := fromEntry(entry)
 
@@ -213,29 +218,60 @@ func (s *MongoStore) Record(ctx context.Context, entry *Entry) error {
 		"subscription_id": mongoEntry.SubscriptionID,
 	}
 
-	update := bson.M{
-		"$set": bson.M{
-			"subscriber_name":        mongoEntry.SubscriberName,
-			"subscriber_description": mongoEntry.SubscriberDescription,
-			"event_name":             mongoEntry.EventName,
-			"bus_id":                 mongoEntry.BusID,
-			"instance_id":            mongoEntry.InstanceID,
-			"delivery_mode":          mongoEntry.DeliveryMode,
-			"metadata":               mongoEntry.Metadata,
-			"status":                 mongoEntry.Status,
-			"error":                  mongoEntry.Error,
-			"retry_count":            mongoEntry.RetryCount,
-			"started_at":             mongoEntry.StartedAt,
-			"completed_at":           mongoEntry.CompletedAt,
-			"duration_ms":            mongoEntry.DurationMs,
-			"trace_id":               mongoEntry.TraceID,
-			"span_id":                mongoEntry.SpanID,
-			"worker_group":           mongoEntry.WorkerGroup,
-		},
-		"$setOnInsert": bson.M{
-			"event_id":        mongoEntry.EventID,
-			"subscription_id": mongoEntry.SubscriptionID,
-		},
+	var update bson.M
+
+	if entry.DeliveryMode == WorkerPool {
+		// WorkerPool mode: use $setOnInsert for all fields so only the first
+		// writer populates the entry. This prevents losing pods from overwriting
+		// the winning pod's instance_id, started_at, and trace context.
+		update = bson.M{
+			"$setOnInsert": bson.M{
+				"event_id":               mongoEntry.EventID,
+				"subscription_id":        mongoEntry.SubscriptionID,
+				"subscriber_name":        mongoEntry.SubscriberName,
+				"subscriber_description": mongoEntry.SubscriberDescription,
+				"event_name":             mongoEntry.EventName,
+				"bus_id":                 mongoEntry.BusID,
+				"instance_id":            mongoEntry.InstanceID,
+				"delivery_mode":          mongoEntry.DeliveryMode,
+				"metadata":               mongoEntry.Metadata,
+				"status":                 mongoEntry.Status,
+				"error":                  mongoEntry.Error,
+				"retry_count":            mongoEntry.RetryCount,
+				"started_at":             mongoEntry.StartedAt,
+				"completed_at":           mongoEntry.CompletedAt,
+				"duration_ms":            mongoEntry.DurationMs,
+				"trace_id":               mongoEntry.TraceID,
+				"span_id":                mongoEntry.SpanID,
+				"worker_group":           mongoEntry.WorkerGroup,
+			},
+		}
+	} else {
+		// Broadcast mode: each subscription has its own entry, so $set is safe.
+		update = bson.M{
+			"$set": bson.M{
+				"subscriber_name":        mongoEntry.SubscriberName,
+				"subscriber_description": mongoEntry.SubscriberDescription,
+				"event_name":             mongoEntry.EventName,
+				"bus_id":                 mongoEntry.BusID,
+				"instance_id":            mongoEntry.InstanceID,
+				"delivery_mode":          mongoEntry.DeliveryMode,
+				"metadata":               mongoEntry.Metadata,
+				"status":                 mongoEntry.Status,
+				"error":                  mongoEntry.Error,
+				"retry_count":            mongoEntry.RetryCount,
+				"started_at":             mongoEntry.StartedAt,
+				"completed_at":           mongoEntry.CompletedAt,
+				"duration_ms":            mongoEntry.DurationMs,
+				"trace_id":               mongoEntry.TraceID,
+				"span_id":                mongoEntry.SpanID,
+				"worker_group":           mongoEntry.WorkerGroup,
+			},
+			"$setOnInsert": bson.M{
+				"event_id":        mongoEntry.EventID,
+				"subscription_id": mongoEntry.SubscriptionID,
+			},
+		}
 	}
 
 	opts := options.UpdateOne().SetUpsert(true)
