@@ -45,6 +45,9 @@ func makeKey(eventID, subscriptionID string, mode DeliveryMode) string {
 }
 
 // Record creates or updates a monitor entry.
+//
+// In WorkerPool mode, if an entry already exists it is not overwritten.
+// This prevents losing workers from replacing the winning worker's data.
 func (s *MemoryStore) Record(ctx context.Context, entry *Entry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -54,6 +57,13 @@ func (s *MemoryStore) Record(ctx context.Context, entry *Entry) error {
 	}
 
 	key := makeKey(entry.EventID, entry.SubscriptionID, entry.DeliveryMode)
+
+	// In WorkerPool mode, don't overwrite an existing entry
+	if entry.DeliveryMode == WorkerPool {
+		if _, exists := s.entries[key]; exists {
+			return nil
+		}
+	}
 
 	// Create a copy to avoid mutation
 	entryCopy := *entry

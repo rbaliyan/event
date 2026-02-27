@@ -167,17 +167,29 @@ func WorkerPoolMiddleware[T any](coord Coordinator, stateTTL time.Duration, opts
 						"message_id", messageID,
 						"error", err)
 				}
+				// Signal acquired on error (fail open = treat as acquired)
+				if sig := event.ContextAcquisitionSignal(ctx); sig != nil {
+					sig.Set(event.AcquisitionAcquired)
+				}
 				return next(ctx, ev, data)
 			}
 
 			if !acquired {
 				// Another worker already acquired this message - skip silently
+				if sig := event.ContextAcquisitionSignal(ctx); sig != nil {
+					sig.Set(event.AcquisitionSkipped)
+				}
 				logger := event.ContextLogger(ctx)
 				if logger != nil {
 					logger.Debug("message acquired by another worker, skipping",
 						"message_id", messageID)
 				}
 				return nil
+			}
+
+			// Signal successful acquisition
+			if sig := event.ContextAcquisitionSignal(ctx); sig != nil {
+				sig.Set(event.AcquisitionAcquired)
 			}
 
 			// Store payload for recovery if needed (after successful acquire)
