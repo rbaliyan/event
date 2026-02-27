@@ -112,10 +112,25 @@ func NewMiddleware[T any](store Store, opts ...MiddlewareOption) event.Middlewar
 				}
 			}
 
+			// For WorkerPool mode, inject an acquisition signal so the
+			// WorkerPoolMiddleware (which runs after us) can communicate
+			// whether this worker actually acquired the message.
+			var signal *event.AcquisitionSignal
+			if deliveryMode == WorkerPool {
+				signal = &event.AcquisitionSignal{}
+				ctx = event.ContextWithAcquisitionSignal(ctx, signal)
+			}
+
 			// Execute handler
 			start := time.Now()
 			handlerErr := next(ctx, ev, data)
 			duration := time.Since(start)
+
+			// In WorkerPool mode, skip recording if this worker didn't acquire the message.
+			// The winning worker will record the actual result.
+			if signal != nil && signal.Result() == event.AcquisitionSkipped {
+				return handlerErr
+			}
 
 			// Determine final status based on error classification
 			status := StatusCompleted

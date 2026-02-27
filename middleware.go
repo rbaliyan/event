@@ -414,10 +414,25 @@ func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 				}
 			}
 
+			// For WorkerPool mode, inject an acquisition signal so the
+			// WorkerPoolMiddleware can communicate whether this worker
+			// actually acquired the message.
+			var signal *AcquisitionSignal
+			if workerPool {
+				signal = &AcquisitionSignal{}
+				ctx = ContextWithAcquisitionSignal(ctx, signal)
+			}
+
 			// Execute handler
 			start := time.Now()
 			handlerErr := next(ctx, ev, data)
 			duration := time.Since(start)
+
+			// In WorkerPool mode, skip recording if this worker didn't acquire the message.
+			// The winning worker will record the actual result.
+			if signal != nil && signal.Result() == AcquisitionSkipped {
+				return handlerErr
+			}
 
 			// Determine status
 			status := "completed"

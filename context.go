@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -287,4 +288,50 @@ func detachedContext(ctx context.Context) context.Context {
 		bg = oteltrace.ContextWithSpanContext(bg, spanCtx)
 	}
 	return bg
+}
+
+// AcquisitionResult represents the outcome of a WorkerPool acquisition attempt.
+type AcquisitionResult int32
+
+const (
+	// AcquisitionPending indicates the acquisition attempt has not yet completed.
+	AcquisitionPending AcquisitionResult = iota
+	// AcquisitionAcquired indicates this worker won the acquisition.
+	AcquisitionAcquired
+	// AcquisitionSkipped indicates another worker acquired the message.
+	AcquisitionSkipped
+)
+
+// AcquisitionSignal is an atomic signal that communicates the result of a
+// WorkerPool acquisition attempt from the WorkerPoolMiddleware back to the
+// monitor middleware. This prevents the monitor from recording false "completed"
+// entries for workers that did not actually process the message.
+type AcquisitionSignal struct {
+	result atomic.Int32
+}
+
+// Set stores the acquisition result.
+func (s *AcquisitionSignal) Set(r AcquisitionResult) {
+	s.result.Store(int32(r))
+}
+
+// Result returns the current acquisition result.
+func (s *AcquisitionSignal) Result() AcquisitionResult {
+	return AcquisitionResult(s.result.Load())
+}
+
+type acquisitionSignalKey struct{}
+
+// ContextWithAcquisitionSignal stores an AcquisitionSignal in the context.
+// The monitor middleware injects this before calling the next handler, and
+// the WorkerPoolMiddleware writes the result after Acquire().
+func ContextWithAcquisitionSignal(ctx context.Context, signal *AcquisitionSignal) context.Context {
+	return context.WithValue(ctx, acquisitionSignalKey{}, signal)
+}
+
+// ContextAcquisitionSignal retrieves the AcquisitionSignal from the context.
+// Returns nil if no signal is present (non-WorkerPool mode).
+func ContextAcquisitionSignal(ctx context.Context) *AcquisitionSignal {
+	s, _ := ctx.Value(acquisitionSignalKey{}).(*AcquisitionSignal)
+	return s
 }
