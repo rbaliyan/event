@@ -7,6 +7,10 @@ updates:
     commit-message:
       prefix: "deps"
     open-pull-requests-limit: 5
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
 
   - package-ecosystem: github-actions
     directory: /
@@ -15,3 +19,7 @@ updates:
     commit-message:
       prefix: "ci"
     open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
