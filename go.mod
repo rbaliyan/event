@@ -10,7 +10,7 @@ require (
 	github.com/go-faker/faker/v4 v4.7.0
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.11.2
-	github.com/nats-io/nats.go v1.48.0
+	github.com/nats-io/nats.go v1.49.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/vmihailenco/msgpack/v5 v5.4.1
