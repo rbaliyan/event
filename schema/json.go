@@ -337,6 +337,9 @@ func (f *FieldMapper) Upcast(ctx context.Context, data []byte) ([]byte, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
+	if m == nil {
+		return data, nil
+	}
 
 	// Apply field renames
 	for oldName, newName := range f.fieldMap {
