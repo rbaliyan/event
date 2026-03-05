@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 
+	"github.com/rbaliyan/event/v3/internal/msgpacklimit"
 	"github.com/rbaliyan/event/v3/transport/message"
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -48,6 +49,9 @@ func (c MsgPack) Encode(msg Message) ([]byte, error) {
 
 // Decode deserializes MessagePack bytes to a message
 func (c MsgPack) Decode(data []byte) (Message, error) {
+	if err := msgpacklimit.Validate(data); err != nil {
+		return nil, errors.Join(ErrDecodeFailure, err)
+	}
 	var mm msgpackMessage
 	if err := msgpack.Unmarshal(data, &mm); err != nil {
 		return nil, errors.Join(ErrDecodeFailure, err)
