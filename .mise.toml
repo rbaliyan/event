@@ -1,5 +1,5 @@
 [tools]
-go = "1.24"
+go = "1.25"
 just = "latest"
 protoc = "29.3"
 "go:golang.org/x/vuln/cmd/govulncheck" = "latest"
