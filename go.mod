@@ -8,7 +8,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/go-faker/faker/v4 v4.7.0
 	github.com/google/uuid v1.6.0
-	github.com/lib/pq v1.11.2
+	github.com/lib/pq v1.12.0
 	github.com/nats-io/nats.go v1.49.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
@@ -18,7 +18,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.42.0
 	go.opentelemetry.io/otel/sdk/metric v1.42.0
 	go.opentelemetry.io/otel/trace v1.42.0
-	google.golang.org/grpc v1.79.2
+	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 )
 
