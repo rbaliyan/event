@@ -11,12 +11,14 @@ import (
 
 // SubscriptionInfo describes a live subscription on an event.
 type SubscriptionInfo struct {
-	SubscriptionID        string       `json:"subscription_id"`
-	DeliveryMode          DeliveryMode `json:"delivery_mode"`
-	WorkerGroup           string       `json:"worker_group,omitempty"`
-	SubscriberName        string       `json:"subscriber_name,omitempty"`
-	SubscriberDescription string       `json:"subscriber_description,omitempty"`
-	StartedAt             time.Time    `json:"started_at"`
+	SubscriptionID        string            `json:"subscription_id"`
+	DeliveryMode          DeliveryMode      `json:"delivery_mode"`
+	WorkerGroup           string            `json:"worker_group,omitempty"`
+	SubscriberName        string            `json:"subscriber_name,omitempty"`
+	SubscriberDescription string            `json:"subscriber_description,omitempty"`
+	RouteFilters          map[string]string `json:"route_filters,omitempty"`
+	HasRouteMatch         bool              `json:"has_route_match,omitempty"`
+	StartedAt             time.Time         `json:"started_at"`
 }
 
 // EventInfo describes a registered event and its active subscriptions.

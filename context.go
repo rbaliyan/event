@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rbaliyan/event/v3/transport"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -174,6 +175,24 @@ func ContextWithMetadata(ctx context.Context, m map[string]string) context.Conte
 		return context.WithValue(ctx, eventcontextKey, &newData)
 	}
 	return context.WithValue(ctx, eventcontextKey, &eventContextData{metadata: m})
+}
+
+// ContextWithRoutingKey adds a routing key to the context metadata.
+// The key is automatically prefixed with X-Route-.
+// Multiple calls accumulate routing keys.
+//
+// Example:
+//
+//	ctx = event.ContextWithRoutingKey(ctx, "region", "us-east")
+//	ctx = event.ContextWithRoutingKey(ctx, "priority", "high")
+//	orderEvent.Publish(ctx, order)
+func ContextWithRoutingKey(ctx context.Context, key, value string) context.Context {
+	meta := ContextMetadata(ctx)
+	if meta == nil {
+		meta = make(map[string]string)
+	}
+	meta[transport.RoutingKeyPrefix+key] = value
+	return ContextWithMetadata(ctx, meta)
 }
 
 // ContextWithEventID generate a context with event id
