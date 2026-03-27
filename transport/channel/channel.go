@@ -57,10 +57,26 @@ type eventChannel struct {
 
 // subscription implements transport.Subscription
 type subscription struct {
-	*base.Subscription                        // Embedded base subscription
-	ev                 *eventChannel          // Parent event channel
-	mode               transport.DeliveryMode // Delivery mode
-	workerGroup        string                 // Worker group name for WorkerPool mode
+	*base.Subscription                              // Embedded base subscription
+	ev                 *eventChannel                // Parent event channel
+	mode               transport.DeliveryMode       // Delivery mode
+	workerGroup        string                       // Worker group name for WorkerPool mode
+	routeFilters       map[string]string            // Exact-match routing filters
+	routeMatch         func(map[string]string) bool // Custom routing predicate
+}
+
+// matchesRoute checks if a message's metadata satisfies this subscription's route filters.
+func (s *subscription) matchesRoute(metadata map[string]string) bool {
+	if len(s.routeFilters) == 0 && s.routeMatch == nil {
+		return true
+	}
+	if !transport.MatchesRouteFilters(metadata, s.routeFilters) {
+		return false
+	}
+	if s.routeMatch != nil && !s.routeMatch(metadata) {
+		return false
+	}
+	return true
 }
 
 func (s *subscription) Close(ctx context.Context) error {
@@ -181,15 +197,17 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 	var broadcastSubs []*subscription
 	workerGroups := make(map[string][]*subscription) // group name -> subscribers
 
+	msgMeta := msg.Metadata()
 	ec.subscribers.Range(func(key, value any) bool {
 		sub := value.(*subscription)
-		if !sub.IsClosed() {
-			if sub.mode == transport.WorkerPool {
-				// Group by worker group name (empty string = default group)
-				workerGroups[sub.workerGroup] = append(workerGroups[sub.workerGroup], sub)
-			} else {
-				broadcastSubs = append(broadcastSubs, sub)
-			}
+		if sub.IsClosed() || !sub.matchesRoute(msgMeta) {
+			return true
+		}
+		if sub.mode == transport.WorkerPool {
+			// Group by worker group name (empty string = default group)
+			workerGroups[sub.workerGroup] = append(workerGroups[sub.workerGroup], sub)
+		} else {
+			broadcastSubs = append(broadcastSubs, sub)
 		}
 		return true
 	})
@@ -353,6 +371,8 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		ev:           ec,
 		mode:         subOpts.DeliveryMode,
 		workerGroup:  subOpts.WorkerGroup,
+		routeFilters: subOpts.RouteFilters,
+		routeMatch:   subOpts.RouteMatch,
 	}
 
 	ec.subscribers.Store(sub.ID(), sub)

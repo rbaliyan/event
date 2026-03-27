@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -67,6 +68,39 @@ func NewDecodeErrorMessage(msgID string, rawData []byte, err error, ackFn func(e
 		MetadataDecodeError: err.Error(),
 	}
 	return NewMessageWithAck(msgID, "", rawData, metadata, 0, ackFn)
+}
+
+// RoutingKeyPrefix is the metadata key prefix for routing keys.
+// Publishers set routing keys via metadata entries like "X-Route-region" = "us-east".
+// Subscribers declare route filters to receive only matching messages.
+const RoutingKeyPrefix = "X-Route-"
+
+// HasRoutingKeys returns true if the metadata contains any routing keys.
+func HasRoutingKeys(metadata map[string]string) bool {
+	for k := range metadata {
+		if strings.HasPrefix(k, RoutingKeyPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesRouteFilters checks whether message metadata satisfies all route filters.
+// Returns true if:
+//   - filters is nil or empty (no filtering)
+//   - all filter key-value pairs exist and match in metadata
+//
+// Returns false if any filter key is missing or has a different value.
+func MatchesRouteFilters(metadata, filters map[string]string) bool {
+	if len(filters) == 0 {
+		return true
+	}
+	for k, v := range filters {
+		if metadata[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // HealthStatus represents the health state of a component
@@ -212,6 +246,16 @@ type SubscribeOptions struct {
 	// Set to AckOnReceive for best-effort delivery where handler errors
 	// are logged but never cause redelivery.
 	AckPolicy AckPolicy
+
+	// RouteFilters specifies exact-match filters on message metadata routing keys.
+	// Keys should include the X-Route- prefix. All filters must match (AND semantics).
+	// Nil or empty means no filtering (accept all messages).
+	RouteFilters map[string]string
+
+	// RouteMatch is a custom predicate for routing decisions.
+	// Called with message metadata. Return true to accept, false to skip.
+	// Nil means no custom filtering. Composes with RouteFilters (both must pass).
+	RouteMatch func(map[string]string) bool
 }
 
 // SubscribeOption is a functional option for configuring subscriptions
@@ -338,6 +382,40 @@ func WithConsumerID(id string) SubscribeOption {
 func WithAckPolicy(policy AckPolicy) SubscribeOption {
 	return func(o *SubscribeOptions) {
 		o.AckPolicy = policy
+	}
+}
+
+// WithRouteFilters sets exact-match routing filters for the subscription.
+// Only messages whose metadata contains all specified key-value pairs will be delivered.
+// Keys should include the X-Route- prefix.
+//
+// Example:
+//
+//	sub, err := transport.Subscribe(ctx, "orders",
+//	    transport.WithRouteFilters(map[string]string{"X-Route-region": "us-east"}))
+func WithRouteFilters(filters map[string]string) SubscribeOption {
+	return func(o *SubscribeOptions) {
+		o.RouteFilters = filters
+	}
+}
+
+// WithRouteMatch sets a custom routing predicate for the subscription.
+// Only messages for which fn returns true will be delivered.
+// This composes with RouteFilters (both must pass).
+// Multiple calls compose with AND semantics: all predicates must return true.
+func WithRouteMatch(fn func(map[string]string) bool) SubscribeOption {
+	return func(o *SubscribeOptions) {
+		if fn == nil {
+			return
+		}
+		if o.RouteMatch == nil {
+			o.RouteMatch = fn
+			return
+		}
+		prev := o.RouteMatch
+		o.RouteMatch = func(meta map[string]string) bool {
+			return prev(meta) && fn(meta)
+		}
 	}
 }
 

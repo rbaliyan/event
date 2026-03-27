@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -357,6 +358,8 @@ func (e *eventImpl[T]) Subscribe(ctx context.Context, handler Handler[T], opts .
 		WorkerGroup:           subOpts.workerGroup,
 		SubscriberName:        subOpts.subscriberName,
 		SubscriberDescription: subOpts.subscriberDescription,
+		RouteFilters:          maps.Clone(subOpts.routeFilters),
+		HasRouteMatch:         subOpts.routeMatch != nil,
 		StartedAt:             time.Now(),
 	})
 
@@ -509,6 +512,12 @@ func (e *eventImpl[T]) subscribeWithRawCoalesce(
 					continue
 				}
 
+				// Apply route filters.
+				if !matchesSubscriptionRoute(msg.Metadata(), subOpts) {
+					_ = msg.Ack(nil)
+					continue
+				}
+
 				select {
 				case coal.incoming <- rawCoalesceInput{msg: msg}:
 				case <-bus.shutdownChan:
@@ -597,6 +606,12 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 
 				// Apply pre-decode message filter.
 				if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
+					_ = msg.Ack(nil)
+					continue
+				}
+
+				// Apply route filters.
+				if !matchesSubscriptionRoute(msg.Metadata(), subOpts) {
 					_ = msg.Ack(nil)
 					continue
 				}
@@ -730,6 +745,12 @@ func (e *eventImpl[T]) processMessage(
 
 	// Apply pre-decode message filter
 	if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
+		_ = msg.Ack(nil)
+		return
+	}
+
+	// Apply route filters (transport-agnostic fallback for non-channel transports)
+	if !matchesSubscriptionRoute(msg.Metadata(), subOpts) {
 		_ = msg.Ack(nil)
 		return
 	}

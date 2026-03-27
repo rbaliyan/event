@@ -332,6 +332,10 @@ type subscribeOptions[T any] struct {
 	coalesceKeyFunc func(T) string // key from decoded payload (nil = no coalescing)
 	coalesceMetaKey string         // key from message metadata (empty = no coalescing)
 	coalesceMaxKeys int            // max unique keys tracked (0 = defaultCoalesceMaxKeys)
+
+	// routing
+	routeFilters map[string]string            // exact-match route filters (prefixed keys)
+	routeMatch   func(map[string]string) bool // custom route predicate
 }
 
 // SubscribeOption configures subscription behavior
@@ -405,6 +409,14 @@ func (o *subscribeOptions[T]) transportOptions() []transport.SubscribeOption {
 
 	if o.ackPolicy != AckExplicit {
 		opts = append(opts, transport.WithAckPolicy(o.ackPolicy))
+	}
+
+	if len(o.routeFilters) > 0 {
+		opts = append(opts, transport.WithRouteFilters(o.routeFilters))
+	}
+
+	if o.routeMatch != nil {
+		opts = append(opts, transport.WithRouteMatch(o.routeMatch))
 	}
 
 	return opts
@@ -722,6 +734,61 @@ func WithCoalesceMaxKeys[T any](n int) SubscribeOption[T] {
 	return func(o *subscribeOptions[T]) {
 		if n > 0 {
 			o.coalesceMaxKeys = n
+		}
+	}
+}
+
+// WithRouteFilter adds an exact-match routing filter to the subscription.
+// Only messages whose metadata contains X-Route-{key} = value will be delivered.
+// Multiple WithRouteFilter calls use AND semantics: all must match.
+//
+// For the channel transport, filtering happens at dispatch time — non-matching
+// messages never enter the subscriber's buffer. For other transports, the filter
+// is checked after receiving from the transport.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler,
+//	    event.WithRouteFilter[Order]("region", "us-east"),
+//	    event.WithRouteFilter[Order]("priority", "high"),
+//	)
+func WithRouteFilter[T any](key, value string) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		if o.routeFilters == nil {
+			o.routeFilters = make(map[string]string)
+		}
+		o.routeFilters[transport.RoutingKeyPrefix+key] = value
+	}
+}
+
+// WithRouteMatch adds a custom routing predicate to the subscription.
+// Only messages for which fn returns true will be delivered.
+// This composes with WithRouteFilter (both must pass).
+//
+// Multiple calls compose with AND semantics: all predicates must return true.
+//
+// The function receives the full message metadata map, including routing keys
+// (prefixed with X-Route-) and other metadata like Content-Type.
+//
+// Example:
+//
+//	orderEvent.Subscribe(ctx, handler,
+//	    event.WithRouteMatch[Order](func(meta map[string]string) bool {
+//	        return meta["X-Route-region"] != "eu-west"
+//	    }),
+//	)
+func WithRouteMatch[T any](fn func(map[string]string) bool) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		if fn == nil {
+			return
+		}
+		if o.routeMatch == nil {
+			o.routeMatch = fn
+			return
+		}
+		prev := o.routeMatch
+		o.routeMatch = func(meta map[string]string) bool {
+			return prev(meta) && fn(meta)
 		}
 	}
 }
