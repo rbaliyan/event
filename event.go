@@ -578,32 +578,9 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 					continue
 				}
 
-				// Decode payload.
+				// Decode payload
 				var typedData T
-				contentType := msg.Metadata()[MetadataContentType]
-				if contentType == "" {
-					contentType = "application/json"
-				}
-
-				codec, codecOk := payload.Get(contentType)
-				if !codecOk {
-					contentErr := fmt.Errorf("unknown content type: %s", contentType)
-					logger.Error("unknown content type, routing to DLQ",
-						"event", e.Name(), "msg_id", msg.ID(), "content_type", contentType)
-					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, contentErr); dlqErr != nil {
-						bus.logFallbackDLQ(logger, e.name, msg, contentErr, dlqErr)
-					}
-					_ = msg.Ack(nil)
-					continue
-				}
-
-				if err := codec.Decode(msg.Payload(), &typedData); err != nil {
-					logger.Error("decode error, routing to DLQ",
-						"event", e.Name(), "msg_id", msg.ID(), "error", err)
-					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, err); dlqErr != nil {
-						bus.logFallbackDLQ(logger, e.name, msg, err, dlqErr)
-					}
-					_ = msg.Ack(nil)
+				if !e.decodePayload(msg, bus, logger, &typedData) {
 					continue
 				}
 
@@ -699,6 +676,39 @@ func (e *eventImpl[T]) filterMessage(msg transport.Message, bus *Bus, subOpts *s
 
 	// Apply route filters (transport-agnostic fallback for non-channel transports)
 	if !matchesSubscriptionRoute(msg.Metadata(), subOpts) {
+		_ = msg.Ack(nil)
+		return false
+	}
+
+	return true
+}
+
+// decodePayload resolves the content-type codec and decodes msg.Payload into *out.
+// On failure it routes to DLQ, acks the message, and returns false.
+func (e *eventImpl[T]) decodePayload(msg transport.Message, bus *Bus, logger *slog.Logger, out *T) bool {
+	contentType := msg.Metadata()[MetadataContentType]
+	if contentType == "" {
+		contentType = "application/json"
+	}
+
+	c, ok := payload.Get(contentType)
+	if !ok {
+		contentErr := fmt.Errorf("unknown content type: %s", contentType)
+		logger.Error("unknown content type, routing to DLQ",
+			"event", e.Name(), "msg_id", msg.ID(), "content_type", contentType)
+		if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, contentErr); dlqErr != nil {
+			bus.logFallbackDLQ(logger, e.name, msg, contentErr, dlqErr)
+		}
+		_ = msg.Ack(nil)
+		return false
+	}
+
+	if err := c.Decode(msg.Payload(), out); err != nil {
+		logger.Error("decode error, routing to DLQ",
+			"event", e.Name(), "msg_id", msg.ID(), "error", err)
+		if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, err); dlqErr != nil {
+			bus.logFallbackDLQ(logger, e.name, msg, err, dlqErr)
+		}
 		_ = msg.Ack(nil)
 		return false
 	}

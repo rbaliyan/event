@@ -140,23 +140,24 @@ func NewRelay(store Store, t transport.Transport, opts ...RelayOption) *Relay {
 		opt(o)
 	}
 
+	logger := o.logger
+	if logger == nil {
+		logger = slog.Default().With("component", "outbox.relay")
+	}
+
 	return &Relay{
 		store:      store,
 		transport:  t,
 		pollDelay:  o.pollDelay,
 		batchSize:  o.batchSize,
-		logger:     o.logger,
+		logger:     logger,
 		cleanupAge: o.cleanupAge,
 		metrics:    o.metrics,
 	}
 }
 
-// log returns the configured logger, falling back to slog.Default().
+// log returns the configured logger.
 func (r *Relay) log() *slog.Logger {
-	if r.logger != nil {
-		return r.logger
-	}
-	r.logger = slog.Default().With("component", "outbox.relay")
 	return r.logger
 }
 

@@ -210,16 +210,14 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 		},
 	}
 
-	// Apply count-based trimming (MAXLEN)
-	if t.maxLen > 0 {
-		args.MaxLen = t.maxLen
-		args.Approx = true // Use ~ for better performance
-	}
-
-	// Apply time-based trimming (MINID)
+	// Apply trimming: MINID takes precedence over MAXLEN when both are set,
+	// since combining them in a single XADD is only supported in Redis 7+.
 	if t.maxAge > 0 {
 		minTime := time.Now().Add(-t.maxAge).UnixMilli()
 		args.MinID = fmt.Sprintf("%d-0", minTime)
+		args.Approx = true
+	} else if t.maxLen > 0 {
+		args.MaxLen = t.maxLen
 		args.Approx = true
 	}
 
@@ -508,6 +506,13 @@ func (s *subscription) Close(ctx context.Context) error {
 	})
 }
 
+// ack acknowledges a message in the consumer group with a bounded timeout.
+func (s *subscription) ack(msgID string) *redis.IntCmd {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return s.client.XAck(ctx, s.stream, s.group, msgID)
+}
+
 // sendWithRetry sends a message to the channel with exponential backoff on timeout.
 // This is a convenience wrapper around SendWithRetry with Redis-specific logging.
 func (s *subscription) sendWithRetry(msg transport.Message, msgID string, logger *slog.Logger) bool {
@@ -527,7 +532,7 @@ func (s *subscription) processRedisMessage(xmsg redis.XMessage, retryCount int, 
 			msgID, nil, transport.ErrDecodeFailure,
 			func(err error) error {
 				if err == nil {
-					return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
+					return s.ack(msgID).Err()
 				}
 				return nil
 			},
@@ -542,7 +547,7 @@ func (s *subscription) processRedisMessage(xmsg redis.XMessage, retryCount int, 
 			msgID, []byte(data), err,
 			func(ackErr error) error {
 				if ackErr == nil {
-					return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
+					return s.ack(msgID).Err()
 				}
 				return nil
 			},
@@ -563,7 +568,7 @@ func (s *subscription) processRedisMessage(xmsg redis.XMessage, retryCount int, 
 		rc,
 		func(err error) error {
 			if err == nil {
-				return s.client.XAck(context.Background(), s.stream, s.group, msgID).Err()
+				return s.ack(msgID).Err()
 			}
 			return nil
 		},
