@@ -194,8 +194,14 @@ func (h *Handler) handleSystemView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No cache — compute synchronously (background refresh disabled or first request)
-	h.computeSystemViewSync(w, r)
+	// Background refresh enabled but first refresh hasn't completed yet
+	if h.systemEnabled {
+		h.writeError(w, http.StatusServiceUnavailable, "system view is being collected, try again shortly")
+		return
+	}
+
+	// Background refresh disabled — return error
+	h.writeError(w, http.StatusServiceUnavailable, "system view collection is disabled, enable WithSystemRefreshInterval")
 }
 
 // handleSystemHealth handles GET /v1/system/health — returns aggregated health status.
@@ -221,91 +227,7 @@ func (h *Handler) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No cache — compute synchronously
-	ctx := r.Context()
-	components := make(map[string]*health.Result)
-
-	if h.dlqProvider != nil {
-		components["dlq"] = h.dlqProvider.Health(ctx)
-	}
-	if h.schedProvider != nil {
-		components["scheduler"] = h.schedProvider.Health(ctx)
-	}
-
-	_, _, busComponents := h.collectBusHealthConcurrent(ctx, event.Topology())
-	for k, v := range busComponents {
-		components[k] = v
-	}
-
-	result := health.Aggregate(components)
-
-	data, err := json.Marshal(result)
-	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if result.Status == health.StatusUnhealthy {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}
-	_, _ = w.Write(data)
+	// No cache — return unavailable
+	h.writeError(w, http.StatusServiceUnavailable, "health data not available, system view collection may be disabled")
 }
 
-// computeSystemViewSync computes the system view synchronously (fallback when cache is empty).
-func (h *Handler) computeSystemViewSync(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	topology := event.Topology()
-	view := SystemView{
-		Topology:    topology,
-		CollectedAt: time.Now(),
-	}
-
-	components := make(map[string]*health.Result)
-
-	if h.dlqProvider != nil {
-		stats, err := h.dlqProvider.DLQStats(ctx)
-		if err == nil {
-			view.DLQ = stats
-		} else {
-			slog.WarnContext(ctx, "dlq stats query failed", "error", err)
-		}
-		components["dlq"] = h.dlqProvider.Health(ctx)
-	}
-
-	if h.schedProvider != nil {
-		stats, err := h.schedProvider.SchedulerStats(ctx)
-		if err == nil {
-			view.Scheduler = stats
-		} else {
-			slog.WarnContext(ctx, "scheduler stats query failed", "error", err)
-		}
-		components["scheduler"] = h.schedProvider.Health(ctx)
-	}
-
-	busHealth, consumerLag, busComponents := h.collectBusHealthConcurrent(ctx, topology)
-	if len(busHealth) > 0 {
-		view.BusHealth = busHealth
-	}
-	if len(consumerLag) > 0 {
-		view.ConsumerLag = consumerLag
-	}
-	for k, v := range busComponents {
-		components[k] = v
-	}
-
-	if sp, ok := h.store.(monitor.SummaryProvider); ok {
-		filter := monitor.Filter{
-			StartTime: time.Now().Add(-24 * time.Hour),
-		}
-		summary, err := sp.Summary(ctx, filter)
-		if err == nil {
-			view.Summary = summary
-		} else {
-			slog.WarnContext(ctx, "summary query failed", "error", err)
-		}
-	}
-
-	view.Health = health.Aggregate(components)
-	h.writeJSON(w, view)
-}

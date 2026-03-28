@@ -74,10 +74,11 @@ type Handler struct {
 	unmarshaler   protojson.UnmarshalOptions
 
 	// Background system view cache
-	systemView atomic.Pointer[SystemView]
-	cancelFunc context.CancelFunc
-	done       chan struct{}
-	closeOnce  sync.Once
+	systemView    atomic.Pointer[SystemView]
+	cancelFunc    context.CancelFunc
+	done          chan struct{}
+	closeOnce     sync.Once
+	systemEnabled bool // true when background refresh is active
 }
 
 // New creates a new HTTP handler for the monitor service.
@@ -137,6 +138,7 @@ func New(store monitor.Store, opts ...Option) *Handler {
 	if o.systemRefreshInterval > 0 {
 		ctx, cancel := context.WithCancel(context.Background())
 		h.cancelFunc = cancel
+		h.systemEnabled = true
 		go h.runSystemRefresh(ctx, o.systemRefreshInterval)
 	}
 

@@ -24,7 +24,8 @@ A **production-grade event pub-sub library** for Go with support for distributed
 - **At-Least-Once Delivery**: Via Redis Streams, NATS, or Kafka
 
 ### Advanced
-- **Circuit Breaker**: Failure isolation pattern
+- **Message Routing**: Route events to specific subscribers via metadata routing keys
+- **Message Coalescing**: Deduplicate rapid updates, deliver only latest per key
 - **Schema Registry**: Publisher-defined event configuration with subscriber auto-sync
 - **Backoff Strategies**: Exponential, linear, constant with jitter support
 
@@ -152,9 +153,8 @@ func main() {
     ctx := context.Background()
 
     nc, _ := natsgo.Connect("nats://localhost:4222")
-    js, _ := nc.JetStream()
 
-    transport, _ := nats.NewJetStream(js,
+    transport, _ := nats.NewJetStream(nc,
         nats.WithStreamName("ORDERS"),
         nats.WithDeduplication(time.Hour),
         nats.WithMaxDeliver(5),
@@ -182,12 +182,10 @@ func main() {
     config := sarama.NewConfig()
     config.Consumer.Offsets.AutoCommit.Enable = false
 
-    transport, _ := kafka.New(
-        []string{"localhost:9092"},
-        config,
+    client, _ := sarama.NewClient([]string{"localhost:9092"}, config)
+
+    transport, _ := kafka.New(client,
         kafka.WithConsumerGroup("order-service"),
-        kafka.WithDeadLetterTopic("orders.dlq"),
-        kafka.WithMaxRetries(3),
     )
 
     bus, _ := event.NewBus("my-app", event.WithTransport(transport))
@@ -264,13 +262,13 @@ result := transport.Health(ctx)
 fmt.Printf("Status: %s, Latency: %v\n", result.Status, result.Latency)
 
 // Check all components
-results := health.CheckAll(ctx,
-    health.Named("transport", transport),
-    health.Named("idempotency", idempStore),
-    health.Named("monitor", monitorStore),
-)
+results := health.CheckAll(ctx, map[string]health.Checker{
+    "transport":   transport,
+    "idempotency": idempStore,
+    "monitor":     monitorStore,
+})
 
-for name, result := range results {
+for name, result := range results.Components {
     fmt.Printf("%s: %s\n", name, result.Status)
 }
 ```
@@ -309,7 +307,6 @@ strategy := &backoff.Constant{
 
 // Use with event options
 orderEvent := event.New[Order]("order.created",
-    event.WithBackoff(strategy),
     event.WithMaxRetries(5),
 )
 ```
@@ -493,7 +490,7 @@ store := idempotency.NewRedisStore(redisClient, time.Hour)
 
 bus, _ := event.NewBus("order-service",
     event.WithTransport(transport),
-    event.WithBusIdempotency(store),
+    event.WithIdempotency(store),
 )
 
 // All subscribers automatically get deduplication
@@ -517,7 +514,7 @@ detector := poison.NewDetector(store,
 
 bus, _ := event.NewBus("order-service",
     event.WithTransport(transport),
-    event.WithBusPoisonDetection(detector),
+    event.WithPoisonDetection(detector),
 )
 
 // Messages failing 5+ times are automatically quarantined
@@ -759,8 +756,9 @@ Use built-in test utilities:
 
 ```go
 func TestOrderHandler(t *testing.T) {
-    bus := event.TestBus(channel.New())
-    defer bus.Close(context.Background())
+    ctx := context.Background()
+    bus, _ := event.TestBus(channel.New())
+    defer bus.Close(ctx)
 
     handler := event.NewTestHandler(func(ctx context.Context, e event.Event[Order], order Order) error {
         return nil
@@ -782,6 +780,108 @@ func TestOrderHandler(t *testing.T) {
     }
 }
 ```
+
+## Message Routing
+
+Route messages to specific subscribers based on metadata routing keys:
+
+```go
+// Publisher: tag messages with routing keys
+ctx = event.ContextWithRoutingKey(ctx, "region", "us-east")
+ctx = event.ContextWithRoutingKey(ctx, "priority", "high")
+orderEvent.Publish(ctx, order)
+
+// Subscriber: only receive matching messages
+orderEvent.Subscribe(ctx, handler,
+    event.WithRouteFilter[Order]("region", "us-east"),
+)
+
+// Multiple filters (AND semantics)
+orderEvent.Subscribe(ctx, handler,
+    event.WithRouteFilter[Order]("region", "us-east"),
+    event.WithRouteFilter[Order]("priority", "high"),
+)
+
+// Custom predicate
+orderEvent.Subscribe(ctx, handler,
+    event.WithRouteMatch[Order](func(meta map[string]string) bool {
+        return meta["X-Route-region"] != "eu-west"
+    }),
+)
+```
+
+For the channel transport, filtering happens at dispatch time — non-matching messages never enter the subscriber's buffer. For other transports, filtering happens at the event layer after receiving.
+
+## Message Coalescing
+
+Deduplicate rapid updates by key, delivering only the latest message per key:
+
+```go
+// Post-decode: group by a field in the decoded payload
+orderEvent.Subscribe(ctx, handler,
+    event.WithCoalesceByKey[Order](func(o Order) string {
+        return o.ID // Only latest update per order
+    }),
+)
+
+// Pre-decode: group by a metadata key (more efficient, no decode overhead)
+orderEvent.Subscribe(ctx, handler,
+    event.WithCoalesceByMetadata[Order]("document_key"),
+)
+```
+
+## Consumer Identity (Redis)
+
+For resilient Redis consumers, use stable consumer IDs and orphan claiming:
+
+```go
+// Stable consumer ID: reclaim pending messages after restart
+orderEvent.Subscribe(ctx, handler,
+    event.WithConsumerID[Order]("order-processor-"+hostname),
+    event.AsWorker[Order](),
+)
+
+// Transport-level: claim orphaned messages from dead consumers
+transport, _ := redis.New(client,
+    redis.WithClaimInterval(30*time.Second, 2*time.Minute),
+    redis.WithClaimBatchSize(500),
+)
+```
+
+## Topology
+
+Inspect all registered buses, events, and subscriptions at runtime:
+
+```go
+// Global topology snapshot
+infos := event.Topology()
+for _, bus := range infos {
+    fmt.Printf("Bus: %s, Events: %d\n", bus.Name, len(bus.Events))
+}
+
+// Single bus topology
+busInfo := bus.Topology()
+```
+
+## System View
+
+The monitor HTTP handler provides a cached system view for dashboards:
+
+```go
+import monitorhttp "github.com/rbaliyan/event/v3/monitor/http"
+
+handler := monitorhttp.New(store,
+    monitorhttp.WithSystemRefreshInterval(10*time.Second), // default
+)
+defer handler.Close() // stop background refresh
+
+http.Handle("/", handler)
+```
+
+Endpoints:
+- `GET /v1/system` — aggregated topology, health, DLQ, scheduler, summary (cached)
+- `GET /v1/system/health` — health status (200 or 503)
+- `GET /v1/topology` — bus/event/subscription topology
 
 ## License
 

@@ -42,7 +42,7 @@ func NewBus(name string, opts ...BusOption) (*Bus, error)
 func New[T any](name string, opts ...EventOption) Event[T]
 
 // Register binds event to bus (returns error if type mismatch or bus closed)
-func Register[T any](ctx context.Context, bus *Bus, event Event[T]) (Event[T], error)
+func Register[T any](ctx context.Context, bus *Bus, event Event[T]) error
 
 // Close gracefully shuts down
 func (b *Bus) Close(ctx context.Context) error
