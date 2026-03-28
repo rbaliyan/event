@@ -14,7 +14,7 @@ var (
 	ErrEventNotFound     = errors.New("event not found")
 	ErrTypeMismatch      = errors.New("event type mismatch")
 	ErrAlreadyBound      = errors.New("event already bound to another bus")
-	ErrTransportRequired = errors.New("transport is required: use WithBusTransport(channel.New()) or similar")
+	ErrTransportRequired = errors.New("transport is required: use WithTransport(channel.New()) or similar")
 	ErrInvalidFullName   = errors.New("invalid full name format, expected: <bus_name>://<event_name>")
 	ErrSchemaLoadFailed  = errors.New("failed to load schema from provider")
 )

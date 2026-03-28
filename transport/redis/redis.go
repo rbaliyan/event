@@ -57,6 +57,7 @@ type Transport struct {
 	groupID string
 	codec   codec.Codec
 	events  sync.Map // map[string]*redisEvent
+	groups  sync.Map // map[string]struct{} — active consumer group names
 	logger  *slog.Logger
 	onError func(error)
 
@@ -80,6 +81,7 @@ type redisEvent struct {
 // subscription implements transport.Subscription for Redis
 type subscription struct {
 	*base.Subscription             // Embedded base subscription
+	transport          *Transport  // Parent transport (for group tracking)
 	client             Client      // Redis client
 	stream             string      // Stream name
 	group              string      // Consumer group name
@@ -159,6 +161,9 @@ func (t *Transport) RegisterEvent(ctx context.Context, name string) error {
 	if _, loaded := t.events.LoadOrStore(name, ev); loaded {
 		return transport.ErrEventAlreadyExists
 	}
+
+	// Track the base consumer group
+	t.groups.Store(t.groupID, struct{}{})
 
 	t.logger.Debug("registered event", "event", name, "stream", streamName)
 	return nil
@@ -278,6 +283,9 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		}
 	}
 
+	// Track this consumer group for lag monitoring
+	t.groups.Store(groupID, struct{}{})
+
 	subCtx, cancel := context.WithCancel(ctx)
 
 	bufSize := 100
@@ -293,13 +301,14 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	}
 
 	sub := &subscription{
-		Subscription:  base.NewSubscription(subID, bufSize, t.sendTimeout),
-		client:        t.client,
-		stream:        streamName,
-		group:         groupID,
-		consumer:      consumerName,
-		codec:         t.codec,
-		cancel:        cancel,
+		Subscription:   base.NewSubscription(subID, bufSize, t.sendTimeout),
+		transport:      t,
+		client:         t.client,
+		stream:         streamName,
+		group:          groupID,
+		consumer:       consumerName,
+		codec:          t.codec,
+		cancel:         cancel,
 		claimInterval:  t.claimInterval,
 		claimMinIdle:   t.claimMinIdle,
 		claimBatchSize: t.claimBatchSize,
@@ -394,63 +403,76 @@ func (t *Transport) ConsumerLag(ctx context.Context) ([]transport.ConsumerLag, e
 		return nil, transport.ErrTransportClosed
 	}
 
-	var lags []transport.ConsumerLag
-
-	t.events.Range(func(key, value any) bool {
-		name := key.(string)
-		streamName := t.streamName(name)
-
-		// Get stream length (total messages)
-		streamLen, err := t.client.XLen(ctx, streamName).Result()
-		if err != nil {
-			t.logger.Error("failed to get stream length", "stream", streamName, "error", err)
-			return true
-		}
-
-		// Get consumer group info
-		groups, err := t.client.XInfoGroups(ctx, streamName).Result()
-		if err != nil {
-			t.logger.Error("failed to get group info", "stream", streamName, "error", err)
-			return true
-		}
-
-		for _, group := range groups {
-			// Get pending info for more details
-			pending, err := t.client.XPending(ctx, streamName, group.Name).Result()
-			if err != nil {
-				t.logger.Error("failed to get pending info", "stream", streamName, "group", group.Name, "error", err)
-				continue
-			}
-
-			lag := transport.ConsumerLag{
-				Event:           name,
-				ConsumerGroup:   group.Name,
-				Lag:             group.Lag,
-				PendingMessages: pending.Count,
-			}
-
-			// Calculate oldest pending message age
-			if pending.Lower != "" {
-				var timestamp int64
-				if _, err := fmt.Sscanf(pending.Lower, "%d-", &timestamp); err == nil {
-					lag.OldestPending = time.Since(time.UnixMilli(timestamp))
-				}
-			}
-
-			lags = append(lags, lag)
-		}
-
-		// Also add overall stream info if no groups
-		if len(groups) == 0 {
-			lags = append(lags, transport.ConsumerLag{
-				Event: name,
-				Lag:   streamLen,
-			})
-		}
-
+	// Collect event names so we can query in parallel
+	var eventNames []string
+	t.events.Range(func(key, _ any) bool {
+		eventNames = append(eventNames, key.(string))
 		return true
 	})
 
+	if len(eventNames) == 0 {
+		return nil, nil
+	}
+
+	type result struct {
+		lags []transport.ConsumerLag
+	}
+
+	results := make([]result, len(eventNames))
+	var wg sync.WaitGroup
+
+	for i, name := range eventNames {
+		wg.Add(1)
+		go func(idx int, name string) {
+			defer wg.Done()
+			streamName := t.streamName(name)
+
+			// Get stream length (total messages)
+			streamLen, err := t.client.XLen(ctx, streamName).Result()
+			if err != nil {
+				t.logger.Error("failed to get stream length", "stream", streamName, "error", err)
+				return
+			}
+
+			// Get consumer group info
+			groups, err := t.client.XInfoGroups(ctx, streamName).Result()
+			if err != nil {
+				t.logger.Error("failed to get group info", "stream", streamName, "error", err)
+				return
+			}
+
+			var matched bool
+			for _, group := range groups {
+				// Only report lag for groups actively tracked by this transport
+				if _, ok := t.groups.Load(group.Name); !ok {
+					continue
+				}
+				matched = true
+
+				results[idx].lags = append(results[idx].lags, transport.ConsumerLag{
+					Event:           name,
+					ConsumerGroup:   group.Name,
+					Lag:             group.Lag,
+					PendingMessages: group.Pending,
+				})
+			}
+
+			// Add overall stream info if no tracked groups found
+			if !matched {
+				results[idx].lags = append(results[idx].lags, transport.ConsumerLag{
+					Event: name,
+					Lag:   streamLen,
+				})
+			}
+		}(i, name)
+	}
+
+	wg.Wait()
+
+	var lags []transport.ConsumerLag
+	for _, r := range results {
+		lags = append(lags, r.lags...)
+	}
 	return lags, nil
 }
 
@@ -464,6 +486,7 @@ func (s *subscription) Close(ctx context.Context) error {
 		// For broadcast mode, delete the unique consumer group to prevent resource leak
 		if s.isBroadcast && s.client != nil {
 			s.client.XGroupDestroy(ctx, s.stream, s.group)
+			s.transport.groups.Delete(s.group)
 		}
 		return nil
 	})

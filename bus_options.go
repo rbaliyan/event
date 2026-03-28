@@ -78,7 +78,7 @@ func WithLogger(l *slog.Logger) BusOption {
 //
 //	store := idempotency.NewRedisStore(redisClient, time.Hour)
 //	bus, _ := event.NewBus("my-app",
-//	    event.WithBusTransport(transport),
+//	    event.WithTransport(transport),
 //	    event.WithIdempotency(store),
 //	)
 //
@@ -105,7 +105,7 @@ func WithIdempotency(store IdempotencyStore) BusOption {
 //	    poison.WithQuarantineTime(time.Hour),
 //	)
 //	bus, _ := event.NewBus("my-app",
-//	    event.WithBusTransport(transport),
+//	    event.WithTransport(transport),
 //	    event.WithPoisonDetection(detector),
 //	)
 //

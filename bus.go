@@ -69,7 +69,7 @@ type Bus struct {
 
 // NewBus creates a new event bus and registers it in the global registry.
 // Returns error if:
-//   - Transport is not provided via WithBusTransport()
+//   - Transport is not provided via WithTransport()
 //   - A bus with the same name already exists
 //
 // The bus is automatically registered in the global registry and can be

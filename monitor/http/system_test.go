@@ -40,7 +40,9 @@ func TestHandleSystemView(t *testing.T) {
 	})
 
 	t.Run("basic system view without providers", func(t *testing.T) {
-		h := New(store, WithSystemRefreshInterval(0))
+		h := New(store, WithSystemRefreshInterval(50*time.Millisecond))
+		defer h.Close()
+		time.Sleep(100 * time.Millisecond)
 		req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
 		w := httptest.NewRecorder()
 
@@ -80,7 +82,9 @@ func TestHandleSystemView(t *testing.T) {
 			},
 		}
 
-		h := New(store, WithDLQProvider(dlq), WithSystemRefreshInterval(0))
+		h := New(store, WithDLQProvider(dlq), WithSystemRefreshInterval(50*time.Millisecond))
+		defer h.Close()
+		time.Sleep(100 * time.Millisecond)
 		req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
 		w := httptest.NewRecorder()
 
@@ -127,7 +131,9 @@ func TestHandleSystemHealth(t *testing.T) {
 	defer store.Close()
 
 	t.Run("healthy when no providers", func(t *testing.T) {
-		h := New(store, WithSystemRefreshInterval(0))
+		h := New(store, WithSystemRefreshInterval(50*time.Millisecond))
+		defer h.Close()
+		time.Sleep(100 * time.Millisecond)
 		req := httptest.NewRequest(http.MethodGet, "/v1/system/health", nil)
 		w := httptest.NewRecorder()
 
@@ -157,7 +163,9 @@ func TestHandleSystemHealth(t *testing.T) {
 			},
 		}
 
-		h := New(store, WithDLQProvider(dlq), WithSystemRefreshInterval(0))
+		h := New(store, WithDLQProvider(dlq), WithSystemRefreshInterval(50*time.Millisecond))
+		defer h.Close()
+		time.Sleep(100 * time.Millisecond)
 		req := httptest.NewRequest(http.MethodGet, "/v1/system/health", nil)
 		w := httptest.NewRecorder()
 
@@ -287,21 +295,22 @@ func TestDisabledRefresh(t *testing.T) {
 		t.Error("expected nil cache when refresh disabled")
 	}
 
-	// Should still serve via sync fallback
+	// Should return 503 when disabled
 	req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 from sync fallback, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when refresh disabled, got %d", w.Code)
 	}
 
-	var view SystemView
-	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if view.CollectedAt.IsZero() {
-		t.Error("expected CollectedAt even in sync fallback")
+	// Health endpoint should also return 503
+	req = httptest.NewRequest(http.MethodGet, "/v1/system/health", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for health when refresh disabled, got %d", w.Code)
 	}
 }
 

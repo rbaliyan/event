@@ -6,11 +6,11 @@ This document describes version compatibility between the event library and its 
 
 | Package | Current | Go Version | Dependencies |
 |---------|---------|------------|--------------|
-| event/v3 | 3.x | 1.24+ | otel 1.40+ |
-| event-scheduler | 1.x | 1.24+ | event/v3, go-redis/v9 |
-| event-dlq | 1.x | 1.24+ | event/v3, go-redis/v9 |
-| event-extras | 1.x | 1.24+ | event/v3, go-redis/v9 |
-| event-mongodb | 0.x | 1.24+ | event/v3, mongo-driver/v2 |
+| event/v3 | 3.x | 1.25+ | otel 1.40+ |
+| event-scheduler | 1.x | 1.25+ | event/v3, go-redis/v9 |
+| event-dlq | 1.x | 1.25+ | event/v3, go-redis/v9 |
+| event-extras | 1.x | 1.25+ | event/v3, go-redis/v9 |
+| event-mongodb | 0.x | 1.25+ | event/v3, mongo-driver/v2 |
 
 ## Shared Packages
 
