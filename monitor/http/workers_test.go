@@ -20,7 +20,7 @@ func newWorkerTestHandler(t *testing.T) (*Handler, *distributed.MemoryStateManag
 	sm := distributed.NewMemoryStateManager(distributed.WithCleanup(false, 0))
 	t.Cleanup(sm.Close)
 
-	h := New(store, WithWorkerStore(sm))
+	h := New(store, WithWorkerStore(sm), WithSystemRefreshInterval(0))
 	return h, sm
 }
 
@@ -28,7 +28,7 @@ func TestWorkerEndpointsDisabledWithoutStore(t *testing.T) {
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
-	h := New(store) // No WithWorkerStore
+	h := New(store, WithSystemRefreshInterval(0)) // No WithWorkerStore
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/workers", nil)
 	w := httptest.NewRecorder()

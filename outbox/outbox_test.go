@@ -371,6 +371,120 @@ func TestMockStoreGetPendingError(t *testing.T) {
 	relay.PublishOnce(ctx)
 }
 
+// mockProcessPendingStore wraps mockStore and adds ProcessPending support.
+type mockProcessPendingStore struct {
+	*mockStore
+	processCalled bool
+	processErr    error
+}
+
+func (s *mockProcessPendingStore) ProcessPending(ctx context.Context, limit int, fn func(msg *Message) error) error {
+	s.processCalled = true
+	if s.processErr != nil {
+		return s.processErr
+	}
+	msgs, err := s.mockStore.GetPending(ctx, limit)
+	if err != nil {
+		return err
+	}
+	for _, msg := range msgs {
+		if err := fn(msg); err != nil {
+			return nil // ProcessPending stops on first error but doesn't fail
+		}
+		_ = s.mockStore.MarkPublished(ctx, msg.ID)
+	}
+	return nil
+}
+
+func TestRelayProcessPendingPreferred(t *testing.T) {
+	ctx := context.Background()
+	inner := newMockStore()
+	store := &mockProcessPendingStore{mockStore: inner}
+	tr := channel.New()
+
+	if err := tr.RegisterEvent(ctx, "test.event"); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := tr.Subscribe(ctx, "test.event",
+		transport.WithStartFrom(transport.StartFromLatest),
+		transport.WithBufferSize(10),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close(ctx)
+
+	msg := &Message{EventName: "test.event", EventID: "evt-pp", Payload: []byte(`{}`)}
+	store.Insert(ctx, nil, msg)
+
+	relay := NewRelay(store, tr)
+	relay.PublishOnce(ctx)
+
+	if !store.processCalled {
+		t.Error("expected ProcessPending to be called when available")
+	}
+}
+
+func TestRelayCleanup(t *testing.T) {
+	store := newMockStore()
+	store.deleted = 5 // simulate 5 deleted
+	tr := channel.New()
+
+	relay := NewRelay(store, tr, WithCleanupAge(12*time.Hour))
+	relay.cleanup(context.Background())
+
+	// cleanup calls Delete — verify it doesn't error
+	// We can't observe the call directly but verify no panic
+}
+
+func TestRelayMarkFailedOnPublishError(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore()
+	tr := channel.New()
+	// Don't register event — publish will fail
+
+	msg := &Message{EventName: "bad.event", EventID: "evt-mf", Payload: []byte(`{}`)}
+	store.Insert(ctx, nil, msg)
+
+	relay := NewRelay(store, tr)
+	relay.PublishOnce(ctx)
+
+	store.mu.Lock()
+	failErr, isFailed := store.failed[msg.ID]
+	store.mu.Unlock()
+
+	if !isFailed {
+		t.Error("expected MarkFailed to be called")
+	}
+	if failErr == nil {
+		t.Error("expected non-nil error in MarkFailed")
+	}
+}
+
+func TestRelayEmptyStore(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore()
+	tr := channel.New()
+
+	relay := NewRelay(store, tr)
+	err := relay.PublishOnce(ctx)
+
+	// No messages, no error
+	if err != nil {
+		t.Errorf("expected no error for empty store, got %v", err)
+	}
+}
+
+func TestRelayDeleteError(t *testing.T) {
+	store := newMockStore()
+	store.deleteErr = errors.New("delete failed")
+	tr := channel.New()
+
+	relay := NewRelay(store, tr)
+	// Should not panic
+	relay.cleanup(context.Background())
+}
+
 func TestMessageStruct(t *testing.T) {
 	now := time.Now()
 	msg := Message{
