@@ -494,27 +494,8 @@ func (e *eventImpl[T]) subscribeWithRawCoalesce(
 					return
 				}
 
-				// Check for transport-level decode errors — handle inline, no coalescing possible.
-				if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
-					decodeErr := errors.New(decodeErrMsg)
-					logger.Error("transport decode error, routing to DLQ",
-						"event", e.Name(), "msg_id", msg.ID(), "error", decodeErrMsg)
-					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, decodeErr); dlqErr != nil {
-						bus.logFallbackDLQ(logger, e.name, msg, decodeErr, dlqErr)
-					}
-					_ = msg.Ack(nil)
-					continue
-				}
-
-				// Apply pre-decode message filter.
-				if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
-					_ = msg.Ack(nil)
-					continue
-				}
-
-				// Apply route filters.
-				if !matchesSubscriptionRoute(msg.Metadata(), subOpts) {
-					_ = msg.Ack(nil)
+				// Apply pre-handler filters (decode errors, message filter, route filter)
+				if !e.filterMessage(msg, bus, subOpts, logger) {
 					continue
 				}
 
@@ -592,27 +573,8 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 					return
 				}
 
-				// Check for transport-level decode errors — pass through.
-				if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
-					decodeErr := errors.New(decodeErrMsg)
-					logger.Error("transport decode error, routing to DLQ",
-						"event", e.Name(), "msg_id", msg.ID(), "error", decodeErrMsg)
-					if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, decodeErr); dlqErr != nil {
-						bus.logFallbackDLQ(logger, e.name, msg, decodeErr, dlqErr)
-					}
-					_ = msg.Ack(nil)
-					continue
-				}
-
-				// Apply pre-decode message filter.
-				if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
-					_ = msg.Ack(nil)
-					continue
-				}
-
-				// Apply route filters.
-				if !matchesSubscriptionRoute(msg.Metadata(), subOpts) {
-					_ = msg.Ack(nil)
+				// Apply pre-handler filters (decode errors, message filter, route filter)
+				if !e.filterMessage(msg, bus, subOpts, logger) {
 					continue
 				}
 
@@ -714,6 +676,36 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 	}
 }
 
+// filterMessage applies pre-handler checks: transport decode errors, message filter, and route filters.
+// Returns true if the message should be processed. If false, the message has been handled (acked/DLQ'd).
+func (e *eventImpl[T]) filterMessage(msg transport.Message, bus *Bus, subOpts *subscribeOptions[T], logger *slog.Logger) bool {
+	// Check for transport-level decode errors
+	if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
+		decodeErr := errors.New(decodeErrMsg)
+		logger.Error("transport decode error, routing to DLQ",
+			"event", e.Name(), "msg_id", msg.ID(), "error", decodeErrMsg)
+		if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, decodeErr); dlqErr != nil {
+			bus.logFallbackDLQ(logger, e.name, msg, decodeErr, dlqErr)
+		}
+		_ = msg.Ack(nil)
+		return false
+	}
+
+	// Apply pre-decode message filter
+	if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
+		_ = msg.Ack(nil)
+		return false
+	}
+
+	// Apply route filters (transport-agnostic fallback for non-channel transports)
+	if !matchesSubscriptionRoute(msg.Metadata(), subOpts) {
+		_ = msg.Ack(nil)
+		return false
+	}
+
+	return true
+}
+
 // processMessage handles a single message through the full decode + handler + ack pipeline.
 // coalescedCount is the number of messages that were superseded (0 for non-coalesced).
 func (e *eventImpl[T]) processMessage(
@@ -728,30 +720,8 @@ func (e *eventImpl[T]) processMessage(
 ) {
 	subID := sub.ID()
 
-	// Check for transport-level decode errors
-	if decodeErrMsg, isDecodeErr := transport.IsDecodeError(msg.Metadata()); isDecodeErr {
-		decodeErr := errors.New(decodeErrMsg)
-		logger.Error("transport decode error, routing to DLQ",
-			"event", e.Name(),
-			"msg_id", msg.ID(),
-			"error", decodeErrMsg)
-
-		if dlqErr := bus.sendToDLQ(context.Background(), e.name, msg, decodeErr); dlqErr != nil {
-			bus.logFallbackDLQ(logger, e.name, msg, decodeErr, dlqErr)
-		}
-		_ = msg.Ack(nil)
-		return
-	}
-
-	// Apply pre-decode message filter
-	if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
-		_ = msg.Ack(nil)
-		return
-	}
-
-	// Apply route filters (transport-agnostic fallback for non-channel transports)
-	if !matchesSubscriptionRoute(msg.Metadata(), subOpts) {
-		_ = msg.Ack(nil)
+	// Apply pre-handler filters (decode errors, message filter, route filter)
+	if !e.filterMessage(msg, bus, subOpts, logger) {
 		return
 	}
 

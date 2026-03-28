@@ -16,7 +16,7 @@ func TestHandlerSummary(t *testing.T) {
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
-	h := New(store)
+	h := New(store, WithSystemRefreshInterval(0))
 
 	// Seed some entries
 	now := time.Now()

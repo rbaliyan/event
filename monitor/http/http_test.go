@@ -16,7 +16,7 @@ func TestHandlerNew(t *testing.T) {
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
-	h := New(store)
+	h := New(store, WithSystemRefreshInterval(0))
 	if h == nil {
 		t.Fatal("expected handler, got nil")
 	}
@@ -27,7 +27,7 @@ func TestHandlerList(t *testing.T) {
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
-	h := New(store)
+	h := New(store, WithSystemRefreshInterval(0))
 
 	// Add some entries
 	now := time.Now()
@@ -119,7 +119,7 @@ func TestHandlerGetEntry(t *testing.T) {
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
-	h := New(store)
+	h := New(store, WithSystemRefreshInterval(0))
 
 	// Add an entry
 	store.Record(ctx, &monitor.Entry{
@@ -171,7 +171,7 @@ func TestHandlerGetByEventID(t *testing.T) {
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
-	h := New(store)
+	h := New(store, WithSystemRefreshInterval(0))
 
 	// Add entries for same event ID
 	now := time.Now()
@@ -223,7 +223,7 @@ func TestHandlerCount(t *testing.T) {
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
-	h := New(store)
+	h := New(store, WithSystemRefreshInterval(0))
 
 	// Add entries
 	now := time.Now()
@@ -299,7 +299,7 @@ func TestHandlerDelete(t *testing.T) {
 	t.Run("DELETE with default 24h", func(t *testing.T) {
 		store := monitor.NewMemoryStore()
 		defer store.Close()
-		h := New(store)
+		h := New(store, WithSystemRefreshInterval(0))
 
 		now := time.Now()
 		store.Record(ctx, &monitor.Entry{
@@ -339,7 +339,7 @@ func TestHandlerDelete(t *testing.T) {
 	t.Run("DELETE newer than 24h without force returns 400", func(t *testing.T) {
 		store := monitor.NewMemoryStore()
 		defer store.Close()
-		h := New(store)
+		h := New(store, WithSystemRefreshInterval(0))
 
 		req := httptest.NewRequest(http.MethodDelete, "/v1/monitor/entries?older_than=1h", nil)
 		w := httptest.NewRecorder()
@@ -354,7 +354,7 @@ func TestHandlerDelete(t *testing.T) {
 	t.Run("DELETE newer than 24h with force=true succeeds", func(t *testing.T) {
 		store := monitor.NewMemoryStore()
 		defer store.Close()
-		h := New(store)
+		h := New(store, WithSystemRefreshInterval(0))
 
 		now := time.Now()
 		store.Record(ctx, &monitor.Entry{
@@ -386,7 +386,7 @@ func TestHandlerDelete(t *testing.T) {
 	t.Run("DELETE with invalid duration returns 400", func(t *testing.T) {
 		store := monitor.NewMemoryStore()
 		defer store.Close()
-		h := New(store)
+		h := New(store, WithSystemRefreshInterval(0))
 
 		req := httptest.NewRequest(http.MethodDelete, "/v1/monitor/entries?older_than=invalid", nil)
 		w := httptest.NewRecorder()
@@ -404,7 +404,7 @@ func TestHandlerQueryParams(t *testing.T) {
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
-	h := New(store)
+	h := New(store, WithSystemRefreshInterval(0))
 
 	// Add entries with various attributes
 	now := time.Now()
@@ -495,7 +495,7 @@ func TestHandlerContentType(t *testing.T) {
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
-	h := New(store)
+	h := New(store, WithSystemRefreshInterval(0))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/monitor/entries", nil)
 	w := httptest.NewRecorder()

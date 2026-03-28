@@ -2,10 +2,13 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rbaliyan/event/v3/distributed"
@@ -15,11 +18,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// DefaultSystemRefreshInterval is the default interval for background system view refresh.
+const DefaultSystemRefreshInterval = 10 * time.Second
+
 // handlerOptions holds configuration for the Handler.
 type handlerOptions struct {
-	workerStore   distributed.WorkerStore
-	dlqProvider   DLQProvider
-	schedProvider SchedulerProvider
+	workerStore           distributed.WorkerStore
+	dlqProvider           DLQProvider
+	schedProvider         SchedulerProvider
+	systemRefreshInterval time.Duration
 }
 
 // Option configures the Handler.
@@ -46,6 +53,16 @@ func WithSchedulerProvider(p SchedulerProvider) Option {
 	}
 }
 
+// WithSystemRefreshInterval sets the interval for background system view refresh.
+// The system view (/v1/system, /v1/system/health) is collected in the background
+// and cached, so API responses are instant regardless of how many buses or messages exist.
+// Default is 10s. Set to 0 to disable background refresh (compute on each request).
+func WithSystemRefreshInterval(d time.Duration) Option {
+	return func(o *handlerOptions) {
+		o.systemRefreshInterval = d
+	}
+}
+
 // Handler implements http.Handler for the monitor service using protoJSON.
 type Handler struct {
 	store         monitor.Store
@@ -55,11 +72,19 @@ type Handler struct {
 	mux           *http.ServeMux
 	marshaler     protojson.MarshalOptions
 	unmarshaler   protojson.UnmarshalOptions
+
+	// Background system view cache
+	systemView atomic.Pointer[SystemView]
+	cancelFunc context.CancelFunc
+	done       chan struct{}
+	closeOnce  sync.Once
 }
 
 // New creates a new HTTP handler for the monitor service.
 func New(store monitor.Store, opts ...Option) *Handler {
-	o := &handlerOptions{}
+	o := &handlerOptions{
+		systemRefreshInterval: DefaultSystemRefreshInterval,
+	}
 	for _, opt := range opts {
 		opt(o)
 	}
@@ -70,6 +95,7 @@ func New(store monitor.Store, opts ...Option) *Handler {
 		dlqProvider:   o.dlqProvider,
 		schedProvider: o.schedProvider,
 		mux:           http.NewServeMux(),
+		done:          make(chan struct{}),
 		marshaler: protojson.MarshalOptions{
 			EmitUnpopulated: true,
 			UseProtoNames:   true,
@@ -107,7 +133,25 @@ func New(store monitor.Store, opts ...Option) *Handler {
 		h.mux.HandleFunc("/v1/workers/count", h.handleWorkerCount)
 	}
 
+	// Start background system view refresh
+	if o.systemRefreshInterval > 0 {
+		ctx, cancel := context.WithCancel(context.Background())
+		h.cancelFunc = cancel
+		go h.runSystemRefresh(ctx, o.systemRefreshInterval)
+	}
+
 	return h
+}
+
+// Close stops the background system view refresh goroutine.
+// It is safe to call Close concurrently and multiple times.
+func (h *Handler) Close() {
+	h.closeOnce.Do(func() {
+		if h.cancelFunc != nil {
+			h.cancelFunc()
+			<-h.done
+		}
+	})
 }
 
 // ServeHTTP implements http.Handler.

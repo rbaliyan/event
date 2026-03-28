@@ -66,8 +66,9 @@ type Transport struct {
 	maxAge        time.Duration // Max message age for MINID trimming (0 = unlimited)
 	blockTime     time.Duration
 	sendTimeout   time.Duration // Timeout for sending to subscriber channel (backpressure)
-	claimInterval time.Duration // Interval for claiming orphaned messages (0 = disabled)
-	claimMinIdle  time.Duration // Minimum idle time before claiming a message
+	claimInterval  time.Duration // Interval for claiming orphaned messages (0 = disabled)
+	claimMinIdle   time.Duration // Minimum idle time before claiming a message
+	claimBatchSize int64         // Max messages to claim per cycle (default 100)
 
 }
 
@@ -87,6 +88,7 @@ type subscription struct {
 	cancel             context.CancelFunc
 	claimInterval      time.Duration // Interval for claiming orphaned messages
 	claimMinIdle       time.Duration // Minimum idle time before claiming
+	claimBatchSize     int64         // Max messages to claim per cycle
 	isBroadcast        bool          // If true, consumer group is deleted on close
 
 }
@@ -283,17 +285,25 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		bufSize = subOpts.BufferSize
 	}
 
+	// Use stable consumer ID if provided, otherwise use the random subscription ID.
+	// Stable IDs allow restart recovery: the consumer reclaims its own pending messages.
+	consumerName := subID
+	if subOpts.ConsumerID != "" {
+		consumerName = subOpts.ConsumerID
+	}
+
 	sub := &subscription{
 		Subscription:  base.NewSubscription(subID, bufSize, t.sendTimeout),
 		client:        t.client,
 		stream:        streamName,
 		group:         groupID,
-		consumer:      subID,
+		consumer:      consumerName,
 		codec:         t.codec,
 		cancel:        cancel,
-		claimInterval: t.claimInterval,
-		claimMinIdle:  t.claimMinIdle,
-		isBroadcast:   subOpts.DeliveryMode == transport.Broadcast,
+		claimInterval:  t.claimInterval,
+		claimMinIdle:   t.claimMinIdle,
+		claimBatchSize: t.claimBatchSize,
+		isBroadcast:    subOpts.DeliveryMode == transport.Broadcast,
 	}
 
 	// Start consuming in background with WaitGroup tracking
@@ -678,12 +688,17 @@ func (s *subscription) claimOrphanedMessages(ctx context.Context, logger *slog.L
 }
 
 func (s *subscription) claimOnce(ctx context.Context, logger *slog.Logger) {
+	batchSize := s.claimBatchSize
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+
 	pending, err := s.client.XPendingExt(ctx, &redis.XPendingExtArgs{
 		Stream: s.stream,
 		Group:  s.group,
 		Start:  "-",
 		End:    "+",
-		Count:  100,
+		Count:  batchSize,
 		Idle:   s.claimMinIdle,
 	}).Result()
 

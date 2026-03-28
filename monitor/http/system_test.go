@@ -40,7 +40,7 @@ func TestHandleSystemView(t *testing.T) {
 	})
 
 	t.Run("basic system view without providers", func(t *testing.T) {
-		h := New(store)
+		h := New(store, WithSystemRefreshInterval(0))
 		req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
 		w := httptest.NewRecorder()
 
@@ -80,7 +80,7 @@ func TestHandleSystemView(t *testing.T) {
 			},
 		}
 
-		h := New(store, WithDLQProvider(dlq))
+		h := New(store, WithDLQProvider(dlq), WithSystemRefreshInterval(0))
 		req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
 		w := httptest.NewRecorder()
 
@@ -110,7 +110,7 @@ func TestHandleSystemView(t *testing.T) {
 	})
 
 	t.Run("method not allowed", func(t *testing.T) {
-		h := New(store)
+		h := New(store, WithSystemRefreshInterval(0))
 		req := httptest.NewRequest(http.MethodPost, "/v1/system", nil)
 		w := httptest.NewRecorder()
 
@@ -127,7 +127,7 @@ func TestHandleSystemHealth(t *testing.T) {
 	defer store.Close()
 
 	t.Run("healthy when no providers", func(t *testing.T) {
-		h := New(store)
+		h := New(store, WithSystemRefreshInterval(0))
 		req := httptest.NewRequest(http.MethodGet, "/v1/system/health", nil)
 		w := httptest.NewRecorder()
 
@@ -157,7 +157,7 @@ func TestHandleSystemHealth(t *testing.T) {
 			},
 		}
 
-		h := New(store, WithDLQProvider(dlq))
+		h := New(store, WithDLQProvider(dlq), WithSystemRefreshInterval(0))
 		req := httptest.NewRequest(http.MethodGet, "/v1/system/health", nil)
 		w := httptest.NewRecorder()
 
@@ -176,4 +176,150 @@ func TestHandleSystemHealth(t *testing.T) {
 			t.Errorf("expected unhealthy, got %s", result.Status)
 		}
 	})
+}
+
+func TestBackgroundRefresh(t *testing.T) {
+	ctx := context.Background()
+	store := monitor.NewMemoryStore()
+	defer store.Close()
+
+	store.Record(ctx, &monitor.Entry{
+		EventID: "1", EventName: "orders.created", BusID: "bus",
+		Status: monitor.StatusCompleted, Duration: 50 * time.Millisecond,
+		StartedAt: time.Now(), DeliveryMode: monitor.Broadcast,
+	})
+
+	h := New(store, WithSystemRefreshInterval(50*time.Millisecond))
+	defer h.Close()
+
+	// Wait for first refresh
+	time.Sleep(150 * time.Millisecond)
+
+	// Verify cache is populated
+	cached := h.systemView.Load()
+	if cached == nil {
+		t.Fatal("expected cached system view after refresh")
+	}
+	if cached.CollectedAt.IsZero() {
+		t.Error("expected non-zero CollectedAt")
+	}
+	if cached.Health == nil {
+		t.Error("expected health in cached view")
+	}
+
+	// Verify API returns cached data instantly
+	req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var view SystemView
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if view.CollectedAt.IsZero() {
+		t.Error("expected CollectedAt in response")
+	}
+}
+
+func TestBackgroundRefresh_Health(t *testing.T) {
+	store := monitor.NewMemoryStore()
+	defer store.Close()
+
+	h := New(store, WithSystemRefreshInterval(50*time.Millisecond))
+	defer h.Close()
+
+	// Wait for first refresh
+	time.Sleep(150 * time.Millisecond)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/system/health", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var result health.AggregateResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result.Status != health.StatusHealthy {
+		t.Errorf("expected healthy, got %s", result.Status)
+	}
+}
+
+func TestClose(t *testing.T) {
+	store := monitor.NewMemoryStore()
+	defer store.Close()
+
+	h := New(store, WithSystemRefreshInterval(50*time.Millisecond))
+
+	// Wait for at least one refresh
+	time.Sleep(100 * time.Millisecond)
+
+	// Close should be idempotent
+	h.Close()
+	h.Close()
+
+	// After close, cache remains readable but stale
+	req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after close, got %d", w.Code)
+	}
+}
+
+func TestDisabledRefresh(t *testing.T) {
+	store := monitor.NewMemoryStore()
+	defer store.Close()
+
+	h := New(store, WithSystemRefreshInterval(0))
+	defer h.Close()
+
+	// No goroutine started, cache should be nil
+	if h.systemView.Load() != nil {
+		t.Error("expected nil cache when refresh disabled")
+	}
+
+	// Should still serve via sync fallback
+	req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from sync fallback, got %d", w.Code)
+	}
+
+	var view SystemView
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if view.CollectedAt.IsZero() {
+		t.Error("expected CollectedAt even in sync fallback")
+	}
+}
+
+func TestCachedTopology(t *testing.T) {
+	store := monitor.NewMemoryStore()
+	defer store.Close()
+
+	h := New(store, WithSystemRefreshInterval(50*time.Millisecond))
+	defer h.Close()
+
+	// Wait for refresh
+	time.Sleep(150 * time.Millisecond)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/topology", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
 }

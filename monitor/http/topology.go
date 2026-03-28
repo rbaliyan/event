@@ -14,6 +14,12 @@ func (h *Handler) handleTopology(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Use cached topology from system view if available
+	if cached := h.systemView.Load(); cached != nil {
+		h.writeJSON(w, cached.Topology)
+		return
+	}
+
 	h.writeJSON(w, event.Topology())
 }
 
