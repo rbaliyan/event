@@ -3,7 +3,6 @@ package event
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/rbaliyan/event/v3/health"
@@ -102,9 +101,8 @@ func (b *Bus) checkComponentHealth(ctx context.Context, result *Status, name str
 
 // aggregateComponentStatus updates the result status based on component status.
 // Uses the worst status: unhealthy > degraded > healthy.
-// Accepts health.Status or transport.HealthStatus (both are string types with identical values).
-func aggregateComponentStatus(result *Status, name string, status any) {
-	code := StatusCode(fmt.Sprint(status))
+func aggregateComponentStatus(result *Status, name string, status StatusCode) {
+	code := status
 
 	switch code {
 	case StatusUnhealthy:
@@ -149,7 +147,7 @@ func convertTransportStatus(th *transport.HealthCheckResult) *Status {
 	}
 
 	result := &Status{
-		Code:      StatusCode(th.Status),
+		Code:      th.Status,
 		Message:   th.Message,
 		Latency:   th.Latency,
 		Details:   th.Details,

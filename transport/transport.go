@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rbaliyan/event/v3/health"
 	"github.com/rbaliyan/event/v3/transport/codec"
 	"github.com/rbaliyan/event/v3/transport/message"
 	"go.opentelemetry.io/otel/trace"
@@ -103,16 +104,13 @@ func MatchesRouteFilters(metadata, filters map[string]string) bool {
 	return true
 }
 
-// HealthStatus represents the health state of a component
-type HealthStatus string
+// HealthStatus is an alias for health.Status to avoid type duplication.
+type HealthStatus = health.Status
 
 const (
-	// HealthStatusHealthy indicates the component is functioning normally
-	HealthStatusHealthy HealthStatus = "healthy"
-	// HealthStatusDegraded indicates the component is functioning but with issues
-	HealthStatusDegraded HealthStatus = "degraded"
-	// HealthStatusUnhealthy indicates the component is not functioning
-	HealthStatusUnhealthy HealthStatus = "unhealthy"
+	HealthStatusHealthy   = health.StatusHealthy
+	HealthStatusDegraded  = health.StatusDegraded
+	HealthStatusUnhealthy = health.StatusUnhealthy
 )
 
 // HealthCheckResult contains detailed health information
