@@ -70,6 +70,7 @@ type Transport struct {
 	claimInterval  time.Duration // Interval for claiming orphaned messages (0 = disabled)
 	claimMinIdle   time.Duration // Minimum idle time before claiming a message
 	claimBatchSize int64         // Max messages to claim per cycle (default 100)
+	cb             *transport.CircuitBreaker // Publish circuit breaker (nil = disabled)
 
 }
 
@@ -222,11 +223,18 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 		args.Approx = true
 	}
 
+	if err := t.cb.Allow(); err != nil {
+		return err
+	}
+
 	_, err = t.client.XAdd(ctx, args).Result()
 	if err != nil {
+		t.cb.RecordFailure()
 		t.onError(err)
 		return err
 	}
+
+	t.cb.RecordSuccess()
 
 	t.logger.Debug("published message", "event", name, "msg_id", msg.ID())
 	return nil
@@ -393,6 +401,14 @@ func (t *Transport) Health(ctx context.Context) *transport.HealthCheckResult {
 	result.Details["ping_latency_ms"] = pingLatency.Milliseconds()
 	result.Details["events"] = eventCount
 	result.Details["consumer_group"] = t.groupID
+	if t.cb.IsEnabled() {
+		cbState := t.cb.State()
+		result.Details["circuit_breaker"] = cbState
+		if cbState == "open" {
+			result.Status = transport.HealthStatusDegraded
+			result.Message = "redis transport circuit breaker is open"
+		}
+	}
 
 	return result
 }

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/codec"
 )
 
@@ -120,6 +121,20 @@ func WithClaimBatchSize(n int64) Option {
 	return func(t *Transport) {
 		if n > 0 {
 			t.claimBatchSize = n
+		}
+	}
+}
+
+// WithCircuitBreaker enables a circuit breaker on Publish (XAdd) calls.
+// After threshold consecutive failures, the breaker opens and Publish returns
+// transport.ErrCircuitOpen immediately. After cooldown elapses, one probe call
+// is allowed through: success closes the breaker, failure re-opens it.
+//
+// Disabled by default (zero overhead when not configured).
+func WithCircuitBreaker(threshold int, cooldown time.Duration) Option {
+	return func(t *Transport) {
+		if threshold > 0 {
+			t.cb = transport.NewCircuitBreaker(threshold, cooldown)
 		}
 	}
 }
