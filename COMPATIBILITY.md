@@ -104,6 +104,7 @@ All store implementations follow the same interface patterns:
 | Monitor | Yes | Yes | No | Yes |
 | Schema | Yes | Yes | Yes | Yes |
 | Idempotency | Yes | Yes | Yes | Yes |
+| Poison | Yes | No | Yes | Yes |
 
 ## Middleware Chain Order
 

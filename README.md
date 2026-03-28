@@ -155,7 +155,6 @@ func main() {
     nc, _ := natsgo.Connect("nats://localhost:4222")
 
     transport, _ := nats.NewJetStream(nc,
-        nats.WithStreamName("ORDERS"),
         nats.WithDeduplication(time.Hour),
         nats.WithMaxDeliver(5),
         nats.WithAckWait(30*time.Second),
@@ -486,7 +485,7 @@ Prevent duplicate message processing:
 ```go
 import "github.com/rbaliyan/event/v3/idempotency"
 
-store := idempotency.NewRedisStore(redisClient, time.Hour)
+store, _ := idempotency.NewRedisStore(redisClient, time.Hour)
 
 bus, _ := event.NewBus("order-service",
     event.WithTransport(transport),
@@ -506,7 +505,7 @@ Auto-quarantine messages that keep failing:
 ```go
 import "github.com/rbaliyan/event/v3/poison"
 
-store := poison.NewRedisStore(redisClient)
+store, _ := poison.NewRedisStore(redisClient)
 detector := poison.NewDetector(store,
     poison.WithThreshold(5),
     poison.WithQuarantineTime(time.Hour),
@@ -531,7 +530,7 @@ Track event processing status, duration, and errors:
 ```go
 import "github.com/rbaliyan/event/v3/monitor"
 
-store := monitor.NewPostgresStore(db)
+store, _ := monitor.NewPostgresStore(db)
 
 bus, _ := event.NewBus("order-service",
     event.WithTransport(transport),
@@ -539,13 +538,13 @@ bus, _ := event.NewBus("order-service",
 )
 
 // Query monitoring data
-entries, _ := store.List(ctx, monitor.Filter{
+page, _ := store.List(ctx, monitor.Filter{
     Status:    []monitor.Status{monitor.StatusFailed},
     StartTime: time.Now().Add(-time.Hour),
     Limit:     100,
 })
 
-for _, entry := range entries {
+for _, entry := range page.Entries {
     fmt.Printf("Event %s: %s (duration: %v)\n",
         entry.EventID, entry.Status, entry.Duration)
 }
@@ -587,7 +586,7 @@ Define event configuration centrally:
 ```go
 import "github.com/rbaliyan/event/v3/schema"
 
-provider := schema.NewPostgresProvider(db, nil)
+provider, _ := schema.NewPostgresProvider(db, nil)
 defer provider.Close()
 
 bus, _ := event.NewBus("order-service",
@@ -634,7 +633,7 @@ orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order 
         return event.ErrReject // ACK + send to DLQ
 
     default:
-        return event.ErrDefer.Wrap(err) // Default: retry with backoff
+        return event.Defer(err) // Default: retry with backoff
     }
 })
 ```
@@ -741,8 +740,8 @@ if err := orderSaga.Execute(ctx, sagaID, order); err != nil {
 | Component | PostgreSQL | MongoDB | Redis | In-Memory |
 |-----------|:----------:|:-------:|:-----:|:---------:|
 | Outbox | ✅ | ✅ | ✅ | - |
-| Idempotency | ✅ | - | ✅ | ✅ |
-| Poison | ✅ | - | ✅ | - |
+| Idempotency | ✅ | ✅ | ✅ | ✅ |
+| Poison | ✅ | - | ✅ | ✅ |
 | Monitor | ✅ | ✅ | - | ✅ |
 | Schema Registry | ✅ | ✅ | ✅ | ✅ |
 | DLQ | ✅ | ✅ | ✅ | ✅ |
@@ -774,8 +773,8 @@ func TestOrderHandler(t *testing.T) {
         t.Error("handler not called")
     }
 
-    orders := handler.Received()
-    if orders[0].ID != "test" {
+    calls := handler.Received()
+    if calls[0].Data.ID != "test" {
         t.Error("wrong order ID")
     }
 }
