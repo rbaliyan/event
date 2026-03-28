@@ -202,7 +202,7 @@ Bus-level outbox support for atomic database writes with event publishing:
 
 **Configuration:**
 ```go
-store := outbox.NewMongoStore(db)
+store, _ := outbox.NewMongoStore(db)
 bus, _ := event.NewBus("mybus",
     event.WithTransport(transport),
     event.WithOutbox(store),  // Enables outbox routing

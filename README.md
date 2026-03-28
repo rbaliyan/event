@@ -360,7 +360,7 @@ The `distributed` package enables WorkerPool semantics on Broadcast-only transpo
 import "github.com/rbaliyan/event/v3/distributed"
 
 // Create a coordinator (Redis for distributed deployments)
-coord := distributed.NewRedisStateManager(redisClient,
+coord, _ := distributed.NewRedisStateManager(redisClient,
     distributed.WithCompletedTTL(48*time.Hour),
 )
 
@@ -377,10 +377,10 @@ mongoEvent.Subscribe(ctx, handler,
 For transports without re-delivery (e.g., MongoDB Change Streams), the middleware automatically stores message payload so the RecoveryRunner can re-publish stale events if a worker crashes:
 
 ```go
-coord := distributed.NewMongoStateManager(db)
+coord, _ := distributed.NewMongoStateManager(db)
 
 // RecoveryRunner detects PayloadStore capability automatically
-runner := distributed.NewRecoveryRunner(coord,
+runner, _ := distributed.NewRecoveryRunner(coord,
     distributed.WithPublisher(bus),     // enables re-publishing
     distributed.WithStaleTimeout(2*time.Minute),
     distributed.WithCheckInterval(30*time.Second),
@@ -398,8 +398,8 @@ Recovery is two-phase:
 Use separate coordinators with different prefixes per group:
 
 ```go
-smA := distributed.NewRedisStateManager(redis, distributed.WithPrefix("processors:"))
-smB := distributed.NewRedisStateManager(redis, distributed.WithPrefix("analytics:"))
+smA, _ := distributed.NewRedisStateManager(redis, distributed.WithPrefix("processors:"))
+smB, _ := distributed.NewRedisStateManager(redis, distributed.WithPrefix("analytics:"))
 
 orderEvent.Subscribe(ctx, processOrder,
     event.WithMiddleware(distributed.WorkerPoolMiddleware[Order](smA, ttl)))
@@ -449,7 +449,7 @@ import (
 func main() {
     ctx := context.Background()
 
-    store := outbox.NewMongoStore(mongoClient.Database("myapp"))
+    store, _ := outbox.NewMongoStore(mongoClient.Database("myapp"))
 
     bus, _ := event.NewBus("order-service",
         event.WithTransport(transport),
