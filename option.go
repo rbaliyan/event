@@ -325,6 +325,9 @@ type subscribeOptions[T any] struct {
 	subscriberName        string
 	subscriberDescription string
 
+	// consumer identity
+	consumerID string // stable consumer ID for restart recovery
+
 	// ack policy
 	ackPolicy AckPolicy
 
@@ -405,6 +408,10 @@ func (o *subscribeOptions[T]) transportOptions() []transport.SubscribeOption {
 
 	if o.bufferSize > 0 {
 		opts = append(opts, transport.WithBufferSize(o.bufferSize))
+	}
+
+	if o.consumerID != "" {
+		opts = append(opts, transport.WithConsumerID(o.consumerID))
 	}
 
 	if o.ackPolicy != AckExplicit {
@@ -665,6 +672,29 @@ func WithAckPolicy[T any](policy AckPolicy) SubscribeOption[T] {
 //	)
 func WithBestEffort[T any]() SubscribeOption[T] {
 	return WithAckPolicy[T](AckOnReceive)
+}
+
+// WithConsumerID sets a stable consumer identifier for the subscription.
+// When a consumer restarts with the same ID, it automatically reclaims its own
+// pending (unacknowledged) messages from the previous session.
+//
+// Without a stable ID, each restart creates a new random consumer name, and
+// messages from the dead consumer must be recovered via XCLAIM (orphan claiming).
+//
+// This is particularly important for Redis Streams and other transports that
+// track per-consumer pending message state.
+//
+// Example:
+//
+//	// Use hostname for stable identity across restarts
+//	orderEvent.Subscribe(ctx, handler,
+//	    event.WithConsumerID[Order]("order-processor-"+hostname),
+//	    event.AsWorker[Order](),
+//	)
+func WithConsumerID[T any](id string) SubscribeOption[T] {
+	return func(o *subscribeOptions[T]) {
+		o.consumerID = id
+	}
 }
 
 // WithCoalesceByKey enables key-based message coalescing.

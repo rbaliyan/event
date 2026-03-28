@@ -113,3 +113,14 @@ func WithClaimInterval(interval, minIdle time.Duration) Option {
 	}
 }
 
+// WithClaimBatchSize sets the maximum number of orphaned messages to claim per cycle.
+// Default is 100. Increase for high-throughput systems where many messages may be
+// orphaned after a consumer crash.
+func WithClaimBatchSize(n int64) Option {
+	return func(t *Transport) {
+		if n > 0 {
+			t.claimBatchSize = n
+		}
+	}
+}
+
