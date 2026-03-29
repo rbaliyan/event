@@ -60,8 +60,10 @@ func WithSchedulerProvider(p SchedulerProvider) Option {
 }
 
 // WithDLQAlertHook registers a callback that is invoked during each system view refresh
-// when the DLQ pending message count exceeds the threshold. The hook runs in the
-// background refresh goroutine, so it should be non-blocking (e.g., send to a channel
+// when the DLQ pending message count exceeds the threshold. The hook is called on
+// EVERY refresh cycle where the threshold is exceeded (default: every 10s), so callers
+// are responsible for rate-limiting or deduplicating alerts. The hook runs in the
+// background refresh goroutine and should be non-blocking (e.g., send to a channel
 // or fire an HTTP webhook asynchronously).
 func WithDLQAlertHook(fn DLQAlertFunc, threshold int64) Option {
 	return func(o *handlerOptions) {

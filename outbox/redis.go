@@ -114,6 +114,10 @@ func WithMaxLen(maxLen int64) RedisStoreOption {
 
 // RedisStore implements outbox storage using Redis Streams with Consumer Groups.
 // Consumer Groups provide exactly-once delivery semantics for HA deployments.
+//
+// Note: Redis Streams are append-only and ordered by stream ID. The Priority field
+// is persisted but does not affect delivery order. Use PostgreSQL or MongoDB stores
+// when priority-based ordering is required.
 type RedisStore struct {
 	client       redis.Cmdable
 	pendingKey   string
@@ -172,6 +176,7 @@ func (s *RedisStore) Insert(ctx context.Context, msg *RedisMessage) (string, err
 			"metadata":    metadata,
 			"created_at":  msg.CreatedAt.Unix(),
 			"retry_count": msg.RetryCount,
+			"priority":    msg.Priority,
 		},
 	}
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ func (s *mockStore) GetPending(_ context.Context, limit int) ([]*Message, error)
 	}
 	var pending []*Message
 	for _, msg := range s.messages {
-		if msg.Status == StatusPending && !s.published[msg.ID] {
+		if (msg.Status == StatusPending || msg.Status == StatusFailed) && !s.published[msg.ID] {
 			pending = append(pending, msg)
 			if len(pending) >= limit {
 				break
@@ -509,5 +510,85 @@ func TestMessageStruct(t *testing.T) {
 	}
 	if msg.PublishedAt != nil {
 		t.Error("expected nil PublishedAt")
+	}
+}
+
+func TestRelayMaxRetries(t *testing.T) {
+	store := newMockStore()
+	tr := channel.New(channel.WithBufferSize(100))
+	relay := NewRelay(store, tr,
+		WithPollDelay(50*time.Millisecond),
+		WithMaxRetries(3),
+	)
+
+	store.Insert(context.Background(), nil, &Message{
+		EventName: "test.event",
+		EventID:   "evt-1",
+		Payload:   []byte(`{}`),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go relay.Start(ctx)
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	store.mu.Lock()
+	status := store.messages[0].Status
+	retryCount := store.messages[0].RetryCount
+	store.mu.Unlock()
+
+	if status != StatusFailed {
+		t.Fatalf("expected StatusFailed, got %s", status)
+	}
+	if retryCount < 3 {
+		t.Fatalf("expected retry count >= 3, got %d", retryCount)
+	}
+}
+
+func TestRelayAdaptiveBackpressure(t *testing.T) {
+	store := newMockStore()
+	tr := channel.New(channel.WithBufferSize(100))
+
+	var called atomic.Bool
+	strategy := &testBackoff{called: &called}
+	relay := NewRelay(store, tr,
+		WithPollDelay(50*time.Millisecond),
+		WithRetryBackoff(strategy),
+	)
+
+	store.Insert(context.Background(), nil, &Message{
+		EventName: "test.event",
+		EventID:   "evt-1",
+		Payload:   []byte(`{}`),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go relay.Start(ctx)
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	if !called.Load() {
+		t.Fatal("expected backoff strategy to be called on failures")
+	}
+}
+
+type testBackoff struct {
+	called *atomic.Bool
+}
+
+func (b *testBackoff) NextDelay(attempt int) time.Duration {
+	b.called.Store(true)
+	return 100 * time.Millisecond
+}
+
+func TestRelayPriority(t *testing.T) {
+	msg := &Message{
+		EventName: "test.event",
+		EventID:   "evt-1",
+		Payload:   []byte(`{}`),
+		Priority:  10,
+	}
+	if msg.Priority != 10 {
+		t.Fatalf("expected priority 10, got %d", msg.Priority)
 	}
 }

@@ -142,7 +142,6 @@ func WithRetryBackoff(strategy backoff.Strategy) RelayOption {
 	}
 }
 
-
 // NewRelay creates a new outbox relay.
 //
 // The relay polls the store for pending messages and publishes them to
@@ -252,24 +251,29 @@ func (r *Relay) Start(ctx context.Context) error {
 	}
 }
 
-// publishPending fetches and publishes pending messages.
-// This is the main processing loop that runs on each poll tick.
-// Returns the number of messages that failed to publish.
 // shouldSkip returns true if a message has exceeded the max retry limit.
-// When max retries is configured, messages that have been retried too many times
-// are left as StatusFailed and logged as exhausted.
-func (r *Relay) shouldSkip(msg *Message) bool {
+// When max retries is configured, exhausted messages are re-marked as failed
+// with a descriptive error to prevent infinite re-fetch loops.
+func (r *Relay) shouldSkip(ctx context.Context, msg *Message) bool {
 	if r.maxRetries > 0 && msg.RetryCount >= r.maxRetries {
-		r.log().Warn("message exceeded max retries, skipping",
+		r.log().Warn("message exceeded max retries",
 			"id", msg.ID,
 			"event", msg.EventName,
 			"retry_count", msg.RetryCount,
 			"max_retries", r.maxRetries)
+		// Re-mark as failed with descriptive error so GetPending doesn't re-fetch
+		// (MarkFailed increments retry_count, pushing it further past the threshold)
+		if markErr := r.store.MarkFailed(ctx, msg.ID, fmt.Errorf("exceeded max retries (%d)", r.maxRetries)); markErr != nil {
+			r.log().Error("failed to mark exhausted message", "id", msg.ID, "error", markErr)
+		}
 		return true
 	}
 	return false
 }
 
+// publishPending fetches and publishes pending messages.
+// This is the main processing loop that runs on each poll tick.
+// Returns the number of messages that failed to publish.
 func (r *Relay) publishPending(ctx context.Context) (failures int) {
 	// Use ProcessPending for stores that support transactional processing
 	// (PostgresStore). This holds row locks for the duration of processing,
@@ -278,7 +282,7 @@ func (r *Relay) publishPending(ctx context.Context) (failures int) {
 		ProcessPending(ctx context.Context, limit int, fn func(msg *Message) error) error
 	}); ok {
 		if err := ps.ProcessPending(ctx, r.batchSize, func(msg *Message) error {
-			if r.shouldSkip(msg) {
+			if r.shouldSkip(ctx, msg) {
 				return nil
 			}
 			if err := r.publishMessage(ctx, msg); err != nil {
@@ -309,7 +313,7 @@ func (r *Relay) publishPending(ctx context.Context) (failures int) {
 	}
 
 	for _, msg := range messages {
-		if r.shouldSkip(msg) {
+		if r.shouldSkip(ctx, msg) {
 			continue
 		}
 
