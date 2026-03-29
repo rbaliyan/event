@@ -120,7 +120,8 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		bus.subscribedCounter, _ = meter.Int64Counter("event.subscribed",
 			metric.WithDescription("Total number of subscriptions"))
 		bus.publishDuration, _ = meter.Float64Histogram("event.publish_duration_seconds",
-			metric.WithDescription("Time to publish a message to the transport"))
+			metric.WithDescription("Time to publish a message to the transport"),
+			metric.WithUnit("s"))
 	}
 
 	// Register in global registry (use LoadOrStore to handle race condition)

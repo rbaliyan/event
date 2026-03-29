@@ -48,10 +48,11 @@ func WithTable(table string) PostgresStoreOption {
 //	    published_at TIMESTAMP,
 //	    status       VARCHAR(20) NOT NULL DEFAULT 'pending',
 //	    retry_count  INT NOT NULL DEFAULT 0,
-//	    last_error   TEXT
+//	    last_error   TEXT,
+//	    priority     INT NOT NULL DEFAULT 0
 //	);
-//	CREATE INDEX idx_outbox_pending ON event_outbox(status, created_at)
-//	    WHERE status = 'pending';
+//	CREATE INDEX idx_outbox_pending ON event_outbox(status, priority DESC, created_at)
+//	    WHERE status IN ('pending', 'failed');
 type PostgresStore struct {
 	db        *sql.DB
 	tableName string

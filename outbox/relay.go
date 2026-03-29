@@ -119,9 +119,9 @@ func WithMetrics(m *Metrics) RelayOption {
 	}
 }
 
-// WithMaxRetries sets the maximum number of publish attempts before routing to DLQ.
-// When a message's RetryCount reaches this limit and a DLQ store is configured,
-// the message is moved to the DLQ instead of being retried.
+// WithMaxRetries sets the maximum number of publish attempts before permanently
+// marking the message as failed. Once exceeded, the message remains in the outbox
+// with StatusFailed and is no longer retried.
 // Set to 0 (default) for unlimited retries.
 func WithMaxRetries(n int) RelayOption {
 	return func(o *relayOptions) {

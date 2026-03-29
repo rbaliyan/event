@@ -582,13 +582,39 @@ func (b *testBackoff) NextDelay(attempt int) time.Duration {
 }
 
 func TestRelayPriority(t *testing.T) {
-	msg := &Message{
+	store := newMockStore()
+	ctx := context.Background()
+
+	// Insert low priority first, then high priority
+	store.Insert(ctx, nil, &Message{
 		EventName: "test.event",
-		EventID:   "evt-1",
+		EventID:   "low",
+		Payload:   []byte(`{}`),
+		Priority:  1,
+	})
+	store.Insert(ctx, nil, &Message{
+		EventName: "test.event",
+		EventID:   "high",
 		Payload:   []byte(`{}`),
 		Priority:  10,
+	})
+
+	// Verify priority is stored correctly
+	store.mu.Lock()
+	if store.messages[0].Priority != 1 {
+		t.Fatalf("expected priority 1, got %d", store.messages[0].Priority)
 	}
-	if msg.Priority != 10 {
-		t.Fatalf("expected priority 10, got %d", msg.Priority)
+	if store.messages[1].Priority != 10 {
+		t.Fatalf("expected priority 10, got %d", store.messages[1].Priority)
+	}
+	store.mu.Unlock()
+
+	// Verify GetPending returns both
+	msgs, err := store.GetPending(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
 	}
 }

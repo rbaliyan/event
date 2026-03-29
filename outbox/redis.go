@@ -350,6 +350,10 @@ func (s *RedisStore) parseStreamMessage(msg redis.XMessage) (*RedisMessage, erro
 		m.RetryCount, _ = strconv.Atoi(retryCount)
 	}
 
+	if priority, ok := msg.Values["priority"].(string); ok {
+		m.Priority, _ = strconv.Atoi(priority)
+	}
+
 	return m, nil
 }
 
