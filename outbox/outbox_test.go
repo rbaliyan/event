@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -61,10 +62,17 @@ func (s *mockStore) GetPending(_ context.Context, limit int) ([]*Message, error)
 	for _, msg := range s.messages {
 		if (msg.Status == StatusPending || msg.Status == StatusFailed) && !s.published[msg.ID] {
 			pending = append(pending, msg)
-			if len(pending) >= limit {
-				break
-			}
 		}
+	}
+	// Sort by priority DESC, then created_at ASC (matches real store behavior)
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].Priority != pending[j].Priority {
+			return pending[i].Priority > pending[j].Priority
+		}
+		return pending[i].CreatedAt.Before(pending[j].CreatedAt)
+	})
+	if len(pending) > limit {
+		pending = pending[:limit]
 	}
 	return pending, nil
 }
@@ -609,12 +617,18 @@ func TestRelayPriority(t *testing.T) {
 	}
 	store.mu.Unlock()
 
-	// Verify GetPending returns both
+	// Verify GetPending returns high priority first
 	msgs, err := store.GetPending(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	if msgs[0].EventID != "high" {
+		t.Fatalf("expected high-priority message first, got %s", msgs[0].EventID)
+	}
+	if msgs[1].EventID != "low" {
+		t.Fatalf("expected low-priority message second, got %s", msgs[1].EventID)
 	}
 }
