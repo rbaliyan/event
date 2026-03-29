@@ -72,6 +72,7 @@ type mongoMessage struct {
 	Status      Status            `bson:"status"`
 	RetryCount  int               `bson:"retry_count"`
 	LastError   string            `bson:"last_error,omitempty"`
+	Priority    int               `bson:"priority"`
 }
 
 // toMessage converts mongoMessage to Message
@@ -87,6 +88,7 @@ func (m *mongoMessage) toMessage() *Message {
 		Status:      m.Status,
 		RetryCount:  m.RetryCount,
 		LastError:   m.LastError,
+		Priority:    m.Priority,
 	}
 }
 
@@ -376,7 +378,7 @@ func (s *MongoStore) claimNextPending(ctx context.Context) (*Message, error) {
 		},
 	}
 	opts := options.FindOneAndUpdate().
-		SetSort(bson.D{{Key: "created_at", Value: 1}}).
+		SetSort(bson.D{{Key: "priority", Value: -1}, {Key: "created_at", Value: 1}}).
 		SetReturnDocument(options.After)
 
 	var mongoMsg mongoMessage
@@ -418,7 +420,7 @@ func (s *MongoStore) claimNextPendingMongo(ctx context.Context) (*mongoMessage, 
 		},
 	}
 	opts := options.FindOneAndUpdate().
-		SetSort(bson.D{{Key: "created_at", Value: 1}}).
+		SetSort(bson.D{{Key: "priority", Value: -1}, {Key: "created_at", Value: 1}}).
 		SetReturnDocument(options.After)
 
 	var mongoMsg mongoMessage

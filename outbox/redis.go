@@ -45,6 +45,7 @@ type RedisMessage struct {
 	CreatedAt  time.Time         `json:"created_at"`
 	RetryCount int               `json:"retry_count"`
 	LastError  string            `json:"last_error,omitempty"`
+	Priority   int               `json:"priority"`
 }
 
 // ToMessage converts RedisMessage to Message
@@ -59,6 +60,7 @@ func (m *RedisMessage) ToMessage() *Message {
 		CreatedAt:  m.CreatedAt,
 		RetryCount: m.RetryCount,
 		LastError:  m.LastError,
+		Priority:   m.Priority,
 		Status:     StatusPending,
 	}
 }

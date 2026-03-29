@@ -71,6 +71,10 @@ func (h *Handler) refreshSystemView(ctx context.Context) {
 			mu.Lock()
 			if err == nil {
 				view.DLQ = stats
+				// Check DLQ alert threshold
+				if h.dlqAlertFunc != nil && stats.PendingMessages >= h.dlqAlertThreshold {
+					h.dlqAlertFunc(stats)
+				}
 			} else {
 				slog.WarnContext(ctx, "dlq stats query failed", "error", err)
 			}

@@ -21,12 +21,18 @@ import (
 // DefaultSystemRefreshInterval is the default interval for background system view refresh.
 const DefaultSystemRefreshInterval = 10 * time.Second
 
+// DLQAlertFunc is called when DLQ pending message count exceeds the configured threshold.
+// stats contains the current DLQ statistics at the time of the alert.
+type DLQAlertFunc func(stats *DLQStats)
+
 // handlerOptions holds configuration for the Handler.
 type handlerOptions struct {
 	workerStore           distributed.WorkerStore
 	dlqProvider           DLQProvider
 	schedProvider         SchedulerProvider
 	systemRefreshInterval time.Duration
+	dlqAlertFunc          DLQAlertFunc
+	dlqAlertThreshold     int64
 }
 
 // Option configures the Handler.
@@ -53,6 +59,19 @@ func WithSchedulerProvider(p SchedulerProvider) Option {
 	}
 }
 
+// WithDLQAlertHook registers a callback that is invoked during each system view refresh
+// when the DLQ pending message count exceeds the threshold. The hook runs in the
+// background refresh goroutine, so it should be non-blocking (e.g., send to a channel
+// or fire an HTTP webhook asynchronously).
+func WithDLQAlertHook(fn DLQAlertFunc, threshold int64) Option {
+	return func(o *handlerOptions) {
+		if fn != nil && threshold > 0 {
+			o.dlqAlertFunc = fn
+			o.dlqAlertThreshold = threshold
+		}
+	}
+}
+
 // WithSystemRefreshInterval sets the interval for background system view refresh.
 // The system view (/v1/system, /v1/system/health) is collected in the background
 // and cached, so API responses are instant regardless of how many buses or messages exist.
@@ -65,13 +84,15 @@ func WithSystemRefreshInterval(d time.Duration) Option {
 
 // Handler implements http.Handler for the monitor service using protoJSON.
 type Handler struct {
-	store         monitor.Store
-	workerStore   distributed.WorkerStore
-	dlqProvider   DLQProvider
-	schedProvider SchedulerProvider
-	mux           *http.ServeMux
-	marshaler     protojson.MarshalOptions
-	unmarshaler   protojson.UnmarshalOptions
+	store             monitor.Store
+	workerStore       distributed.WorkerStore
+	dlqProvider       DLQProvider
+	schedProvider     SchedulerProvider
+	dlqAlertFunc      DLQAlertFunc
+	dlqAlertThreshold int64
+	mux               *http.ServeMux
+	marshaler         protojson.MarshalOptions
+	unmarshaler       protojson.UnmarshalOptions
 
 	// Background system view cache
 	systemView    atomic.Pointer[SystemView]
@@ -91,10 +112,12 @@ func New(store monitor.Store, opts ...Option) *Handler {
 	}
 
 	h := &Handler{
-		store:         store,
-		workerStore:   o.workerStore,
-		dlqProvider:   o.dlqProvider,
-		schedProvider: o.schedProvider,
+		store:             store,
+		workerStore:       o.workerStore,
+		dlqProvider:       o.dlqProvider,
+		schedProvider:     o.schedProvider,
+		dlqAlertFunc:      o.dlqAlertFunc,
+		dlqAlertThreshold: o.dlqAlertThreshold,
 		mux:           http.NewServeMux(),
 		done:          make(chan struct{}),
 		marshaler: protojson.MarshalOptions{

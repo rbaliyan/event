@@ -6,8 +6,13 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/rbaliyan/event/v3/backoff"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Relay polls the outbox and publishes messages to the transport.
@@ -42,24 +47,28 @@ import (
 //	// Shutdown gracefully
 //	cancel()
 type Relay struct {
-	store      Store
-	transport  transport.Transport
-	pollDelay  time.Duration
-	batchSize  int
-	logger     *slog.Logger
-	cleanupAge time.Duration // How old published messages should be before deletion
-	metrics    *Metrics
+	store        Store
+	transport    transport.Transport
+	pollDelay    time.Duration
+	batchSize    int
+	logger       *slog.Logger
+	cleanupAge   time.Duration // How old published messages should be before deletion
+	metrics      *Metrics
+	maxRetries   int              // 0 = unlimited retries (default)
+	retryBackoff backoff.Strategy // nil = no backoff delay between retries
 }
 
 // RelayOption configures a Relay.
 type RelayOption func(*relayOptions)
 
 type relayOptions struct {
-	pollDelay  time.Duration
-	batchSize  int
-	logger     *slog.Logger
-	cleanupAge time.Duration
-	metrics    *Metrics
+	pollDelay    time.Duration
+	batchSize    int
+	logger       *slog.Logger
+	cleanupAge   time.Duration
+	metrics      *Metrics
+	maxRetries   int
+	retryBackoff backoff.Strategy
 }
 
 // WithPollDelay sets the polling interval.
@@ -110,6 +119,30 @@ func WithMetrics(m *Metrics) RelayOption {
 	}
 }
 
+// WithMaxRetries sets the maximum number of publish attempts before routing to DLQ.
+// When a message's RetryCount reaches this limit and a DLQ store is configured,
+// the message is moved to the DLQ instead of being retried.
+// Set to 0 (default) for unlimited retries.
+func WithMaxRetries(n int) RelayOption {
+	return func(o *relayOptions) {
+		if n > 0 {
+			o.maxRetries = n
+		}
+	}
+}
+
+// WithRetryBackoff sets a backoff strategy for failed messages.
+// On each failure, the relay skips the message until the backoff delay elapses
+// based on the message's retry count.
+func WithRetryBackoff(strategy backoff.Strategy) RelayOption {
+	return func(o *relayOptions) {
+		if strategy != nil {
+			o.retryBackoff = strategy
+		}
+	}
+}
+
+
 // NewRelay creates a new outbox relay.
 //
 // The relay polls the store for pending messages and publishes them to
@@ -146,13 +179,15 @@ func NewRelay(store Store, t transport.Transport, opts ...RelayOption) *Relay {
 	}
 
 	return &Relay{
-		store:      store,
-		transport:  t,
-		pollDelay:  o.pollDelay,
-		batchSize:  o.batchSize,
-		logger:     logger,
-		cleanupAge: o.cleanupAge,
-		metrics:    o.metrics,
+		store:        store,
+		transport:    t,
+		pollDelay:    o.pollDelay,
+		batchSize:    o.batchSize,
+		logger:       logger,
+		cleanupAge:   o.cleanupAge,
+		metrics:      o.metrics,
+		maxRetries:   o.maxRetries,
+		retryBackoff: o.retryBackoff,
 	}
 }
 
@@ -194,12 +229,23 @@ func (r *Relay) Start(ctx context.Context) error {
 	cleanupTicker := time.NewTicker(time.Hour)
 	defer cleanupTicker.Stop()
 
+	var consecutiveFailures int
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			r.publishPending(ctx)
+			failures := r.publishPending(ctx)
+			// Adaptive backpressure: back off polling when failures occur
+			if r.retryBackoff != nil && failures > 0 {
+				consecutiveFailures++
+				delay := r.retryBackoff.NextDelay(consecutiveFailures)
+				ticker.Reset(delay)
+			} else if consecutiveFailures > 0 {
+				consecutiveFailures = 0
+				ticker.Reset(r.pollDelay)
+			}
 		case <-cleanupTicker.C:
 			r.cleanup(ctx)
 		}
@@ -209,6 +255,21 @@ func (r *Relay) Start(ctx context.Context) error {
 // publishPending fetches and publishes pending messages.
 // This is the main processing loop that runs on each poll tick.
 // Returns the number of messages that failed to publish.
+// shouldSkip returns true if a message has exceeded the max retry limit.
+// When max retries is configured, messages that have been retried too many times
+// are left as StatusFailed and logged as exhausted.
+func (r *Relay) shouldSkip(msg *Message) bool {
+	if r.maxRetries > 0 && msg.RetryCount >= r.maxRetries {
+		r.log().Warn("message exceeded max retries, skipping",
+			"id", msg.ID,
+			"event", msg.EventName,
+			"retry_count", msg.RetryCount,
+			"max_retries", r.maxRetries)
+		return true
+	}
+	return false
+}
+
 func (r *Relay) publishPending(ctx context.Context) (failures int) {
 	// Use ProcessPending for stores that support transactional processing
 	// (PostgresStore). This holds row locks for the duration of processing,
@@ -217,6 +278,9 @@ func (r *Relay) publishPending(ctx context.Context) (failures int) {
 		ProcessPending(ctx context.Context, limit int, fn func(msg *Message) error) error
 	}); ok {
 		if err := ps.ProcessPending(ctx, r.batchSize, func(msg *Message) error {
+			if r.shouldSkip(msg) {
+				return nil
+			}
 			if err := r.publishMessage(ctx, msg); err != nil {
 				r.log().Error("failed to publish message",
 					"id", msg.ID,
@@ -245,6 +309,10 @@ func (r *Relay) publishPending(ctx context.Context) (failures int) {
 	}
 
 	for _, msg := range messages {
+		if r.shouldSkip(msg) {
+			continue
+		}
+
 		if err := r.publishMessage(ctx, msg); err != nil {
 			r.log().Error("failed to publish message",
 				"id", msg.ID,
@@ -271,9 +339,33 @@ func (r *Relay) publishPending(ctx context.Context) (failures int) {
 	return failures
 }
 
-// publishMessage publishes a single message to the transport
+// publishMessage publishes a single message to the transport.
+// If the message metadata contains W3C trace context headers, a child span is created
+// to link the relay publish to the original transaction's trace.
 func (r *Relay) publishMessage(ctx context.Context, msg *Message) error {
 	start := time.Now()
+
+	// Extract trace context from metadata if present (W3C traceparent/tracestate)
+	var spanCtx trace.SpanContext
+	if msg.Metadata != nil {
+		carrier := propagation.MapCarrier(msg.Metadata)
+		extracted := otel.GetTextMapPropagator().Extract(ctx, carrier)
+		spanCtx = trace.SpanContextFromContext(extracted)
+	}
+
+	// Create a span for the relay publish operation
+	if spanCtx.IsValid() {
+		ctx = trace.ContextWithRemoteSpanContext(ctx, spanCtx)
+	}
+	tracer := otel.Tracer("outbox.relay")
+	ctx, span := tracer.Start(ctx, fmt.Sprintf("outbox.publish %s", msg.EventName),
+		trace.WithAttributes(
+			attribute.String("event.name", msg.EventName),
+			attribute.String("event.id", msg.EventID),
+			attribute.Int("retry_count", msg.RetryCount),
+		),
+		trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
 
 	// msg.Payload is already []byte - pass directly to transport
 	transportMsg := message.New(
@@ -281,12 +373,14 @@ func (r *Relay) publishMessage(ctx context.Context, msg *Message) error {
 		"outbox",
 		msg.Payload,
 		msg.Metadata,
+		message.WithSpanContext(span.SpanContext()),
 	)
 
 	err := r.transport.Publish(ctx, msg.EventName, transportMsg)
 	duration := time.Since(start)
 
 	if err != nil {
+		span.RecordError(err)
 		if r.metrics != nil {
 			r.metrics.RecordFailed(ctx, msg.EventName)
 		}
