@@ -63,8 +63,9 @@ type Bus struct {
 	// DLQ store for automatic dead letter routing
 	dlqStore DLQStore
 	// Cached OTel instruments (initialized once during construction)
-	publishedCounter  metric.Int64Counter
-	subscribedCounter metric.Int64Counter
+	publishedCounter   metric.Int64Counter
+	subscribedCounter  metric.Int64Counter
+	publishDuration    metric.Float64Histogram
 }
 
 // NewBus creates a new event bus and registers it in the global registry.
@@ -118,6 +119,9 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 			metric.WithDescription("Total number of events published"))
 		bus.subscribedCounter, _ = meter.Int64Counter("event.subscribed",
 			metric.WithDescription("Total number of subscriptions"))
+		bus.publishDuration, _ = meter.Float64Histogram("event.publish_duration_seconds",
+			metric.WithDescription("Time to publish a message to the transport"),
+			metric.WithUnit("s"))
 	}
 
 	// Register in global registry (use LoadOrStore to handle race condition)
@@ -429,7 +433,13 @@ func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payloa
 	msg := message.New(eventID, b.ID(), payload, meta, message.WithSpanContext(spanCtx))
 
 	// Send via transport
-	return b.transport.Publish(ctx, eventName, msg)
+	publishStart := time.Now()
+	err := b.transport.Publish(ctx, eventName, msg)
+	if b.metricsEnabled && b.publishDuration != nil {
+		b.publishDuration.Record(ctx, time.Since(publishStart).Seconds(),
+			metric.WithAttributes(attribute.String("event", eventName)))
+	}
+	return err
 }
 
 // Recv creates a subscription to receive messages for the specified event.

@@ -58,9 +58,10 @@
 //	    published_at TIMESTAMP,
 //	    status       VARCHAR(20) NOT NULL DEFAULT 'pending',
 //	    retry_count  INT NOT NULL DEFAULT 0,
-//	    last_error   TEXT
+//	    last_error   TEXT,
+//	    priority     INT NOT NULL DEFAULT 0
 //	);
-//	CREATE INDEX idx_outbox_pending ON event_outbox(status, created_at) WHERE status = 'pending';
+//	CREATE INDEX idx_outbox_pending ON event_outbox(status, priority DESC, created_at) WHERE status IN ('pending', 'failed');
 //
 // # Complete Example
 //
@@ -152,6 +153,7 @@ type Message struct {
 	Status      Status
 	RetryCount  int
 	LastError   string
+	Priority    int // Higher values are processed first (0 = normal, default)
 }
 
 // Store defines the interface for SQL-based outbox storage with relay support.

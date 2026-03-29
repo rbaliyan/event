@@ -48,10 +48,11 @@ func WithTable(table string) PostgresStoreOption {
 //	    published_at TIMESTAMP,
 //	    status       VARCHAR(20) NOT NULL DEFAULT 'pending',
 //	    retry_count  INT NOT NULL DEFAULT 0,
-//	    last_error   TEXT
+//	    last_error   TEXT,
+//	    priority     INT NOT NULL DEFAULT 0
 //	);
-//	CREATE INDEX idx_outbox_pending ON event_outbox(status, created_at)
-//	    WHERE status = 'pending';
+//	CREATE INDEX idx_outbox_pending ON event_outbox(status, priority DESC, created_at)
+//	    WHERE status IN ('pending', 'failed');
 type PostgresStore struct {
 	db        *sql.DB
 	tableName string
@@ -117,8 +118,8 @@ func (s *PostgresStore) Insert(ctx context.Context, tx *sql.Tx, msg *Message) er
 	}
 
 	query := fmt.Sprintf(`
-		INSERT INTO %s (event_name, event_id, payload, metadata, status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO %s (event_name, event_id, payload, metadata, status, created_at, priority)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id
 	`, s.tableName)
 
@@ -129,6 +130,7 @@ func (s *PostgresStore) Insert(ctx context.Context, tx *sql.Tx, msg *Message) er
 		metadataJSON,
 		StatusPending,
 		time.Now(),
+		msg.Priority,
 	).Scan(&msg.ID)
 
 	return err
@@ -152,10 +154,10 @@ func (s *PostgresStore) Insert(ctx context.Context, tx *sql.Tx, msg *Message) er
 // Returns the messages and any error. Returns empty slice if no pending messages.
 func (s *PostgresStore) GetPending(ctx context.Context, limit int) ([]*Message, error) {
 	query := fmt.Sprintf(`
-		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count
+		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count, COALESCE(priority, 0)
 		FROM %s
 		WHERE status IN ($1, $2)
-		ORDER BY created_at
+		ORDER BY priority DESC, created_at
 		LIMIT $3
 		FOR UPDATE SKIP LOCKED
 	`, s.tableName)
@@ -197,10 +199,10 @@ func (s *PostgresStore) ProcessPending(ctx context.Context, limit int, fn func(m
 	defer tx.Rollback() //nolint:errcheck
 
 	query := fmt.Sprintf(`
-		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count
+		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count, COALESCE(priority, 0)
 		FROM %s
 		WHERE status IN ($1, $2)
-		ORDER BY created_at
+		ORDER BY priority DESC, created_at
 		LIMIT $3
 		FOR UPDATE SKIP LOCKED
 	`, s.tableName)
@@ -260,6 +262,7 @@ func (s *PostgresStore) scanMessages(rows *sql.Rows) ([]*Message, error) {
 			&metadataJSON,
 			&msg.CreatedAt,
 			&msg.RetryCount,
+			&msg.Priority,
 		)
 		if err != nil {
 			return nil, err

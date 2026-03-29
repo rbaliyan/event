@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,12 +60,19 @@ func (s *mockStore) GetPending(_ context.Context, limit int) ([]*Message, error)
 	}
 	var pending []*Message
 	for _, msg := range s.messages {
-		if msg.Status == StatusPending && !s.published[msg.ID] {
+		if (msg.Status == StatusPending || msg.Status == StatusFailed) && !s.published[msg.ID] {
 			pending = append(pending, msg)
-			if len(pending) >= limit {
-				break
-			}
 		}
+	}
+	// Sort by priority DESC, then created_at ASC (matches real store behavior)
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].Priority != pending[j].Priority {
+			return pending[i].Priority > pending[j].Priority
+		}
+		return pending[i].CreatedAt.Before(pending[j].CreatedAt)
+	})
+	if len(pending) > limit {
+		pending = pending[:limit]
 	}
 	return pending, nil
 }
@@ -509,5 +518,117 @@ func TestMessageStruct(t *testing.T) {
 	}
 	if msg.PublishedAt != nil {
 		t.Error("expected nil PublishedAt")
+	}
+}
+
+func TestRelayMaxRetries(t *testing.T) {
+	store := newMockStore()
+	tr := channel.New(channel.WithBufferSize(100))
+	relay := NewRelay(store, tr,
+		WithPollDelay(50*time.Millisecond),
+		WithMaxRetries(3),
+	)
+
+	store.Insert(context.Background(), nil, &Message{
+		EventName: "test.event",
+		EventID:   "evt-1",
+		Payload:   []byte(`{}`),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go relay.Start(ctx)
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	store.mu.Lock()
+	status := store.messages[0].Status
+	retryCount := store.messages[0].RetryCount
+	store.mu.Unlock()
+
+	if status != StatusFailed {
+		t.Fatalf("expected StatusFailed, got %s", status)
+	}
+	if retryCount < 3 {
+		t.Fatalf("expected retry count >= 3, got %d", retryCount)
+	}
+}
+
+func TestRelayAdaptiveBackpressure(t *testing.T) {
+	store := newMockStore()
+	tr := channel.New(channel.WithBufferSize(100))
+
+	var called atomic.Bool
+	strategy := &testBackoff{called: &called}
+	relay := NewRelay(store, tr,
+		WithPollDelay(50*time.Millisecond),
+		WithRetryBackoff(strategy),
+	)
+
+	store.Insert(context.Background(), nil, &Message{
+		EventName: "test.event",
+		EventID:   "evt-1",
+		Payload:   []byte(`{}`),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go relay.Start(ctx)
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	if !called.Load() {
+		t.Fatal("expected backoff strategy to be called on failures")
+	}
+}
+
+type testBackoff struct {
+	called *atomic.Bool
+}
+
+func (b *testBackoff) NextDelay(attempt int) time.Duration {
+	b.called.Store(true)
+	return 100 * time.Millisecond
+}
+
+func TestRelayPriority(t *testing.T) {
+	store := newMockStore()
+	ctx := context.Background()
+
+	// Insert low priority first, then high priority
+	store.Insert(ctx, nil, &Message{
+		EventName: "test.event",
+		EventID:   "low",
+		Payload:   []byte(`{}`),
+		Priority:  1,
+	})
+	store.Insert(ctx, nil, &Message{
+		EventName: "test.event",
+		EventID:   "high",
+		Payload:   []byte(`{}`),
+		Priority:  10,
+	})
+
+	// Verify priority is stored correctly
+	store.mu.Lock()
+	if store.messages[0].Priority != 1 {
+		t.Fatalf("expected priority 1, got %d", store.messages[0].Priority)
+	}
+	if store.messages[1].Priority != 10 {
+		t.Fatalf("expected priority 10, got %d", store.messages[1].Priority)
+	}
+	store.mu.Unlock()
+
+	// Verify GetPending returns high priority first
+	msgs, err := store.GetPending(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	if msgs[0].EventID != "high" {
+		t.Fatalf("expected high-priority message first, got %s", msgs[0].EventID)
+	}
+	if msgs[1].EventID != "low" {
+		t.Fatalf("expected low-priority message second, got %s", msgs[1].EventID)
 	}
 }

@@ -72,6 +72,7 @@ type mongoMessage struct {
 	Status      Status            `bson:"status"`
 	RetryCount  int               `bson:"retry_count"`
 	LastError   string            `bson:"last_error,omitempty"`
+	Priority    int               `bson:"priority"`
 }
 
 // toMessage converts mongoMessage to Message
@@ -87,6 +88,7 @@ func (m *mongoMessage) toMessage() *Message {
 		Status:      m.Status,
 		RetryCount:  m.RetryCount,
 		LastError:   m.LastError,
+		Priority:    m.Priority,
 	}
 }
 
@@ -156,6 +158,7 @@ func (s *MongoStore) Indexes() []mongo.IndexModel {
 		{
 			Keys: bson.D{
 				{Key: "status", Value: 1},
+				{Key: "priority", Value: -1},
 				{Key: "created_at", Value: 1},
 			},
 		},
@@ -368,7 +371,7 @@ func (s *MongoStore) GetPending(ctx context.Context, limit int) ([]*Message, err
 // claimNextPending atomically claims a single pending message for processing.
 // Uses FindOneAndUpdate to prevent race conditions in HA deployments.
 func (s *MongoStore) claimNextPending(ctx context.Context) (*Message, error) {
-	filter := bson.M{"status": StatusPending}
+	filter := bson.M{"status": bson.M{"$in": []Status{StatusPending, StatusFailed}}}
 	update := bson.M{
 		"$set": bson.M{
 			"status":     StatusProcessing,
@@ -376,7 +379,7 @@ func (s *MongoStore) claimNextPending(ctx context.Context) (*Message, error) {
 		},
 	}
 	opts := options.FindOneAndUpdate().
-		SetSort(bson.D{{Key: "created_at", Value: 1}}).
+		SetSort(bson.D{{Key: "priority", Value: -1}, {Key: "created_at", Value: 1}}).
 		SetReturnDocument(options.After)
 
 	var mongoMsg mongoMessage
@@ -410,7 +413,7 @@ func (s *MongoStore) getPendingMongo(ctx context.Context, limit int) ([]*mongoMe
 
 // claimNextPendingMongo atomically claims a single pending message for processing.
 func (s *MongoStore) claimNextPendingMongo(ctx context.Context) (*mongoMessage, error) {
-	filter := bson.M{"status": StatusPending}
+	filter := bson.M{"status": bson.M{"$in": []Status{StatusPending, StatusFailed}}}
 	update := bson.M{
 		"$set": bson.M{
 			"status":     StatusProcessing,
@@ -418,7 +421,7 @@ func (s *MongoStore) claimNextPendingMongo(ctx context.Context) (*mongoMessage, 
 		},
 	}
 	opts := options.FindOneAndUpdate().
-		SetSort(bson.D{{Key: "created_at", Value: 1}}).
+		SetSort(bson.D{{Key: "priority", Value: -1}, {Key: "created_at", Value: 1}}).
 		SetReturnDocument(options.After)
 
 	var mongoMsg mongoMessage

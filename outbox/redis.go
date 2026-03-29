@@ -45,6 +45,7 @@ type RedisMessage struct {
 	CreatedAt  time.Time         `json:"created_at"`
 	RetryCount int               `json:"retry_count"`
 	LastError  string            `json:"last_error,omitempty"`
+	Priority   int               `json:"priority"`
 }
 
 // ToMessage converts RedisMessage to Message
@@ -59,6 +60,7 @@ func (m *RedisMessage) ToMessage() *Message {
 		CreatedAt:  m.CreatedAt,
 		RetryCount: m.RetryCount,
 		LastError:  m.LastError,
+		Priority:   m.Priority,
 		Status:     StatusPending,
 	}
 }
@@ -112,6 +114,10 @@ func WithMaxLen(maxLen int64) RedisStoreOption {
 
 // RedisStore implements outbox storage using Redis Streams with Consumer Groups.
 // Consumer Groups provide exactly-once delivery semantics for HA deployments.
+//
+// Note: Redis Streams are append-only and ordered by stream ID. The Priority field
+// is persisted but does not affect delivery order. Use PostgreSQL or MongoDB stores
+// when priority-based ordering is required.
 type RedisStore struct {
 	client       redis.Cmdable
 	pendingKey   string
@@ -170,6 +176,7 @@ func (s *RedisStore) Insert(ctx context.Context, msg *RedisMessage) (string, err
 			"metadata":    metadata,
 			"created_at":  msg.CreatedAt.Unix(),
 			"retry_count": msg.RetryCount,
+			"priority":    msg.Priority,
 		},
 	}
 
@@ -341,6 +348,10 @@ func (s *RedisStore) parseStreamMessage(msg redis.XMessage) (*RedisMessage, erro
 
 	if retryCount, ok := msg.Values["retry_count"].(string); ok {
 		m.RetryCount, _ = strconv.Atoi(retryCount)
+	}
+
+	if priority, ok := msg.Values["priority"].(string); ok {
+		m.Priority, _ = strconv.Atoi(priority)
 	}
 
 	return m, nil
