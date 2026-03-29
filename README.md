@@ -249,24 +249,55 @@ func main() {
 
 \* MongoDB CDC supports WorkerPool mode through the `distributed` package, which emulates worker semantics using database atomic state transitions. See [Distributed WorkerPool](#distributed-workerpool).
 
-## Health Checks
+### Circuit Breaker
 
-All transports and stores implement the `health.Checker` interface:
+Protect publish calls from cascading failures when a transport backend is temporarily unavailable. Currently supported on Redis transport:
 
 ```go
-import "github.com/rbaliyan/event/v3/health"
+transport, _ := redis.New(rdb,
+    redis.WithCircuitBreaker(5, 30*time.Second), // open after 5 failures, cooldown 30s
+)
+```
 
-// Check transport health
-result := transport.Health(ctx)
-fmt.Printf("Status: %s, Latency: %v\n", result.Status, result.Latency)
+When open, `Publish` returns `transport.ErrCircuitOpen` immediately instead of blocking until timeout. After the cooldown period, one probe call is allowed through — success closes the breaker, failure re-opens it.
 
-// Check all components
+The `CircuitBreaker` struct in the `transport` package is reusable and can be embedded by any transport implementation.
+
+### Transport Migration
+
+Bridge an old and new transport during a migration with zero message loss:
+
+```go
+import "github.com/rbaliyan/event/v3/transport/migration"
+
+mt, _ := migration.New(oldRedisTransport, newKafkaTransport,
+    migration.WithMergedBufferSize(128),
+)
+bus, _ := event.NewBus("mybus", event.WithTransport(mt))
+```
+
+- **Publish** routes to the new transport only
+- **Subscribe** fans-in messages from both transports into a single subscription
+- Falls back to new-only if the old transport fails to subscribe
+- Health reports degraded when old is down, unhealthy when new is down
+- Consumer lag is prefixed with `old:`/`new:` for dashboard disambiguation
+
+Once the old transport is fully drained, replace the migration transport with the new one directly.
+
+## Health Checks
+
+Stores implement `health.Checker`; transports implement `transport.HealthChecker`. The bus aggregates both:
+
+```go
+// Check bus health (aggregates transport + all configured stores)
+status := bus.Status(ctx)
+fmt.Printf("Status: %s, Latency: %v\n", status.Code, status.Latency)
+
+// Check individual stores via health.CheckAll
 results := health.CheckAll(ctx, map[string]health.Checker{
-    "transport":   transport,
     "idempotency": idempStore,
     "monitor":     monitorStore,
 })
-
 for name, result := range results.Components {
     fmt.Printf("%s: %s\n", name, result.Status)
 }

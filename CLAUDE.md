@@ -139,14 +139,15 @@ Bus (transport, tracing, metrics, recovery)
 
 ### Middleware Chain Execution Order
 
-When a handler is subscribed, it's wrapped in this chain (innermost to outermost):
+When a handler is subscribed, it's wrapped in this chain. Execution flows from outermost to handler:
 ```
-Recovery (panic handling)
-  → Timeout (context deadline)
-    → Custom middleware (via WithMiddleware)
-      → Idempotency (bus-level, controlled by schema if loaded)
-        → Poison detection (bus-level, controlled by schema if loaded)
-          → Monitor (bus-level, controlled by schema if loaded)
+Monitor (bus-level, controlled by schema if loaded)
+  → Poison detection (bus-level, controlled by schema if loaded)
+    → Idempotency (bus-level, controlled by schema if loaded)
+      → Custom middleware (via WithMiddleware)
+        → Timeout (context deadline)
+          → Recovery (panic handling)
+            → Handler
 ```
 
 **Schema-Controlled Middleware:**
@@ -243,8 +244,7 @@ type OutboxStore interface {
 **Outbox Metrics** (`outbox.Metrics`):
 ```go
 metrics, _ := outbox.NewMetrics()
-relay := outbox.NewRelay(store, transport).
-    WithMetrics(metrics)
+relay := outbox.NewRelay(store, transport, outbox.WithMetrics(metrics))
 ```
 
 Metrics recorded:

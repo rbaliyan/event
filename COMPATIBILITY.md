@@ -6,7 +6,7 @@ This document describes version compatibility between the event library and its 
 
 | Package | Current | Go Version | Dependencies |
 |---------|---------|------------|--------------|
-| event/v3 | 3.x | 1.25+ | otel 1.40+ |
+| event/v3 | 3.x | 1.25.8+ | otel 1.40+ |
 | event-scheduler | 1.x | 1.25+ | event/v3, go-redis/v9 |
 | event-dlq | 1.x | 1.25+ | event/v3, go-redis/v9 |
 | event-extras | 1.x | 1.25+ | event/v3, go-redis/v9 |
@@ -97,14 +97,14 @@ No breaking changes planned. All v3.x APIs will remain stable.
 All store implementations follow the same interface patterns:
 
 | Store Type | PostgreSQL | MongoDB | Redis | Memory |
-|------------|------------|---------|-------|--------|
-| Scheduler | Yes | Yes | Yes | Test only |
-| DLQ | Yes | Yes | Yes | Yes |
-| Saga | Yes | Yes | Yes | Yes |
-| Monitor | Yes | Yes | No | Yes |
-| Schema | Yes | Yes | Yes | Yes |
-| Idempotency | Yes | Yes | Yes | Yes |
-| Poison | Yes | No | Yes | Yes |
+|------------|:----------:|:-------:|:-----:|:------:|
+| Scheduler | ✅ | ✅ | ✅ | - |
+| DLQ | ✅ | ✅ | ✅ | ✅ |
+| Saga | ✅ | ✅ | ✅ | ✅ |
+| Monitor | ✅ | ✅ | - | ✅ |
+| Schema | ✅ | ✅ | ✅ | ✅ |
+| Idempotency | ✅ | ✅ | ✅ | ✅ |
+| Poison | ✅ | - | ✅ | ✅ |
 
 ## Middleware Chain Order
 
@@ -123,9 +123,9 @@ Outermost (first added)
 Example:
 ```go
 chain := event.NewChain[Order]().
-    Use(LoggingMiddleware).    // 1. Outermost - logs before/after
-    Use(MetricsMiddleware).    // 2. Records timing
-    Use(ValidationMiddleware)  // 3. Innermost - validates data
+    Use(myLoggingMiddleware).    // 1. Outermost - logs before/after (user-defined)
+    Use(myMetricsMiddleware).    // 2. Records timing (user-defined)
+    Use(myValidationMiddleware)  // 3. Innermost - validates data (user-defined)
 ```
 
 ## Backoff Strategy Compatibility
