@@ -184,10 +184,11 @@ func (t *Transport) Health(ctx context.Context) *transport.HealthCheckResult {
 	if hc, ok := t.new.(transport.HealthChecker); ok {
 		newHealth := hc.Health(ctx)
 		result.Components["new"] = newHealth
-		if newHealth.Status == transport.HealthStatusUnhealthy {
+		switch newHealth.Status {
+		case transport.HealthStatusUnhealthy:
 			result.Status = transport.HealthStatusUnhealthy
 			result.Message = "new transport is unhealthy"
-		} else if newHealth.Status == transport.HealthStatusDegraded {
+		case transport.HealthStatusDegraded:
 			result.Status = transport.HealthStatusDegraded
 			result.Message = "new transport is degraded"
 		}
