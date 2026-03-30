@@ -40,7 +40,7 @@ func NewCircuitBreaker(threshold int, cooldown time.Duration) *CircuitBreaker {
 	}
 	return &CircuitBreaker{
 		enabled:   true,
-		threshold: int32(threshold),
+		threshold: int32(threshold), // #nosec G115 -- value is bounded
 		cooldown:  cooldown,
 	}
 }

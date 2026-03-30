@@ -117,6 +117,7 @@ func (s *PostgresStore) Insert(ctx context.Context, tx *sql.Tx, msg *Message) er
 		}
 	}
 
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		INSERT INTO %s (event_name, event_id, payload, metadata, status, created_at, priority)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -153,6 +154,7 @@ func (s *PostgresStore) Insert(ctx context.Context, tx *sql.Tx, msg *Message) er
 //
 // Returns the messages and any error. Returns empty slice if no pending messages.
 func (s *PostgresStore) GetPending(ctx context.Context, limit int) ([]*Message, error) {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count, COALESCE(priority, 0)
 		FROM %s
@@ -198,6 +200,7 @@ func (s *PostgresStore) ProcessPending(ctx context.Context, limit int, fn func(m
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count, COALESCE(priority, 0)
 		FROM %s
@@ -217,10 +220,12 @@ func (s *PostgresStore) ProcessPending(ctx context.Context, limit int, fn func(m
 		return fmt.Errorf("scan messages: %w", err)
 	}
 
+	// #nosec G201 -- table name is set at construction, not user input
 	publishQuery := fmt.Sprintf(`
 		UPDATE %s SET status = $1, published_at = $2 WHERE id = $3
 	`, s.tableName)
 
+	// #nosec G201 -- table name is set at construction, not user input
 	failQuery := fmt.Sprintf(`
 		UPDATE %s SET status = $1, last_error = $2, retry_count = retry_count + 1 WHERE id = $3
 	`, s.tableName)
@@ -288,6 +293,7 @@ func (s *PostgresStore) scanMessages(rows *sql.Rows) ([]*Message, error) {
 //   - ctx: Context for cancellation and deadlines
 //   - id: The message ID to mark as published
 func (s *PostgresStore) MarkPublished(ctx context.Context, id int64) error {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		UPDATE %s
 		SET status = $1, published_at = $2
@@ -308,6 +314,7 @@ func (s *PostgresStore) MarkPublished(ctx context.Context, id int64) error {
 //   - id: The message ID to mark as failed
 //   - err: The error that caused the failure
 func (s *PostgresStore) MarkFailed(ctx context.Context, id int64, err error) error {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		UPDATE %s
 		SET status = $1, last_error = $2, retry_count = retry_count + 1
@@ -342,6 +349,7 @@ func (s *PostgresStore) MarkFailed(ctx context.Context, id int64, err error) err
 //	}
 //	log.Info("cleaned up old messages", "count", deleted)
 func (s *PostgresStore) Delete(ctx context.Context, olderThan time.Duration) (int64, error) {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		DELETE FROM %s
 		WHERE status = $1 AND published_at < $2

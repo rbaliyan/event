@@ -367,7 +367,7 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 
 	subID := transport.NewID()
 	sub := &subscription{
-		Subscription: base.NewSubscription(subID, int(bufSize), 0),
+		Subscription: base.NewSubscription(subID, int(bufSize), 0), // #nosec G115 -- bufSize is a small positive value
 		ev:           ec,
 		mode:         subOpts.DeliveryMode,
 		workerGroup:  subOpts.WorkerGroup,

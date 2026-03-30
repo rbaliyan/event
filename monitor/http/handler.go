@@ -409,7 +409,7 @@ func (h *Handler) writeResponse(w http.ResponseWriter, msg proto.Message) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write(data)
+	w.Write(data) // #nosec G705 -- response is application/json, not rendered as HTML
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code int, message string) {

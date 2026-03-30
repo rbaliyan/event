@@ -209,6 +209,7 @@ func NewPostgresStore(db *sql.DB, opts ...PostgresOption) (*PostgresStore, error
 //	    return nil
 //	}
 func (s *PostgresStore) IsDuplicate(ctx context.Context, messageID string) (bool, error) {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT EXISTS(
 			SELECT 1 FROM %s
@@ -264,6 +265,7 @@ func (s *PostgresStore) IsDuplicateTx(ctx context.Context, tx any, messageID str
 		return false, err
 	}
 
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT EXISTS(
 			SELECT 1 FROM %s
@@ -319,6 +321,7 @@ func (s *PostgresStore) MarkProcessed(ctx context.Context, messageID string) err
 //	// Keep notification records for 1 hour
 //	store.MarkProcessedWithTTL(ctx, "notif-abc", time.Hour)
 func (s *PostgresStore) MarkProcessedWithTTL(ctx context.Context, messageID string, ttl time.Duration) error {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		INSERT INTO %s (message_id, processed_at, expires_at)
 		VALUES ($1, NOW(), NOW() + $2::interval)
@@ -379,6 +382,7 @@ func (s *PostgresStore) MarkProcessedTx(ctx context.Context, tx any, messageID s
 //
 // Returns nil on success, error if the operation fails.
 func (s *PostgresStore) MarkProcessedWithTTLTx(ctx context.Context, tx *sql.Tx, messageID string, ttl time.Duration) error {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		INSERT INTO %s (message_id, processed_at, expires_at)
 		VALUES ($1, NOW(), NOW() + $2::interval)
@@ -413,7 +417,7 @@ func (s *PostgresStore) MarkProcessedWithTTLTx(ctx context.Context, tx *sql.Tx, 
 //	    log.Error("failed to remove", "error", err)
 //	}
 func (s *PostgresStore) Remove(ctx context.Context, messageID string) error {
-	query := fmt.Sprintf(`DELETE FROM %s WHERE message_id = $1`, s.table)
+	query := fmt.Sprintf(`DELETE FROM %s WHERE message_id = $1`, s.table) // #nosec G201 -- table name is set at construction, not user input
 
 	_, err := s.db.ExecContext(ctx, query, messageID)
 	if err != nil {
@@ -440,7 +444,7 @@ func (s *PostgresStore) Close() error {
 
 // cleanup removes expired entries from the database.
 func (s *PostgresStore) cleanup() {
-	query := fmt.Sprintf(`DELETE FROM %s WHERE expires_at < NOW()`, s.table)
+	query := fmt.Sprintf(`DELETE FROM %s WHERE expires_at < NOW()`, s.table) // #nosec G201 -- table name is set at construction, not user input
 	_, _ = s.db.Exec(query)
 }
 

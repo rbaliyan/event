@@ -68,7 +68,7 @@ func TestNewJSONSchemaValidator(t *testing.T) {
 		// Create a temporary schema file
 		tmpDir := t.TempDir()
 		schemaPath := filepath.Join(tmpDir, "schema.json")
-		if err := os.WriteFile(schemaPath, []byte(schema), 0644); err != nil {
+		if err := os.WriteFile(schemaPath, []byte(schema), 0600); err != nil {
 			t.Fatalf("failed to write schema file: %v", err)
 		}
 

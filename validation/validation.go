@@ -177,7 +177,7 @@ func compileFromReader(compiler *jsonschema.Compiler, r io.Reader) (*jsonschema.
 
 // compileFromFile compiles a schema from a file path.
 func compileFromFile(compiler *jsonschema.Compiler, path string) (*jsonschema.Schema, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- path is from user configuration, not untrusted input
 	if err != nil {
 		return nil, fmt.Errorf("failed to open schema file: %w", err)
 	}
