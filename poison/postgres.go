@@ -208,6 +208,7 @@ func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) (*PostgresStore, 
 //	    // Quarantine the message
 //	}
 func (s *PostgresStore) IncrementFailure(ctx context.Context, messageID string) (int, error) {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		INSERT INTO %s (message_id, failure_count, first_failure_at, last_failure_at, expires_at)
 		VALUES ($1, 1, NOW(), NOW(), NOW() + $2::interval)
@@ -239,6 +240,7 @@ func (s *PostgresStore) IncrementFailure(ctx context.Context, messageID string) 
 //   - The current failure count (0 if no failures recorded)
 //   - Error if the database operation fails
 func (s *PostgresStore) GetFailureCount(ctx context.Context, messageID string) (int, error) {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT failure_count FROM %s
 		WHERE message_id = $1 AND expires_at > NOW()
@@ -273,6 +275,7 @@ func (s *PostgresStore) GetFailureCount(ctx context.Context, messageID string) (
 //	// Quarantine for 1 hour
 //	err := store.MarkPoison(ctx, "order-123", time.Hour)
 func (s *PostgresStore) MarkPoison(ctx context.Context, messageID string, ttl time.Duration) error {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		INSERT INTO %s (message_id, quarantined_at, expires_at)
 		VALUES ($1, NOW(), NOW() + $2::interval)
@@ -301,6 +304,7 @@ func (s *PostgresStore) MarkPoison(ctx context.Context, messageID string, ttl ti
 //   - (false, nil): Message is not quarantined or quarantine expired
 //   - (false, error): Database operation failed
 func (s *PostgresStore) IsPoison(ctx context.Context, messageID string) (bool, error) {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT EXISTS(
 			SELECT 1 FROM %s
@@ -328,7 +332,7 @@ func (s *PostgresStore) IsPoison(ctx context.Context, messageID string) (bool, e
 //
 // Returns nil on success (including when the message wasn't quarantined).
 func (s *PostgresStore) ClearPoison(ctx context.Context, messageID string) error {
-	query := fmt.Sprintf(`DELETE FROM %s WHERE message_id = $1`, s.quarantineTable)
+	query := fmt.Sprintf(`DELETE FROM %s WHERE message_id = $1`, s.quarantineTable) // #nosec G201 -- table name is set at construction, not user input
 
 	_, err := s.db.ExecContext(ctx, query, messageID)
 	if err != nil {
@@ -349,7 +353,7 @@ func (s *PostgresStore) ClearPoison(ctx context.Context, messageID string) error
 //
 // Returns nil on success (including when there were no recorded failures).
 func (s *PostgresStore) ClearFailures(ctx context.Context, messageID string) error {
-	query := fmt.Sprintf(`DELETE FROM %s WHERE message_id = $1`, s.failuresTable)
+	query := fmt.Sprintf(`DELETE FROM %s WHERE message_id = $1`, s.failuresTable) // #nosec G201 -- table name is set at construction, not user input
 
 	_, err := s.db.ExecContext(ctx, query, messageID)
 	if err != nil {
@@ -369,8 +373,8 @@ func (s *PostgresStore) Close() error {
 
 // cleanup removes expired entries from both tables.
 func (s *PostgresStore) cleanup() {
-	failuresQuery := fmt.Sprintf(`DELETE FROM %s WHERE expires_at < NOW()`, s.failuresTable)
-	quarantineQuery := fmt.Sprintf(`DELETE FROM %s WHERE expires_at < NOW()`, s.quarantineTable)
+	failuresQuery := fmt.Sprintf(`DELETE FROM %s WHERE expires_at < NOW()`, s.failuresTable)       // #nosec G201 -- table name is set at construction, not user input
+	quarantineQuery := fmt.Sprintf(`DELETE FROM %s WHERE expires_at < NOW()`, s.quarantineTable) // #nosec G201 -- table name is set at construction, not user input
 
 	_, _ = s.db.Exec(failuresQuery)
 	_, _ = s.db.Exec(quarantineQuery)
@@ -388,6 +392,7 @@ func (s *PostgresStore) cleanup() {
 //	    log.Fatal("failed to create tables:", err)
 //	}
 func (s *PostgresStore) CreateTables(ctx context.Context) error {
+	// #nosec G201 -- table name is set at construction, not user input
 	failuresQuery := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			message_id VARCHAR(255) PRIMARY KEY,
@@ -399,6 +404,7 @@ func (s *PostgresStore) CreateTables(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_%s_expires ON %s(expires_at);
 	`, s.failuresTable, s.failuresTable, s.failuresTable)
 
+	// #nosec G201 -- table name is set at construction, not user input
 	quarantineQuery := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			message_id VARCHAR(255) PRIMARY KEY,
@@ -430,6 +436,7 @@ func (s *PostgresStore) CreateTables(ctx context.Context) error {
 //
 // Returns a slice of quarantined message IDs.
 func (s *PostgresStore) GetQuarantinedMessages(ctx context.Context, limit int) ([]string, error) {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT message_id FROM %s
 		WHERE expires_at > NOW()

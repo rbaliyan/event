@@ -164,7 +164,7 @@ func (e *Exponential) NextDelay(attempt int) time.Duration {
 	if e.Jitter > 0 {
 		jitterRange := delay * e.Jitter
 		// Random value in [-jitterRange, +jitterRange]
-		jitter := (rand.Float64()*2 - 1) * jitterRange
+		jitter := (rand.Float64()*2 - 1) * jitterRange // #nosec G404 -- jitter does not need crypto rand
 		delay += jitter
 	}
 

@@ -91,6 +91,7 @@ func (p *PostgresProvider) Get(ctx context.Context, eventName string) (*EventSch
 	}
 	p.mu.RUnlock()
 
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT name, version, description, sub_timeout_ms, max_retries, retry_backoff_ms,
 		       enable_monitor, enable_idempotency, enable_poison, metadata,
@@ -142,6 +143,7 @@ func (p *PostgresProvider) Set(ctx context.Context, schema *EventSchema) error {
 		}
 	}
 
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		INSERT INTO %s (
 			name, version, description, sub_timeout_ms, max_retries, retry_backoff_ms,
@@ -223,7 +225,7 @@ func (p *PostgresProvider) Delete(ctx context.Context, eventName string) error {
 	}
 	p.mu.RUnlock()
 
-	query := fmt.Sprintf(`DELETE FROM %s WHERE name = $1`, p.tableName)
+	query := fmt.Sprintf(`DELETE FROM %s WHERE name = $1`, p.tableName) // #nosec G201 -- table name is set at construction, not user input
 	_, err := p.db.ExecContext(ctx, query, eventName)
 	if err != nil {
 		return fmt.Errorf("delete schema: %w", err)
@@ -274,6 +276,7 @@ func (p *PostgresProvider) List(ctx context.Context) ([]*EventSchema, error) {
 	}
 	p.mu.RUnlock()
 
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT name, version, description, sub_timeout_ms, max_retries, retry_backoff_ms,
 		       enable_monitor, enable_idempotency, enable_poison, metadata,
@@ -317,6 +320,7 @@ func (p *PostgresProvider) Close() error {
 // CreateTable creates the schema table if it doesn't exist.
 // This is a convenience method for development and testing.
 func (p *PostgresProvider) CreateTable(ctx context.Context) error {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			name TEXT PRIMARY KEY,

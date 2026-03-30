@@ -97,7 +97,7 @@ func (p *HashPartitioner) Partition(key string, numPartitions int) int {
 
 	h := fnv.New32a()
 	h.Write([]byte(key))
-	return int(h.Sum32() % uint32(numPartitions))
+	return int(h.Sum32() % uint32(numPartitions)) // #nosec G115 -- numPartitions is always positive and small
 }
 
 // RoundRobinPartitioner distributes messages evenly across partitions
@@ -116,7 +116,7 @@ func (p *RoundRobinPartitioner) Partition(key string, numPartitions int) int {
 		return 0
 	}
 	n := atomic.AddUint64(&p.counter, 1)
-	return int(n % uint64(numPartitions))
+	return int(n % uint64(numPartitions)) // #nosec G115 -- numPartitions is always positive and small
 }
 
 // KeyExtractor extracts a partition key from data

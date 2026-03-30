@@ -443,7 +443,7 @@ func (t *JetStreamTransport) ConsumerLag(ctx context.Context) ([]transport.Consu
 			lag := transport.ConsumerLag{
 				Event:           name,
 				ConsumerGroup:   consumerInfo.Name,
-				Lag:             int64(consumerInfo.NumPending),
+				Lag:             int64(consumerInfo.NumPending), // #nosec G115 -- NumPending fits in int64
 				PendingMessages: int64(consumerInfo.NumAckPending),
 			}
 
@@ -470,7 +470,7 @@ func (t *JetStreamTransport) ConsumerLag(ctx context.Context) ([]transport.Consu
 		if streamInfo.State.Consumers == 0 {
 			lags = append(lags, transport.ConsumerLag{
 				Event: name,
-				Lag:   int64(streamInfo.State.Msgs),
+				Lag:   int64(streamInfo.State.Msgs), // #nosec G115 -- Msgs count fits in int64
 			})
 		}
 

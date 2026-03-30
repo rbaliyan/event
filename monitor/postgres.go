@@ -145,6 +145,7 @@ func (s *PostgresStore) Record(ctx context.Context, entry *Entry) error {
 			duration_ms = EXCLUDED.duration_ms`
 	}
 
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		INSERT INTO %s (
 			event_id, subscription_id, subscriber_name, subscriber_description,
@@ -190,6 +191,7 @@ func (s *PostgresStore) Record(ctx context.Context, entry *Entry) error {
 
 // Get retrieves a monitor entry by its composite key.
 func (s *PostgresStore) Get(ctx context.Context, eventID, subscriptionID string) (*Entry, error) {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT event_id, subscription_id, subscriber_name, subscriber_description,
 		       event_name, bus_id, instance_id, delivery_mode,
@@ -212,6 +214,7 @@ func (s *PostgresStore) Get(ctx context.Context, eventID, subscriptionID string)
 
 // GetByEventID returns all entries for an event ID.
 func (s *PostgresStore) GetByEventID(ctx context.Context, eventID string) ([]*Entry, error) {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT event_id, subscription_id, subscriber_name, subscriber_description,
 		       event_name, bus_id, instance_id, delivery_mode,
@@ -340,6 +343,7 @@ func (s *PostgresStore) List(ctx context.Context, filter Filter) (*Page, error) 
 	// Query one extra row to check for more pages
 	limit := filter.EffectiveLimit() + 1
 
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT event_id, subscription_id, subscriber_name, subscriber_description,
 		       event_name, bus_id, instance_id, delivery_mode,
@@ -392,7 +396,7 @@ func (s *PostgresStore) Count(ctx context.Context, filter Filter) (int64, error)
 		return 0, err
 	}
 
-	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s %s`, s.opts.tableName, qb.WhereClause())
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s %s`, s.opts.tableName, qb.WhereClause()) // #nosec G201 -- table name is set at construction, not user input
 
 	var count int64
 	err = s.db.QueryRowContext(ctx, query, qb.Args()...).Scan(&count)
@@ -405,6 +409,7 @@ func (s *PostgresStore) Count(ctx context.Context, filter Filter) (int64, error)
 
 // UpdateStatus updates the status and related fields of an existing entry.
 func (s *PostgresStore) UpdateStatus(ctx context.Context, eventID, subscriptionID string, status Status, err error, duration time.Duration) error {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		UPDATE %s
 		SET status = $1, error = $2, duration_ms = $3, completed_at = NOW()
@@ -433,7 +438,7 @@ func (s *PostgresStore) UpdateStatus(ctx context.Context, eventID, subscriptionI
 
 // DeleteOlderThan removes entries older than the specified age.
 func (s *PostgresStore) DeleteOlderThan(ctx context.Context, age time.Duration) (int64, error) {
-	query := fmt.Sprintf(`DELETE FROM %s WHERE started_at < NOW() - $1::interval`, s.opts.tableName)
+	query := fmt.Sprintf(`DELETE FROM %s WHERE started_at < NOW() - $1::interval`, s.opts.tableName) // #nosec G201 -- table name is set at construction, not user input
 
 	result, err := s.db.ExecContext(ctx, query, age.String())
 	if err != nil {
@@ -454,6 +459,7 @@ func (s *PostgresStore) Close() error {
 // This is a convenience method for development and testing. In production,
 // you should manage schema migrations separately.
 func (s *PostgresStore) CreateTable(ctx context.Context) error {
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			event_id TEXT NOT NULL,
@@ -666,6 +672,7 @@ func (s *PostgresStore) Summary(ctx context.Context, filter Filter) (*Summary, e
 	where := qb.WhereClause()
 	args := qb.Args()
 
+	// #nosec G201 -- table name is set at construction, not user input
 	query := fmt.Sprintf(`
 		SELECT
 			COUNT(*) AS total,
@@ -724,6 +731,7 @@ func (s *PostgresStore) Summary(ctx context.Context, filter Filter) (*Summary, e
 	}
 
 	// Per-event stats
+	// #nosec G201 -- table name is set at construction, not user input
 	eventQuery := fmt.Sprintf(`
 		SELECT
 			event_name,
@@ -767,6 +775,7 @@ func (s *PostgresStore) Summary(ctx context.Context, filter Filter) (*Summary, e
 	if instanceWhere == "" {
 		instanceWhere = "WHERE TRUE"
 	}
+	// #nosec G201 -- table name is set at construction, not user input
 	instanceQuery := fmt.Sprintf(`
 		SELECT instance_id, COUNT(*) AS count
 		FROM %s

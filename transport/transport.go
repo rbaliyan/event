@@ -599,6 +599,6 @@ func Jitter(d time.Duration, factor float64) time.Duration {
 		return d
 	}
 	// Random value between -factor and +factor
-	jitter := (rand.Float64()*2 - 1) * factor
+	jitter := (rand.Float64()*2 - 1) * factor // #nosec G404 -- jitter does not need crypto rand
 	return time.Duration(float64(d) * (1 + jitter))
 }

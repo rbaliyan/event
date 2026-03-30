@@ -24,7 +24,7 @@ func EntryToProto(e *monitor.Entry) *Entry {
 		Metadata:       e.Metadata,
 		Status:         statusToProto(e.Status),
 		Error:          e.Error,
-		RetryCount:     int32(e.RetryCount),
+		RetryCount:     int32(e.RetryCount), // #nosec G115 -- value is bounded
 		StartedAt:      timestamppb.New(e.StartedAt),
 		Duration:       durationpb.New(e.Duration),
 		TraceId:        e.TraceID,
@@ -132,9 +132,9 @@ func FilterToProto(f monitor.Filter) *Filter {
 		BusId:          f.BusID,
 		InstanceId:     f.InstanceID,
 		WorkerGroup:    f.WorkerGroup,
-		MinRetries:     int32(f.MinRetries),
+		MinRetries:     int32(f.MinRetries), // #nosec G115 -- value is bounded
 		Cursor:         f.Cursor,
-		Limit:          int32(f.Limit),
+		Limit:          int32(f.Limit), // #nosec G115 -- value is bounded
 		OrderDesc:      f.OrderDesc,
 	}
 

@@ -20,7 +20,7 @@ func (c Proto) Encode(msg Message) ([]byte, error) {
 		Id:         msg.ID(),
 		Source:     msg.Source(),
 		Payload:    msg.Payload(),
-		RetryCount: int32(msg.RetryCount()),
+		RetryCount: int32(msg.RetryCount()), // #nosec G115 -- value is bounded
 	}
 
 	// Handle metadata
