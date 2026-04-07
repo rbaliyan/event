@@ -765,6 +765,15 @@ func (p *MongoPublisher) Publish(
 //	    return orderEvent.Publish(ctx, order)
 //	})
 func Transaction(ctx context.Context, client *mongo.Client, fn func(ctx context.Context) error) error {
+	// Piggy-back only if the existing transaction is a Mongo session (context.Context).
+	// Other session types (e.g., *sql.Tx) are ignored to prevent
+	// cross-store type confusion that could silently break atomicity.
+	if session := event.OutboxTx(ctx); session != nil {
+		if _, ok := session.(context.Context); ok {
+			return fn(ctx)
+		}
+	}
+
 	sess, err := client.StartSession()
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
@@ -791,6 +800,15 @@ func Transaction(ctx context.Context, client *mongo.Client, fn func(ctx context.
 //	    return orderEvent.Publish(ctx, order)
 //	})
 func TransactionWithOptions(ctx context.Context, client *mongo.Client, opts *options.TransactionOptionsBuilder, fn func(ctx context.Context) error) error {
+	// Piggy-back only if the existing transaction is a Mongo session (context.Context).
+	// Other session types (e.g., *sql.Tx) are ignored to prevent
+	// cross-store type confusion that could silently break atomicity.
+	if session := event.OutboxTx(ctx); session != nil {
+		if _, ok := session.(context.Context); ok {
+			return fn(ctx)
+		}
+	}
+
 	sess, err := client.StartSession()
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
