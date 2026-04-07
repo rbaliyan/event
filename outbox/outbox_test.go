@@ -8,8 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"strings"
 	"time"
 
+	event "github.com/rbaliyan/event/v3"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/channel"
 )
@@ -630,5 +632,153 @@ func TestRelayPriority(t *testing.T) {
 	}
 	if msgs[1].EventID != "low" {
 		t.Fatalf("expected low-priority message second, got %s", msgs[1].EventID)
+	}
+}
+
+func TestPostgresTransaction_PiggyBack(t *testing.T) {
+	ctx := context.Background()
+
+	// Simulate already being inside a Postgres transaction.
+	// db is nil — if piggy-back works correctly, db.BeginTx is never called,
+	// so nil is safe here and proves the short-circuit path was taken.
+	txCtx := event.WithOutboxTx(ctx, &sql.Tx{})
+
+	called := false
+	err := PostgresTransaction(txCtx, nil, func(innerCtx context.Context) error {
+		called = true
+		if !event.InOutboxTx(innerCtx) {
+			t.Error("expected InOutboxTx to be true inside piggy-backed call")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("fn should have been called")
+	}
+}
+
+func TestPostgresTransaction_PiggyBack_PropagatesError(t *testing.T) {
+	ctx := event.WithOutboxTx(context.Background(), &sql.Tx{})
+
+	testErr := errors.New("business logic failed")
+	err := PostgresTransaction(ctx, nil, func(_ context.Context) error {
+		return testErr
+	})
+	if !errors.Is(err, testErr) {
+		t.Fatalf("expected %v, got %v", testErr, err)
+	}
+}
+
+func TestPostgresTransaction_NoPiggyBackOnMongoSession(t *testing.T) {
+	// Set a non-*sql.Tx session (simulating a Mongo context.Context session).
+	// PostgresTransaction should NOT piggy-back — it should try to start a new tx.
+	ctx := event.WithOutboxTx(context.Background(), context.Background())
+
+	// Since db is nil, BeginTx will panic — this proves piggy-back was skipped.
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		PostgresTransaction(ctx, nil, func(_ context.Context) error {
+			t.Fatal("fn should not have been called")
+			return nil
+		})
+	}()
+	if !panicked {
+		t.Fatal("expected panic when db is nil and piggy-back is skipped")
+	}
+}
+
+func TestPostgresStoreImplementsOutboxStore(t *testing.T) {
+	var s interface{} = &PostgresStore{}
+	if _, ok := s.(event.OutboxStore); !ok {
+		t.Fatal("PostgresStore should implement event.OutboxStore")
+	}
+}
+
+func TestPostgresStore_Store_WrongSessionType(t *testing.T) {
+	store := &PostgresStore{tableName: "event_outbox"}
+	// Put a non-*sql.Tx session in context.
+	ctx := event.WithOutboxTx(context.Background(), "not-a-sql-tx")
+
+	err := store.Store(ctx, "test.event", "evt-1", []byte(`{}`), nil)
+	if err == nil {
+		t.Fatal("expected error for wrong session type")
+	}
+	if !strings.Contains(err.Error(), "expected *sql.Tx") {
+		t.Fatalf("expected error about *sql.Tx, got: %v", err)
+	}
+}
+
+func TestMongoTransaction_PiggyBack(t *testing.T) {
+	// Set a context.Context session (simulating Mongo session context).
+	// client is nil — if piggy-back works, StartSession is never called.
+	ctx := event.WithOutboxTx(context.Background(), context.Background())
+
+	called := false
+	err := Transaction(ctx, nil, func(innerCtx context.Context) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("fn should have been called")
+	}
+}
+
+func TestMongoTransaction_PiggyBack_PropagatesError(t *testing.T) {
+	ctx := event.WithOutboxTx(context.Background(), context.Background())
+
+	testErr := errors.New("mongo business logic failed")
+	err := Transaction(ctx, nil, func(_ context.Context) error {
+		return testErr
+	})
+	if !errors.Is(err, testErr) {
+		t.Fatalf("expected %v, got %v", testErr, err)
+	}
+}
+
+func TestMongoTransactionWithOptions_PiggyBack(t *testing.T) {
+	ctx := event.WithOutboxTx(context.Background(), context.Background())
+
+	called := false
+	err := TransactionWithOptions(ctx, nil, nil, func(_ context.Context) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("fn should have been called")
+	}
+}
+
+func TestMongoTransaction_NoPiggyBackOnSqlTx(t *testing.T) {
+	// Set a *sql.Tx session — Mongo Transaction should NOT piggy-back.
+	ctx := event.WithOutboxTx(context.Background(), &sql.Tx{})
+
+	// client is nil, so StartSession will panic — proves piggy-back was skipped.
+	panicked := false
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		Transaction(ctx, nil, func(_ context.Context) error {
+			t.Fatal("fn should not have been called")
+			return nil
+		})
+	}()
+	if !panicked {
+		t.Fatal("expected panic when client is nil and piggy-back is skipped")
 	}
 }

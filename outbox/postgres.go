@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	event "github.com/rbaliyan/event/v3"
 	"github.com/rbaliyan/event/v3/store/base"
 	"github.com/rbaliyan/event/v3/transport/codec"
 )
@@ -487,3 +488,96 @@ func (p *PostgresPublisher) PublishInTransaction(
 // Compile-time checks
 var _ Store = (*PostgresStore)(nil)
 var _ Publisher = (*PostgresPublisher)(nil)
+
+var _ event.OutboxStore = (*PostgresStore)(nil)
+
+// Store implements event.OutboxStore for bus-level integration.
+// When the bus is configured with WithOutbox(postgresStore), calls to Event.Publish()
+// inside a transaction (marked by event.WithOutboxTx) are automatically routed here.
+//
+// The *sql.Tx is extracted from context via event.OutboxTx(). If no transaction
+// is active, the message is inserted directly (non-transactional fallback).
+func (s *PostgresStore) Store(ctx context.Context, eventName string, eventID string, payload []byte, metadata map[string]string) error {
+	var metadataJSON []byte
+	var err error
+	if metadata != nil {
+		metadataJSON, err = json.Marshal(metadata)
+		if err != nil {
+			return fmt.Errorf("marshal metadata: %w", err)
+		}
+	}
+
+	// #nosec G201 -- table name is set at construction, not user input
+	query := fmt.Sprintf(`
+		INSERT INTO %s (event_name, event_id, payload, metadata, status, created_at, priority)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, s.tableName)
+
+	args := []any{eventName, eventID, payload, metadataJSON, StatusPending, time.Now().UTC(), 0}
+
+	// Use the transaction from context if available.
+	if session := event.OutboxTx(ctx); session != nil {
+		tx, ok := session.(*sql.Tx)
+		if !ok {
+			return fmt.Errorf("outbox: expected *sql.Tx in context, got %T", session)
+		}
+		if _, err = tx.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("insert outbox event: %w", err)
+		}
+		return nil
+	}
+
+	// Non-transactional fallback (testing or non-transactional use).
+	if _, err = s.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("insert outbox event: %w", err)
+	}
+	return nil
+}
+
+// PostgresTransaction executes fn within a PostgreSQL transaction with outbox context.
+// The context passed to fn contains the transaction via event.WithOutboxTx,
+// so any Event.Publish() calls within fn are automatically routed to the outbox.
+//
+// If the context already contains an active outbox transaction (from a parent
+// PostgresTransaction or similar), fn is called directly without starting a
+// new transaction — piggy-backing on the existing one.
+//
+// Example:
+//
+//	store, _ := outbox.NewPostgresStore(db)
+//	bus, _ := event.NewBus("mybus", event.WithTransport(t), event.WithOutbox(store))
+//	orderEvent := event.New[Order]("order.created")
+//	event.Register(ctx, bus, orderEvent)
+//
+//	err := outbox.PostgresTransaction(ctx, db, func(ctx context.Context) error {
+//	    tx := event.OutboxTx(ctx).(*sql.Tx)
+//	    if _, err := tx.ExecContext(ctx, "UPDATE orders SET status = $1 WHERE id = $2", "shipped", orderID); err != nil {
+//	        return err
+//	    }
+//	    return orderEvent.Publish(ctx, order) // Routed to outbox automatically
+//	})
+func PostgresTransaction(ctx context.Context, db *sql.DB, fn func(ctx context.Context) error) error {
+	// Piggy-back only if the existing transaction is a *sql.Tx.
+	// Other session types (e.g., Mongo session) are ignored to prevent
+	// cross-store type confusion that could silently break atomicity.
+	if session := event.OutboxTx(ctx); session != nil {
+		if _, ok := session.(*sql.Tx); ok {
+			return fn(ctx)
+		}
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin outbox tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	txCtx := event.WithOutboxTx(ctx, tx)
+	if err := fn(txCtx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit outbox tx: %w", err)
+	}
+	return nil
+}
