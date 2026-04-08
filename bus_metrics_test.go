@@ -21,8 +21,10 @@ func setupMetricsProvider(t *testing.T) *sdkmetric.ManualReader {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	prev := otel.GetMeterProvider()
 	otel.SetMeterProvider(provider)
+	resetGauges() // Allow gauge re-registration with the new provider
 	t.Cleanup(func() {
 		otel.SetMeterProvider(prev)
+		resetGauges()
 		_ = provider.Shutdown(context.Background())
 	})
 	return reader
@@ -256,7 +258,7 @@ func TestMetricsDisabled(t *testing.T) {
 	}
 }
 
-func TestLagCallbackUnregisteredOnClose(t *testing.T) {
+func TestLagNotReportedAfterClose(t *testing.T) {
 	reader := setupMetricsProvider(t)
 
 	lagTransport := &mockLagTransport{
@@ -276,15 +278,14 @@ func TestLagCallbackUnregisteredOnClose(t *testing.T) {
 
 	bus.Close(context.Background())
 
-	// After close, the callback should be unregistered.
-	// Update the transport lags — they should NOT appear.
+	// After close, bus is removed from registry so the callback skips it.
 	lagTransport.lags = []transport.ConsumerLag{
 		{Event: "test", Lag: 999},
 	}
 
 	_, _, int64Gauges, _ = collectMetrics(t, reader)
 	if int64Gauges["event.consumer_lag"] == 999 {
-		t.Error("lag callback still active after Close()")
+		t.Error("lag still reported after Close()")
 	}
 }
 
