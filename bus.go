@@ -66,11 +66,6 @@ type Bus struct {
 	publishedCounter   metric.Int64Counter
 	subscribedCounter  metric.Int64Counter
 	publishDuration    metric.Float64Histogram
-	handlerDuration    metric.Float64Histogram
-	handlerErrors      metric.Int64Counter
-	// Observable gauge registrations (for cleanup on Close)
-	lagRegistration   metric.Registration
-	eventRegistration metric.Registration
 }
 
 // NewBus creates a new event bus and registers it in the global registry.
@@ -127,15 +122,6 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		bus.publishDuration, _ = meter.Float64Histogram("event.publish_duration_seconds",
 			metric.WithDescription("Time to publish a message to the transport"),
 			metric.WithUnit("s"))
-		bus.handlerDuration, _ = meter.Float64Histogram("event.handler_duration_seconds",
-			metric.WithDescription("Time spent executing a subscriber handler"),
-			metric.WithUnit("s"),
-			metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0))
-		bus.handlerErrors, _ = meter.Int64Counter("event.handler_errors_total",
-			metric.WithDescription("Total number of subscriber handler errors"))
-
-		bus.initLagGauges(meter)
-		bus.initEventGauges(meter)
 	}
 
 	// Register in global registry (use LoadOrStore to handle race condition)
@@ -144,75 +130,6 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 	}
 
 	return bus, nil
-}
-
-// initLagGauges registers observable OTel gauges for consumer lag metrics.
-// Called during NewBus when metrics are enabled. The gauges are driven by the
-// OTel SDK's collection cycle — no polling loop is needed.
-func (b *Bus) initLagGauges(meter metric.Meter) {
-	lm, ok := b.transport.(transport.LagMonitor)
-	if !ok {
-		return
-	}
-
-	lagGauge, _ := meter.Int64ObservableGauge("event.consumer_lag",
-		metric.WithDescription("Number of unprocessed messages per event and consumer group"),
-		metric.WithUnit("{message}"))
-	pendingGauge, _ := meter.Int64ObservableGauge("event.pending_messages",
-		metric.WithDescription("Messages delivered but not yet acknowledged per event and consumer group"),
-		metric.WithUnit("{message}"))
-	oldestPendingGauge, _ := meter.Float64ObservableGauge("event.oldest_pending_seconds",
-		metric.WithDescription("Age of the oldest unacknowledged message per event and consumer group"),
-		metric.WithUnit("s"))
-
-	b.lagRegistration, _ = meter.RegisterCallback(
-		func(ctx context.Context, observer metric.Observer) error {
-			lags, err := lm.ConsumerLag(ctx)
-			if err != nil {
-				return nil // Don't fail the scrape on transient errors
-			}
-			for _, lag := range lags {
-				attrs := metric.WithAttributes(
-					attribute.String("event", lag.Event),
-					attribute.String("consumer_group", lag.ConsumerGroup),
-				)
-				observer.ObserveInt64(lagGauge, lag.Lag, attrs)
-				observer.ObserveInt64(pendingGauge, lag.PendingMessages, attrs)
-				observer.ObserveFloat64(oldestPendingGauge, lag.OldestPending.Seconds(), attrs)
-			}
-			return nil
-		},
-		lagGauge, pendingGauge, oldestPendingGauge,
-	)
-}
-
-// initEventGauges registers observable gauges for registered event count
-// and active subscriber count per event.
-func (b *Bus) initEventGauges(meter metric.Meter) {
-	registeredGauge, _ := meter.Int64ObservableGauge("event.registered_events",
-		metric.WithDescription("Number of events currently registered on this bus"),
-		metric.WithUnit("{event}"))
-	subscribersGauge, _ := meter.Int64ObservableGauge("event.active_subscribers",
-		metric.WithDescription("Number of active subscribers per event"),
-		metric.WithUnit("{subscriber}"))
-
-	b.eventRegistration, _ = meter.RegisterCallback(
-		func(ctx context.Context, observer metric.Observer) error {
-			b.eventMutex.RLock()
-			defer b.eventMutex.RUnlock()
-
-			observer.ObserveInt64(registeredGauge, int64(len(b.events)))
-
-			for _, ev := range b.events {
-				if topo, ok := ev.(eventTopology); ok {
-					observer.ObserveInt64(subscribersGauge, topo.subscriberCount(),
-						metric.WithAttributes(attribute.String("event", topo.eventName())))
-				}
-			}
-			return nil
-		},
-		registeredGauge, subscribersGauge,
-	)
 }
 
 // ID returns the bus ID
@@ -364,14 +281,6 @@ func (b *Bus) Close(ctx context.Context) error {
 			b.logger.Warn("drain timeout exceeded, proceeding with shutdown",
 				"timeout", b.drainTimeout)
 		}
-	}
-
-	// Unregister observable gauge callbacks
-	if b.lagRegistration != nil {
-		_ = b.lagRegistration.Unregister()
-	}
-	if b.eventRegistration != nil {
-		_ = b.eventRegistration.Unregister()
 	}
 
 	var errs []error
@@ -531,20 +440,6 @@ func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payloa
 			metric.WithAttributes(attribute.String("event", eventName)))
 	}
 	return err
-}
-
-// recordHandlerMetrics records handler duration and error metrics for a subscriber invocation.
-func (b *Bus) recordHandlerMetrics(ctx context.Context, eventName string, duration time.Duration, handlerErr error) {
-	if !b.metricsEnabled {
-		return
-	}
-	attrs := metric.WithAttributes(attribute.String("event", eventName))
-	if b.handlerDuration != nil {
-		b.handlerDuration.Record(ctx, duration.Seconds(), attrs)
-	}
-	if handlerErr != nil && b.handlerErrors != nil {
-		b.handlerErrors.Add(ctx, 1, attrs)
-	}
 }
 
 // Recv creates a subscription to receive messages for the specified event.
