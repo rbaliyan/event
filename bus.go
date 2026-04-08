@@ -63,6 +63,7 @@ type Bus struct {
 	// DLQ store for automatic dead letter routing
 	dlqStore DLQStore
 	// Cached OTel instruments (initialized once during construction)
+	busAttr            attribute.KeyValue // bus="name" attribute for all metrics
 	publishedCounter   metric.Int64Counter
 	subscribedCounter  metric.Int64Counter
 	publishDuration    metric.Float64Histogram
@@ -119,6 +120,7 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 
 	// Initialize OTel instruments if metrics enabled
 	if bus.metricsEnabled {
+		bus.busAttr = attribute.String("bus", name)
 		meter := otel.Meter(name)
 		bus.publishedCounter, _ = meter.Int64Counter("event.published",
 			metric.WithDescription("Total number of events published"))
@@ -165,6 +167,7 @@ func (b *Bus) initLagGauges(meter metric.Meter) {
 		metric.WithDescription("Age of the oldest unacknowledged message per event and consumer group"),
 		metric.WithUnit("s"))
 
+	busAttr := b.busAttr
 	b.lagRegistration, _ = meter.RegisterCallback(
 		func(ctx context.Context, observer metric.Observer) error {
 			lags, err := lm.ConsumerLag(ctx)
@@ -173,6 +176,7 @@ func (b *Bus) initLagGauges(meter metric.Meter) {
 			}
 			for _, lag := range lags {
 				attrs := metric.WithAttributes(
+					busAttr,
 					attribute.String("event", lag.Event),
 					attribute.String("consumer_group", lag.ConsumerGroup),
 				)
@@ -196,17 +200,19 @@ func (b *Bus) initEventGauges(meter metric.Meter) {
 		metric.WithDescription("Number of active subscribers per event"),
 		metric.WithUnit("{subscriber}"))
 
+	busAttr := b.busAttr
 	b.eventRegistration, _ = meter.RegisterCallback(
 		func(ctx context.Context, observer metric.Observer) error {
 			b.eventMutex.RLock()
 			defer b.eventMutex.RUnlock()
 
-			observer.ObserveInt64(registeredGauge, int64(len(b.events)))
+			observer.ObserveInt64(registeredGauge, int64(len(b.events)),
+				metric.WithAttributes(busAttr))
 
 			for _, ev := range b.events {
 				if topo, ok := ev.(eventTopology); ok {
 					observer.ObserveInt64(subscribersGauge, topo.subscriberCount(),
-						metric.WithAttributes(attribute.String("event", topo.eventName())))
+						metric.WithAttributes(busAttr, attribute.String("event", topo.eventName())))
 				}
 			}
 			return nil
@@ -493,7 +499,7 @@ func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payloa
 
 	// Record publish metrics
 	if b.metricsEnabled && b.publishedCounter != nil {
-		b.publishedCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("event", eventName)))
+		b.publishedCounter.Add(ctx, 1, metric.WithAttributes(b.busAttr, attribute.String("event", eventName)))
 	}
 
 	// Add tracing
@@ -528,7 +534,7 @@ func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payloa
 	err := b.transport.Publish(ctx, eventName, msg)
 	if b.metricsEnabled && b.publishDuration != nil {
 		b.publishDuration.Record(ctx, time.Since(publishStart).Seconds(),
-			metric.WithAttributes(attribute.String("event", eventName)))
+			metric.WithAttributes(b.busAttr, attribute.String("event", eventName)))
 	}
 	return err
 }
@@ -538,7 +544,7 @@ func (b *Bus) recordHandlerMetrics(ctx context.Context, eventName string, durati
 	if !b.metricsEnabled {
 		return
 	}
-	attrs := metric.WithAttributes(attribute.String("event", eventName))
+	attrs := metric.WithAttributes(b.busAttr, attribute.String("event", eventName))
 	if b.handlerDuration != nil {
 		b.handlerDuration.Record(ctx, duration.Seconds(), attrs)
 	}
@@ -565,7 +571,7 @@ func (b *Bus) Recv(ctx context.Context, eventName string, opts ...transport.Subs
 
 	// Record subscription metrics
 	if b.metricsEnabled && b.subscribedCounter != nil {
-		b.subscribedCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("event", eventName)))
+		b.subscribedCounter.Add(ctx, 1, metric.WithAttributes(b.busAttr, attribute.String("event", eventName)))
 	}
 
 	// Subscribe via transport

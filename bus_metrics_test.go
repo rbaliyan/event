@@ -288,6 +288,54 @@ func TestLagCallbackUnregisteredOnClose(t *testing.T) {
 	}
 }
 
+func TestMultiBusMetricsDistinguishedByBusLabel(t *testing.T) {
+	reader := setupMetricsProvider(t)
+
+	bus1 := mustNewBus(t, "bus-alpha", WithTransport(channel.New()))
+	defer bus1.Close(context.Background())
+	bus2 := mustNewBus(t, "bus-beta", WithTransport(channel.New()))
+	defer bus2.Close(context.Background())
+
+	ev1 := New[string]("shared-event")
+	ev2 := New[string]("shared-event")
+	Register(context.Background(), bus1, ev1)
+	Register(context.Background(), bus2, ev2)
+
+	// Collect and verify we get two distinct registered_events data points.
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+
+	busValues := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "event.registered_events" {
+				continue
+			}
+			if gauge, ok := m.Data.(metricdata.Gauge[int64]); ok {
+				for _, dp := range gauge.DataPoints {
+					for _, attr := range dp.Attributes.ToSlice() {
+						if string(attr.Key) == "bus" {
+							busValues[attr.Value.AsString()] = dp.Value
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if len(busValues) != 2 {
+		t.Fatalf("expected 2 bus labels, got %d: %v", len(busValues), busValues)
+	}
+	if busValues["bus-alpha"] != 1 {
+		t.Errorf("bus-alpha registered_events: got %d, want 1", busValues["bus-alpha"])
+	}
+	if busValues["bus-beta"] != 1 {
+		t.Errorf("bus-beta registered_events: got %d, want 1", busValues["bus-beta"])
+	}
+}
+
 func TestRegisteredEventsAndActiveSubscribersGauges(t *testing.T) {
 	reader := setupMetricsProvider(t)
 
