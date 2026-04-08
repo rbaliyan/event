@@ -25,13 +25,6 @@ func sharedMeter() metric.Meter {
 	return otel.Meter(meterName)
 }
 
-// resetGauges allows tests to reset the gauge registration state
-// so that a new meter provider can be used.
-func resetGauges() {
-	gaugesMu.Lock()
-	defer gaugesMu.Unlock()
-	gaugesInit = false
-}
 
 // initGauges registers package-level observable gauges once.
 // A single callback iterates all buses in the global registry,
@@ -64,7 +57,7 @@ func initGauges(meter metric.Meter) {
 			metric.WithDescription("Age of the oldest unacknowledged message per event and consumer group"),
 			metric.WithUnit("s"))
 
-		meter.RegisterCallback(
+		_, _ = meter.RegisterCallback(
 			func(ctx context.Context, observer metric.Observer) error {
 				busRegistry.Range(func(key, value any) bool {
 					bus := value.(*Bus)

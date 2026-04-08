@@ -13,6 +13,13 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
+// resetGauges resets gauge registration state so tests can use a fresh meter provider.
+func resetGauges() {
+	gaugesMu.Lock()
+	defer gaugesMu.Unlock()
+	gaugesInit = false
+}
+
 // setupMetricsProvider installs a test meter provider and returns the reader
 // and a cleanup function that restores the previous global provider.
 func setupMetricsProvider(t *testing.T) *sdkmetric.ManualReader {
