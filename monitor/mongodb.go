@@ -28,6 +28,7 @@ Document structure:
     "subscriber_description": string,
     "event_name": string,
     "bus_id": string,
+    "instance_id": string,
     "delivery_mode": string,
     "metadata": object,
     "status": string,
@@ -43,11 +44,11 @@ Document structure:
 
 Indexes:
 db.monitor_entries.createIndex({"event_id": 1, "subscription_id": 1}, {unique: true})
-db.monitor_entries.createIndex({"event_name": 1})
-db.monitor_entries.createIndex({"status": 1})
-db.monitor_entries.createIndex({"started_at": 1})
-db.monitor_entries.createIndex({"delivery_mode": 1})
-db.monitor_entries.createIndex({"subscriber_name": 1})
+db.monitor_entries.createIndex({"event_name": 1, "started_at": 1})
+db.monitor_entries.createIndex({"status": 1, "started_at": 1})
+db.monitor_entries.createIndex({"bus_id": 1, "started_at": 1})
+db.monitor_entries.createIndex({"subscriber_name": 1, "started_at": 1})
+db.monitor_entries.createIndex({"started_at": 1, "event_id": 1, "subscription_id": 1})
 */
 
 // mongoEntry represents a monitor entry document in MongoDB.
@@ -176,24 +177,38 @@ func (s *MongoStore) Collection() *mongo.Collection {
 //	_, err := collection.Indexes().CreateMany(ctx, indexes)
 func (s *MongoStore) Indexes() []mongo.IndexModel {
 	return []mongo.IndexModel{
+		// Unique constraint: primary key for upserts, point lookups, and status updates.
 		{
 			Keys:    bson.D{{Key: "event_id", Value: 1}, {Key: "subscription_id", Value: 1}},
 			Options: options.Index().SetUnique(true),
 		},
+		// event_name + started_at: supports filtering by event with time-range queries
+		// and eliminates in-memory sorts on the result set.
 		{
-			Keys: bson.D{{Key: "event_name", Value: 1}},
+			Keys: bson.D{{Key: "event_name", Value: 1}, {Key: "started_at", Value: 1}},
 		},
+		// status + started_at: supports "show all failed/pending events in last N hours"
+		// queries without in-memory sorts.
 		{
-			Keys: bson.D{{Key: "status", Value: 1}},
+			Keys: bson.D{{Key: "status", Value: 1}, {Key: "started_at", Value: 1}},
 		},
+		// bus_id + started_at: supports per-bus filtering in multi-store deployments.
 		{
-			Keys: bson.D{{Key: "started_at", Value: 1}},
+			Keys: bson.D{{Key: "bus_id", Value: 1}, {Key: "started_at", Value: 1}},
 		},
+		// subscriber_name + started_at: supports per-subscriber filtering with time range.
 		{
-			Keys: bson.D{{Key: "delivery_mode", Value: 1}},
+			Keys: bson.D{{Key: "subscriber_name", Value: 1}, {Key: "started_at", Value: 1}},
 		},
+		// started_at + event_id + subscription_id: covers DeleteOlderThan (range on
+		// started_at), unfiltered List queries, and the full cursor sort key
+		// (started_at, event_id, subscription_id) used in cursor-based pagination.
 		{
-			Keys: bson.D{{Key: "subscriber_name", Value: 1}},
+			Keys: bson.D{
+				{Key: "started_at", Value: 1},
+				{Key: "event_id", Value: 1},
+				{Key: "subscription_id", Value: 1},
+			},
 		},
 	}
 }
