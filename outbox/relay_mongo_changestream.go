@@ -13,6 +13,10 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ResumeTokenStore defines the interface for persisting Change Stream resume tokens.
@@ -103,6 +107,7 @@ type ChangeStreamRelay struct {
 	batchSize        int
 	resumeTokenStore ResumeTokenStore
 	fullDocumentMode string // "updateLookup" or "whenAvailable" for MongoDB 6.0+
+	metrics          *Metrics
 
 	mu          sync.Mutex
 	resumeToken bson.Raw
@@ -162,6 +167,12 @@ func (r *ChangeStreamRelay) WithBatchSize(size int) *ChangeStreamRelay {
 // If not set, the relay will start from the current time on restart.
 func (r *ChangeStreamRelay) WithResumeTokenStore(store ResumeTokenStore) *ChangeStreamRelay {
 	r.resumeTokenStore = store
+	return r
+}
+
+// WithMetrics enables OpenTelemetry metrics for the relay.
+func (r *ChangeStreamRelay) WithMetrics(m *Metrics) *ChangeStreamRelay {
+	r.metrics = m
 	return r
 }
 
@@ -361,16 +372,54 @@ func (r *ChangeStreamRelay) claimMessage(ctx context.Context, id bson.ObjectID) 
 }
 
 // publishMessage publishes a single message to the transport.
+// If the message metadata contains W3C trace context headers, a child span is created
+// to link the relay publish to the original transaction's trace.
 func (r *ChangeStreamRelay) publishMessage(ctx context.Context, msg *mongoMessage) error {
-	// msg.Payload is already []byte - pass directly to transport
+	start := time.Now()
+
+	// Extract trace context from metadata if present (W3C traceparent/tracestate)
+	var spanCtx trace.SpanContext
+	if msg.Metadata != nil {
+		carrier := propagation.MapCarrier(msg.Metadata)
+		extracted := otel.GetTextMapPropagator().Extract(ctx, carrier)
+		spanCtx = trace.SpanContextFromContext(extracted)
+	}
+
+	if spanCtx.IsValid() {
+		ctx = trace.ContextWithRemoteSpanContext(ctx, spanCtx)
+	}
+	tracer := otel.Tracer("outbox.changestream_relay")
+	ctx, span := tracer.Start(ctx, fmt.Sprintf("outbox.publish %s", msg.EventName),
+		trace.WithAttributes(
+			attribute.String("event.name", msg.EventName),
+			attribute.String("event.id", msg.EventID),
+		),
+		trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+
 	transportMsg := message.New(
 		msg.EventID,
 		"outbox",
 		msg.Payload,
 		msg.Metadata,
+		message.WithSpanContext(span.SpanContext()),
 	)
 
-	return r.transport.Publish(ctx, msg.EventName, transportMsg)
+	err := r.transport.Publish(ctx, msg.EventName, transportMsg)
+	duration := time.Since(start)
+
+	if err != nil {
+		span.RecordError(err)
+		if r.metrics != nil {
+			r.metrics.RecordFailed(ctx, msg.EventName)
+		}
+		return err
+	}
+
+	if r.metrics != nil {
+		r.metrics.RecordPublished(ctx, msg.EventName, duration)
+	}
+	return nil
 }
 
 // saveResumeToken persists the resume token for crash recovery.
@@ -434,6 +483,9 @@ func (r *ChangeStreamRelay) cleanup(ctx context.Context) {
 
 	if deleted > 0 {
 		r.log().Info("cleaned up old outbox messages", "count", deleted)
+		if r.metrics != nil {
+			r.metrics.RecordCleaned(ctx, deleted)
+		}
 	}
 }
 
