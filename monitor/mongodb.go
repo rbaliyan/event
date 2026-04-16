@@ -28,6 +28,7 @@ Document structure:
     "subscriber_description": string,
     "event_name": string,
     "bus_id": string,
+    "instance_id": string,
     "delivery_mode": string,
     "metadata": object,
     "status": string,
