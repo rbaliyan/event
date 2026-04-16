@@ -2,11 +2,16 @@ package outbox
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // RelayMode defines how the relay watches for new messages.
@@ -38,6 +43,7 @@ type MongoRelay struct {
 	stuckDuration    time.Duration        // How long before a processing message is considered stuck
 	resumeTokenStore ResumeTokenStore     // For change stream resume (optional)
 	changeStreamOpts *changeStreamOptions // Internal change stream state
+	metrics          *Metrics
 }
 
 // changeStreamOptions holds change stream specific options
@@ -130,6 +136,12 @@ func (r *MongoRelay) WithStuckDuration(d time.Duration) *MongoRelay {
 	return r
 }
 
+// WithMetrics enables OpenTelemetry metrics for the relay.
+func (r *MongoRelay) WithMetrics(m *Metrics) *MongoRelay {
+	r.metrics = m
+	return r
+}
+
 // Start begins watching the outbox and publishing messages.
 // This method blocks until the context is cancelled.
 //
@@ -195,6 +207,9 @@ func (r *MongoRelay) startChangeStream(ctx context.Context) error {
 
 	if r.resumeTokenStore != nil {
 		csRelay = csRelay.WithResumeTokenStore(r.resumeTokenStore)
+	}
+	if r.metrics != nil {
+		csRelay = csRelay.WithMetrics(r.metrics)
 	}
 
 	r.log().Info("relay started in changestream mode")
@@ -293,17 +308,55 @@ func (r *MongoRelay) publishPending(ctx context.Context) {
 	}
 }
 
-// publishMessage publishes a single message to the transport
+// publishMessage publishes a single message to the transport.
+// If the message metadata contains W3C trace context headers, a child span is created
+// to link the relay publish to the original transaction's trace.
 func (r *MongoRelay) publishMessage(ctx context.Context, msg *mongoMessage) error {
-	// msg.Payload is already []byte - pass directly to transport
+	start := time.Now()
+
+	// Extract trace context from metadata if present (W3C traceparent/tracestate)
+	var spanCtx trace.SpanContext
+	if msg.Metadata != nil {
+		carrier := propagation.MapCarrier(msg.Metadata)
+		extracted := otel.GetTextMapPropagator().Extract(ctx, carrier)
+		spanCtx = trace.SpanContextFromContext(extracted)
+	}
+
+	if spanCtx.IsValid() {
+		ctx = trace.ContextWithRemoteSpanContext(ctx, spanCtx)
+	}
+	tracer := otel.Tracer("outbox.mongo_relay")
+	ctx, span := tracer.Start(ctx, fmt.Sprintf("outbox.publish %s", msg.EventName),
+		trace.WithAttributes(
+			attribute.String("event.name", msg.EventName),
+			attribute.String("event.id", msg.EventID),
+		),
+		trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+
 	transportMsg := message.New(
 		msg.EventID,
 		"outbox",
 		msg.Payload,
 		msg.Metadata,
+		message.WithSpanContext(span.SpanContext()),
 	)
 
-	return r.transport.Publish(ctx, msg.EventName, transportMsg)
+	err := r.transport.Publish(ctx, msg.EventName, transportMsg)
+	duration := time.Since(start)
+
+	if err != nil {
+		span.RecordError(err)
+		if r.metrics != nil {
+			r.metrics.RecordFailed(ctx, msg.EventName)
+		}
+		return err
+	}
+
+	if r.metrics != nil {
+		r.metrics.RecordPublished(ctx, msg.EventName, duration)
+	}
+	return nil
 }
 
 // cleanup removes old published messages
@@ -316,6 +369,9 @@ func (r *MongoRelay) cleanup(ctx context.Context) {
 
 	if deleted > 0 {
 		r.log().Info("cleaned up old outbox messages", "count", deleted)
+		if r.metrics != nil {
+			r.metrics.RecordCleaned(ctx, deleted)
+		}
 	}
 }
 
