@@ -66,9 +66,10 @@ type Bus struct {
 	busAttr          attribute.KeyValue // bus="name" attribute for all metrics
 	publishedCounter metric.Int64Counter
 	subscribedCounter metric.Int64Counter
-	publishDuration  metric.Float64Histogram
-	handlerDuration  metric.Float64Histogram
-	handlerErrors    metric.Int64Counter
+	publishDuration       metric.Float64Histogram
+	handlerDuration       metric.Float64Histogram
+	handlerErrors         metric.Int64Counter
+	filterDroppedCounter  metric.Int64Counter
 }
 
 // NewBus creates a new event bus and registers it in the global registry.
@@ -134,6 +135,9 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 			metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0))
 		bus.handlerErrors, _ = meter.Int64Counter("event.handler_errors_total",
 			metric.WithDescription("Total number of subscriber handler errors"))
+		bus.filterDroppedCounter, _ = meter.Int64Counter("event_messages_filter_dropped_total",
+			metric.WithDescription("Messages silently dropped by WithMessageFilter before handler dispatch"),
+			metric.WithUnit("{message}"))
 		initGauges(meter)
 	}
 
@@ -193,6 +197,24 @@ func (b *Bus) PoisonDetector() PoisonDetector {
 // MonitorStore returns the bus-level monitor store (may be nil)
 func (b *Bus) MonitorStore() MonitorStore {
 	return b.monitorStore
+}
+
+// recordFilterDrop increments the filter-drop counter when a message is
+// rejected by WithMessageFilter before reaching the handler. Both event
+// and operation are used as metric attributes so that cross-stream
+// delivery bugs (e.g. an insert landing in an update-only consumer group)
+// appear as {event="caserecord.updated.global", operation="insert"} spikes.
+func (b *Bus) recordFilterDrop(eventName, operation string) {
+	if b.filterDroppedCounter == nil {
+		return
+	}
+	b.filterDroppedCounter.Add(context.Background(), 1,
+		metric.WithAttributes(
+			b.busAttr,
+			attribute.String("event", eventName),
+			attribute.String("operation", operation),
+		),
+	)
 }
 
 // SchemaProvider returns the bus-level schema provider (may be nil).

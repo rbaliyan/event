@@ -213,9 +213,9 @@ func TestRecordSkip(t *testing.T) {
 	m, reader := testBridgeMetrics(t)
 	ctx := context.Background()
 
-	m.RecordSkip(ctx, "orders")
-	m.RecordSkip(ctx, "orders")
-	m.RecordSkip(ctx, "payments")
+	m.RecordSkip(ctx, "orders", "insert")
+	m.RecordSkip(ctx, "orders", "update")
+	m.RecordSkip(ctx, "payments", "insert")
 
 	rm := collectBridgeMetrics(t, reader)
 
@@ -228,7 +228,7 @@ func TestRecordSkip(t *testing.T) {
 func TestRecordSkip_NilMetrics(t *testing.T) {
 	var m *bridge.Metrics
 	// Must not panic.
-	m.RecordSkip(context.Background(), "x")
+	m.RecordSkip(context.Background(), "x", "insert")
 }
 
 // ---------- Dedup + Metrics composition ----------
@@ -244,8 +244,8 @@ func TestDedupWithMetricsSkip(t *testing.T) {
 		bridge.WithMiddleware(
 			bridge.MetricsMiddleware(m),
 			bridge.Dedup(coord, bridge.DefaultDedupKey, time.Minute,
-				bridge.WithDedupOnSkip(func(event string, _ transport.Message) {
-					m.RecordSkip(ctx, event)
+				bridge.WithDedupOnSkip(func(event string, msg transport.Message) {
+					m.RecordSkip(ctx, event, msg.Metadata()["operation"])
 				}),
 			),
 		),
@@ -297,7 +297,7 @@ func TestMetrics_WithNamespace(t *testing.T) {
 		t.Fatalf("NewMetrics: %v", err)
 	}
 
-	m.RecordSkip(context.Background(), "x")
+	m.RecordSkip(context.Background(), "x", "")
 
 	rm := collectBridgeMetrics(t, reader)
 
