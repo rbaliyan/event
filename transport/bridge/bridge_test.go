@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rbaliyan/event/v3/distributed"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/bridge"
 )
@@ -436,6 +437,101 @@ func TestDedup_failOpenOnCoordinatorError(t *testing.T) {
 
 	src.inject("x", newMsg("m1"))
 	waitFor(t, func() bool { return len(sink.publishedEvents()) == 1 }, time.Second)
+}
+
+// -----------------------------------------------------------------------------
+// Middleware: DistributedDedup
+// -----------------------------------------------------------------------------
+
+func TestDistributedDedup_isolatesEventNames(t *testing.T) {
+	// Regression: when multiple events share the same source (fan-out pattern,
+	// e.g. MongoDB change stream delivering to Created/Updated/Deleted pumps
+	// on the same bus), all pumps receive the same message. Without scoping the
+	// dedup key by event name, all pumps compete for the same coordinator slot
+	// and only one can publish — even though each pump targets a different sink
+	// stream. The fix prefixes the key with the event name so each pump has its
+	// own namespace.
+	src, sink := newFakeTransport(), newFakeTransport()
+	ctx := context.Background()
+
+	coord := distributed.NewMemoryStateManager()
+	b, _ := bridge.New(src, sink,
+		bridge.WithMiddleware(
+			bridge.DistributedDedup(coord, bridge.DefaultDedupKey, time.Minute, nil),
+		),
+	)
+	t.Cleanup(func() { _ = b.Close(ctx) })
+
+	// Register two events on the same bridge — simulates Created + Updated
+	// sharing one MongoDB change stream bus.
+	if err := b.RegisterEvent(ctx, "x.created"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.RegisterEvent(ctx, "x.updated"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject the same message ID to both subscriptions — mirrors the MongoDB
+	// CS fan-out where one change event is delivered to every registered event.
+	msg := newMsg("oplog-token-abc")
+	src.inject("x.created", msg)
+	src.inject("x.updated", msg)
+
+	// Both pumps must independently publish to the sink under their own
+	// event name. If the key were not scoped by event name, only one pump
+	// would win the coordinator race and the other would silently discard.
+	waitFor(t, func() bool { return len(sink.publishedEvents()) == 2 }, time.Second)
+
+	got := sink.publishedEvents()
+	if len(got) != 2 {
+		t.Fatalf("sink got %d publishes, want 2 (one per event name)", len(got))
+	}
+	names := map[string]bool{got[0].Event: true, got[1].Event: true}
+	if !names["x.created"] || !names["x.updated"] {
+		t.Errorf("got event names %v, want {x.created, x.updated}", names)
+	}
+	for _, r := range got {
+		if r.Msg.ID() != "oplog-token-abc" {
+			t.Errorf("event %s: msg ID = %s, want oplog-token-abc", r.Event, r.Msg.ID())
+		}
+	}
+}
+
+func TestDistributedDedup_crossReplicaDedup_stillWorks(t *testing.T) {
+	// Two bridges sharing the same coordinator simulate two replicas watching
+	// the same source. For the same event name, only one replica should
+	// publish each message.
+	src1, sink1 := newFakeTransport(), newFakeTransport()
+	src2, sink2 := newFakeTransport(), newFakeTransport()
+	ctx := context.Background()
+
+	coord := distributed.NewMemoryStateManager() // shared coordinator = same replica view
+	b1, _ := bridge.New(src1, sink1,
+		bridge.WithMiddleware(bridge.DistributedDedup(coord, bridge.DefaultDedupKey, time.Minute, nil)),
+	)
+	b2, _ := bridge.New(src2, sink2,
+		bridge.WithMiddleware(bridge.DistributedDedup(coord, bridge.DefaultDedupKey, time.Minute, nil)),
+	)
+	t.Cleanup(func() { _ = b1.Close(ctx); _ = b2.Close(ctx) })
+
+	if err := b1.RegisterEvent(ctx, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b2.RegisterEvent(ctx, "x"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject the same message to both "replicas".
+	msg := newMsg("shared-token")
+	src1.inject("x", msg)
+	src2.inject("x", msg)
+
+	// Exactly one replica wins — total across both sinks must be 1.
+	time.Sleep(100 * time.Millisecond)
+	total := len(sink1.publishedEvents()) + len(sink2.publishedEvents())
+	if total != 1 {
+		t.Errorf("total sink publishes = %d, want 1 (exactly one replica wins)", total)
+	}
 }
 
 // -----------------------------------------------------------------------------

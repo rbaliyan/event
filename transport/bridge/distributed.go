@@ -61,7 +61,18 @@ func DistributedDedup(coord distributed.Coordinator, keyFn DedupKeyFn, ttl time.
 				return next(ctx, event, msg)
 			}
 
-			acquired, err := coord.Acquire(ctx, key, ttl)
+			// Scope the dedup key by event name so pumps for different
+			// registered events on the same source do not race for the
+			// same slot. Without this, all pumps on a shared-source bus
+			// (e.g. mongodb CS with Created/Updated/Deleted on the same
+			// collection) compete for the same key and only one publishes
+			// — typically to the wrong sink stream for 2/3 of messages.
+			// Prefixing with the event name gives each pump its own
+			// dedup namespace while cross-replica dedup remains correct:
+			// all replicas use the same event-prefixed key for each pump.
+			scopedKey := event + ":" + key
+
+			acquired, err := coord.Acquire(ctx, scopedKey, ttl)
 			if err != nil {
 				return err // fail-closed: source redelivers
 			}
@@ -75,14 +86,14 @@ func DistributedDedup(coord distributed.Coordinator, keyFn DedupKeyFn, ttl time.
 			if err := next(ctx, event, msg); err != nil {
 				// Publish to sink failed — release so another replica
 				// can retry on the next source redelivery.
-				_ = coord.Reset(ctx, key)
+				_ = coord.Reset(ctx, scopedKey)
 				return err
 			}
 
 			// Successfully forwarded — mark processed so replayed
 			// source messages (from resume token replay, crash recovery)
 			// are not re-published.
-			_ = coord.MarkProcessed(ctx, key)
+			_ = coord.MarkProcessed(ctx, scopedKey)
 			return nil
 		}
 	}
