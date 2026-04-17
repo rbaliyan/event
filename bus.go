@@ -320,6 +320,17 @@ func (b *Bus) Close(ctx context.Context) error {
 
 	var errs []error
 
+	// Close the transport first so source watchers stop delivering before
+	// events are unregistered. Reversing this order creates a race where
+	// the watcher drains buffered change events against an empty
+	// registeredEvents map, producing spurious "no registered events" warnings.
+	if b.transport != nil {
+		if err := b.transport.Close(ctx); err != nil {
+			b.logger.Warn("failed to close transport during shutdown", "error", err)
+			errs = append(errs, fmt.Errorf("close transport: %w", err))
+		}
+	}
+
 	// Collect event names under lock, then unregister without holding it.
 	// This avoids holding RLock during potentially slow transport operations.
 	b.eventMutex.RLock()
@@ -333,14 +344,6 @@ func (b *Bus) Close(ctx context.Context) error {
 		if err := b.transport.UnregisterEvent(ctx, name); err != nil {
 			b.logger.Warn("failed to unregister event during shutdown", "event", name, "error", err)
 			errs = append(errs, fmt.Errorf("unregister %s: %w", name, err))
-		}
-	}
-
-	// Close the bus transport
-	if b.transport != nil {
-		if err := b.transport.Close(ctx); err != nil {
-			b.logger.Warn("failed to close transport during shutdown", "error", err)
-			errs = append(errs, fmt.Errorf("close transport: %w", err))
 		}
 	}
 
