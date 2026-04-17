@@ -78,7 +78,7 @@ func DistributedDedup(coord distributed.Coordinator, keyFn DedupKeyFn, ttl time.
 			}
 			if !acquired {
 				if metrics != nil {
-					metrics.RecordSkip(ctx, event)
+					metrics.RecordSkip(ctx, event, msg.Metadata()["operation"])
 				}
 				return nil // another replica won — skip
 			}

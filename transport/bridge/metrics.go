@@ -139,17 +139,22 @@ func NewMetrics(opts ...MetricsOption) (*Metrics, error) {
 // [Dedup]'s OnSkip callback or [Filter]'s drop path to count
 // messages intentionally not forwarded to the sink.
 //
+// operation should be the source message operation type (e.g. "insert",
+// "update", "delete") extracted from msg.Metadata(). Pass an empty string
+// when the operation is not available or not meaningful.
+//
 //	bridge.Dedup(coord, keyFn, ttl,
 //	    bridge.WithDedupOnSkip(func(event string, msg transport.Message) {
-//	        m.RecordSkip(context.Background(), event)
+//	        m.RecordSkip(context.Background(), event, msg.Metadata()["operation"])
 //	    }),
 //	)
-func (m *Metrics) RecordSkip(ctx context.Context, event string) {
+func (m *Metrics) RecordSkip(ctx context.Context, event, operation string) {
 	if m == nil {
 		return
 	}
 	m.skippedTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("event", event),
+		attribute.String("operation", operation),
 	))
 }
 
@@ -176,7 +181,14 @@ func MetricsMiddleware(m *Metrics) Middleware {
 			return next
 		}
 		return func(ctx context.Context, event string, msg transport.Message) error {
-			attrs := metric.WithAttributes(attribute.String("event", event))
+			// Include operation type (e.g. "insert", "update", "delete") so that
+			// cross-stream routing bugs (wrong pump acquiring a dedup slot) are
+			// visible as operation mismatches on forwarded/failed counters.
+			operation := msg.Metadata()["operation"]
+			attrs := metric.WithAttributes(
+				attribute.String("event", event),
+				attribute.String("operation", operation),
+			)
 
 			m.receivedTotal.Add(ctx, 1, attrs)
 

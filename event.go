@@ -672,6 +672,7 @@ func (e *eventImpl[T]) filterMessage(msg transport.Message, bus *Bus, subOpts *s
 
 	// Apply pre-decode message filter
 	if e.messageFilter != nil && !e.messageFilter(msg.Metadata()) {
+		bus.recordFilterDrop(e.name, msg.Metadata()["operation"])
 		_ = msg.Ack(nil)
 		return false
 	}

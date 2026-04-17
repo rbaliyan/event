@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // resetGauges resets gauge registration state so tests can use a fresh meter provider.
@@ -387,5 +388,71 @@ func TestRegisteredEventsAndActiveSubscribersGauges(t *testing.T) {
 	// so total should be 3 (2 on ev1 + 1 on ev2).
 	if int64Gauges["event.active_subscribers"] != 3 {
 		t.Errorf("active_subscribers total: got %d, want 3", int64Gauges["event.active_subscribers"])
+	}
+}
+
+// TestFilterDropCounter verifies that event_messages_filter_dropped_total is
+// incremented when WithMessageFilter rejects a message before handler dispatch.
+// This is the key observable for cross-stream delivery bugs: if an insert
+// lands in an update-only consumer group, the counter records
+// {event="...", operation="insert"} rather than the expected operation type.
+func TestFilterDropCounter(t *testing.T) {
+	reader := setupMetricsProvider(t)
+
+	bus := mustNewBus(t, randomString(8), WithTransport(channel.New()))
+	defer bus.Close(context.Background())
+
+	// Event accepts only messages with operation="update".
+	ev := New[string]("filter-drop-test",
+		WithMessageFilter(func(meta map[string]string) bool {
+			return meta["operation"] == "update"
+		}),
+	)
+	if err := Register(context.Background(), bus, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	received := make(chan string, 5)
+	if err := ev.Subscribe(context.Background(), func(_ context.Context, _ Event[string], data string) error {
+		received <- data
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Publish one matching message and two that will be filtered.
+	// We inject directly via the bus transport so we can set the operation
+	// metadata that WithMessageFilter inspects.
+	pub := func(op, val string) {
+		t.Helper()
+		msg := transport.NewMessage(transport.NewID(), "test", []byte(`"`+val+`"`),
+			map[string]string{"operation": op}, trace.SpanContext{})
+		if err := bus.Transport().Publish(ctx, "filter-drop-test", msg); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+
+	pub("insert", "ins1")  // filtered
+	pub("update", "upd1")  // passes
+	pub("delete", "del1")  // filtered
+
+	// Wait for the passing message to arrive.
+	select {
+	case got := <-received:
+		if got != "upd1" {
+			t.Errorf("received %q, want upd1", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for message")
+	}
+	// Give filter drops time to be recorded.
+	time.Sleep(20 * time.Millisecond)
+
+	counters, _, _, _ := collectMetrics(t, reader)
+
+	if got := counters["event_messages_filter_dropped_total"]; got != 2 {
+		t.Errorf("filter_dropped_total = %d, want 2", got)
 	}
 }
