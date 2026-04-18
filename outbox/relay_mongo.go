@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"github.com/rbaliyan/event/v3/transport"
@@ -37,6 +38,7 @@ type MongoRelay struct {
 	transport        transport.Transport
 	mode             RelayMode
 	pollDelay        time.Duration
+	pollJitter       time.Duration        // Random jitter added to each poll interval to desynchronise pods
 	batchSize        int
 	logger           *slog.Logger
 	cleanupAge       time.Duration
@@ -96,6 +98,15 @@ func (r *MongoRelay) WithResumeTokenStore(store ResumeTokenStore) *MongoRelay {
 // WithPollDelay sets the polling interval
 func (r *MongoRelay) WithPollDelay(d time.Duration) *MongoRelay {
 	r.pollDelay = d
+	return r
+}
+
+// WithPollJitter sets a maximum random jitter added to each poll interval.
+// Each tick sleeps for pollDelay + rand[0, jitter), desynchronising pods that
+// share the same nominal poll delay and reducing UpdateMany write contention.
+// A jitter of 50% of pollDelay is a reasonable default when running 2+ pods.
+func (r *MongoRelay) WithPollJitter(jitter time.Duration) *MongoRelay {
+	r.pollJitter = jitter
 	return r
 }
 
@@ -163,31 +174,35 @@ func (r *MongoRelay) Start(ctx context.Context) error {
 
 // startPolling runs the relay in polling mode.
 func (r *MongoRelay) startPolling(ctx context.Context) error {
-	ticker := time.NewTicker(r.pollDelay)
-	defer ticker.Stop()
-
-	// Cleanup ticker for old published messages
 	cleanupTicker := time.NewTicker(time.Hour)
 	defer cleanupTicker.Stop()
 
-	// Recovery ticker for stuck messages (check every minute)
 	recoveryTicker := time.NewTicker(time.Minute)
 	defer recoveryTicker.Stop()
 
-	r.log().Info("relay started in poll mode", "poll_delay", r.pollDelay)
+	r.log().Info("relay started in poll mode", "poll_delay", r.pollDelay, "poll_jitter", r.pollJitter)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
-			r.publishPending(ctx)
 		case <-cleanupTicker.C:
 			r.cleanup(ctx)
 		case <-recoveryTicker.C:
 			r.recoverStuck(ctx)
+		case <-r.nextPollTimer(ctx):
+			r.publishPending(ctx)
 		}
 	}
+}
+
+// nextPollTimer returns a channel that fires after pollDelay + rand[0, pollJitter).
+func (r *MongoRelay) nextPollTimer(_ context.Context) <-chan time.Time {
+	delay := r.pollDelay
+	if r.pollJitter > 0 {
+		delay += time.Duration(rand.Int64N(int64(r.pollJitter)))
+	}
+	return time.After(delay)
 }
 
 // startChangeStream runs the relay using MongoDB Change Streams.
