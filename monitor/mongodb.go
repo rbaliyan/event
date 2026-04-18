@@ -12,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"golang.org/x/sync/errgroup"
 )
 
 /*
@@ -182,15 +183,27 @@ func (s *MongoStore) Indexes() []mongo.IndexModel {
 			Keys:    bson.D{{Key: "event_id", Value: 1}, {Key: "subscription_id", Value: 1}},
 			Options: options.Index().SetUnique(true),
 		},
-		// event_name + started_at: supports filtering by event with time-range queries
-		// and eliminates in-memory sorts on the result set.
+		// event_name + cursor sort key: covers filtered+paginated List queries on event_name.
 		{
-			Keys: bson.D{{Key: "event_name", Value: 1}, {Key: "started_at", Value: 1}},
+			Keys: bson.D{
+				{Key: "event_name", Value: 1},
+				{Key: "started_at", Value: 1},
+				{Key: "event_id", Value: 1},
+				{Key: "subscription_id", Value: 1},
+			},
 		},
-		// status + started_at: supports "show all failed/pending events in last N hours"
-		// queries without in-memory sorts.
+		// status + cursor sort key: covers filtered+paginated List queries on status.
 		{
-			Keys: bson.D{{Key: "status", Value: 1}, {Key: "started_at", Value: 1}},
+			Keys: bson.D{
+				{Key: "status", Value: 1},
+				{Key: "started_at", Value: 1},
+				{Key: "event_id", Value: 1},
+				{Key: "subscription_id", Value: 1},
+			},
+		},
+		// event_id + started_at: covers GetByEventID (filter by event, sort by time).
+		{
+			Keys: bson.D{{Key: "event_id", Value: 1}, {Key: "started_at", Value: 1}},
 		},
 		// bus_id + started_at: supports per-bus filtering in multi-store deployments.
 		{
@@ -627,6 +640,10 @@ func (s *MongoStore) RecordComplete(ctx context.Context, params event.RecordComp
 }
 
 // Summary returns aggregated statistics using a MongoDB $facet aggregation pipeline.
+//
+// oldest/newest are fetched via separate index-backed FindOne calls rather than
+// $sort+$limit inside $facet, which would force an in-memory sort of the full
+// matched working set. The three operations run concurrently.
 func (s *MongoStore) Summary(ctx context.Context, filter Filter) (*Summary, error) {
 	matchStage := s.buildFilter(filter)
 
@@ -674,24 +691,8 @@ func (s *MongoStore) Summary(ctx context.Context, filter Filter) (*Summary, erro
 					"failed":  bson.M{"$sum": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$status", "failed"}}, 1, 0}}},
 				}}},
 			},
-			"oldest": mongo.Pipeline{
-				{{Key: "$sort", Value: bson.M{"started_at": 1}}},
-				{{Key: "$limit", Value: 1}},
-				{{Key: "$project", Value: bson.M{"started_at": 1}}},
-			},
-			"newest": mongo.Pipeline{
-				{{Key: "$sort", Value: bson.M{"started_at": -1}}},
-				{{Key: "$limit", Value: 1}},
-				{{Key: "$project", Value: bson.M{"started_at": 1}}},
-			},
 		}}},
 	}
-
-	cursor, err := s.collection.Aggregate(ctx, pipeline)
-	if err != nil {
-		return nil, fmt.Errorf("summary aggregate: %w", err)
-	}
-	defer func() { _ = cursor.Close(ctx) }()
 
 	var r struct {
 		ByStatus []struct {
@@ -716,23 +717,63 @@ func (s *MongoStore) Summary(ctx context.Context, filter Filter) (*Summary, erro
 			AvgDur *float64 `bson:"avg_dur"`
 			Failed int64    `bson:"failed"`
 		} `bson:"global"`
-		Oldest []struct {
-			StartedAt time.Time `bson:"started_at"`
-		} `bson:"oldest"`
-		Newest []struct {
-			StartedAt time.Time `bson:"started_at"`
-		} `bson:"newest"`
 	}
 
-	if !cursor.Next(ctx) {
-		return &Summary{
-			ByStatus:    make(map[Status]int64),
-			ByEventName: make(map[string]*EventStats),
-		}, nil
+	var oldest, newest time.Time
+	var hasOldest, hasNewest bool
+
+	proj := bson.D{{Key: "started_at", Value: 1}}
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	eg.Go(func() error {
+		cursor, err := s.collection.Aggregate(egCtx, pipeline)
+		if err != nil {
+			return fmt.Errorf("summary aggregate: %w", err)
+		}
+		defer func() { _ = cursor.Close(egCtx) }()
+		if cursor.Next(egCtx) {
+			return cursor.Decode(&r)
+		}
+		return cursor.Err()
+	})
+
+	eg.Go(func() error {
+		var doc struct {
+			StartedAt time.Time `bson:"started_at"`
+		}
+		err := s.collection.FindOne(egCtx, matchStage,
+			options.FindOne().SetProjection(proj).SetSort(bson.D{{Key: "started_at", Value: 1}}),
+		).Decode(&doc)
+		if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+			return fmt.Errorf("oldest: %w", err)
+		}
+		if err == nil {
+			oldest, hasOldest = doc.StartedAt, true
+		}
+		return nil
+	})
+
+	eg.Go(func() error {
+		var doc struct {
+			StartedAt time.Time `bson:"started_at"`
+		}
+		err := s.collection.FindOne(egCtx, matchStage,
+			options.FindOne().SetProjection(proj).SetSort(bson.D{{Key: "started_at", Value: -1}}),
+		).Decode(&doc)
+		if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+			return fmt.Errorf("newest: %w", err)
+		}
+		if err == nil {
+			newest, hasNewest = doc.StartedAt, true
+		}
+		return nil
+	})
+
+	if err := eg.Wait(); err != nil {
+		return nil, err
 	}
-	if err := cursor.Decode(&r); err != nil {
-		return nil, fmt.Errorf("decode summary: %w", err)
-	}
+
 	summary := &Summary{
 		ByStatus:    make(map[Status]int64, len(r.ByStatus)),
 		ByEventName: make(map[string]*EventStats, len(r.ByEvent)),
@@ -777,12 +818,12 @@ func (s *MongoStore) Summary(ctx context.Context, filter Filter) (*Summary, erro
 		}
 	}
 
-	if len(r.Oldest) > 0 {
-		t := r.Oldest[0].StartedAt
+	if hasOldest {
+		t := oldest
 		summary.TimeRange.Oldest = &t
 	}
-	if len(r.Newest) > 0 {
-		t := r.Newest[0].StartedAt
+	if hasNewest {
+		t := newest
 		summary.TimeRange.Newest = &t
 	}
 

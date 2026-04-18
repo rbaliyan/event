@@ -68,7 +68,8 @@ type mongoMessage struct {
 	Payload     []byte            `bson:"payload"`
 	Metadata    map[string]string `bson:"metadata,omitempty"`
 	CreatedAt   time.Time         `bson:"created_at"`
-	ClaimedAt   *time.Time        `bson:"claimed_at,omitempty"` // When claimed for processing (HA)
+	ClaimedAt   *time.Time        `bson:"claimed_at,omitempty"`
+	ClaimedBy   string            `bson:"claimed_by,omitempty"`
 	PublishedAt *time.Time        `bson:"published_at,omitempty"`
 	Status      Status            `bson:"status"`
 	RetryCount  int               `bson:"retry_count"`
@@ -162,6 +163,7 @@ func (s *MongoStore) Collection() *mongo.Collection {
 //	_, err := collection.Indexes().CreateMany(ctx, indexes)
 func (s *MongoStore) Indexes() []mongo.IndexModel {
 	return []mongo.IndexModel{
+		// Primary relay query: claim next pending/failed message ordered by priority then age.
 		{
 			Keys: bson.D{
 				{Key: "status", Value: 1},
@@ -169,10 +171,21 @@ func (s *MongoStore) Indexes() []mongo.IndexModel {
 				{Key: "created_at", Value: 1},
 			},
 		},
+		// RecoverStuck: find processing messages whose claimed_at has expired.
 		{
 			Keys: bson.D{
-				{Key: "published_at", Value: 1},
+				{Key: "status", Value: 1},
+				{Key: "claimed_at", Value: 1},
 			},
+		},
+		// MarkPublishedByEventID / MarkFailedByEventID: update by application event ID.
+		{
+			Keys: bson.D{{Key: "event_id", Value: 1}},
+		},
+		// Delete: cleanup published messages older than a cutoff.
+		// Sparse so the index only contains documents where published_at is set.
+		{
+			Keys:    bson.D{{Key: "published_at", Value: 1}},
 			Options: options.Index().SetSparse(true),
 		},
 	}
@@ -355,89 +368,107 @@ func (s *MongoStore) Store(ctx context.Context, eventName string, eventID string
 	return err
 }
 
-// GetPending retrieves pending messages for publishing with atomic claiming.
-// Uses FindOneAndUpdate to atomically claim messages, preventing duplicate
-// processing by multiple relay instances in HA deployments.
+// GetPending retrieves pending messages for publishing with atomic batch claiming.
 func (s *MongoStore) GetPending(ctx context.Context, limit int) ([]*Message, error) {
-	var messages []*Message
-
-	for i := 0; i < limit; i++ {
-		msg, err := s.claimNextPending(ctx)
-		if err != nil {
-			if errors.Is(err, mongo.ErrNoDocuments) {
-				break // No more pending messages
-			}
-			return messages, fmt.Errorf("claim pending: %w", err)
-		}
-		messages = append(messages, msg)
-	}
-
-	return messages, nil
-}
-
-// claimNextPending atomically claims a single pending message for processing.
-// Uses FindOneAndUpdate to prevent race conditions in HA deployments.
-func (s *MongoStore) claimNextPending(ctx context.Context) (*Message, error) {
-	filter := bson.M{"status": bson.M{"$in": []Status{StatusPending, StatusFailed}}}
-	update := bson.M{
-		"$set": bson.M{
-			"status":     StatusProcessing,
-			"claimed_at": time.Now(),
-		},
-	}
-	opts := options.FindOneAndUpdate().
-		SetSort(bson.D{{Key: "priority", Value: -1}, {Key: "created_at", Value: 1}}).
-		SetReturnDocument(options.After)
-
-	var mongoMsg mongoMessage
-	err := s.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&mongoMsg)
+	msgs, err := s.claimBatch(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
-
-	return mongoMsg.toMessage(), nil
+	result := make([]*Message, len(msgs))
+	for i, m := range msgs {
+		result[i] = m.toMessage()
+	}
+	return result, nil
 }
 
-// getPendingMongo retrieves pending messages as mongoMessage with atomic claiming.
-// Uses FindOneAndUpdate to atomically claim messages, preventing duplicate
-// processing by multiple relay instances in HA deployments.
+// getPendingMongo retrieves pending messages as mongoMessage with atomic batch claiming.
 func (s *MongoStore) getPendingMongo(ctx context.Context, limit int) ([]*mongoMessage, error) {
-	var messages []*mongoMessage
-
-	for i := 0; i < limit; i++ {
-		msg, err := s.claimNextPendingMongo(ctx)
-		if err != nil {
-			if errors.Is(err, mongo.ErrNoDocuments) {
-				break // No more pending messages
-			}
-			return messages, fmt.Errorf("claim pending: %w", err)
-		}
-		messages = append(messages, msg)
-	}
-
-	return messages, nil
+	return s.claimBatch(ctx, limit)
 }
 
-// claimNextPendingMongo atomically claims a single pending message for processing.
-func (s *MongoStore) claimNextPendingMongo(ctx context.Context) (*mongoMessage, error) {
-	filter := bson.M{"status": bson.M{"$in": []Status{StatusPending, StatusFailed}}}
-	update := bson.M{
-		"$set": bson.M{
-			"status":     StatusProcessing,
-			"claimed_at": time.Now(),
-		},
+// claimBatch atomically claims up to limit pending/failed messages in 3 round-trips
+// instead of limit round-trips, regardless of batch size.
+//
+// Algorithm:
+//  1. Find up to limit candidate IDs (read, uses {status,priority,created_at} index)
+//  2. UpdateMany on those IDs with a unique claim token (write, atomic per-doc status check)
+//  3. Fetch the messages we won — IDs we lost to a concurrent relay are excluded by token
+func (s *MongoStore) claimBatch(ctx context.Context, limit int) ([]*mongoMessage, error) {
+	if limit <= 0 {
+		return nil, nil
 	}
-	opts := options.FindOneAndUpdate().
-		SetSort(bson.D{{Key: "priority", Value: -1}, {Key: "created_at", Value: 1}}).
-		SetReturnDocument(options.After)
 
-	var mongoMsg mongoMessage
-	err := s.collection.FindOneAndUpdate(ctx, filter, update, opts).Decode(&mongoMsg)
+	pendingFilter := bson.M{"status": bson.M{"$in": []Status{StatusPending, StatusFailed}}}
+
+	// Step 1: collect candidate IDs ordered by priority then age.
+	candidateCursor, err := s.collection.Find(ctx, pendingFilter,
+		options.Find().
+			SetSort(bson.D{{Key: "priority", Value: -1}, {Key: "created_at", Value: 1}}).
+			SetLimit(int64(limit)).
+			SetProjection(bson.D{{Key: "_id", Value: 1}}),
+	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find candidates: %w", err)
+	}
+	defer func() { _ = candidateCursor.Close(ctx) }()
+
+	var ids []bson.ObjectID
+	for candidateCursor.Next(ctx) {
+		var doc struct {
+			ID bson.ObjectID `bson:"_id"`
+		}
+		if err := candidateCursor.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("decode candidate: %w", err)
+		}
+		ids = append(ids, doc.ID)
+	}
+	if err := candidateCursor.Err(); err != nil {
+		return nil, fmt.Errorf("candidates cursor: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
 	}
 
-	return &mongoMsg, nil
+	// Step 2: atomically claim. The status check in the filter means any ID
+	// already claimed by a concurrent relay instance is silently skipped.
+	claimToken := uuid.New().String()
+	now := time.Now()
+	_, err = s.collection.UpdateMany(ctx,
+		bson.M{
+			"_id":    bson.M{"$in": ids},
+			"status": bson.M{"$in": []Status{StatusPending, StatusFailed}},
+		},
+		bson.M{"$set": bson.M{
+			"status":     StatusProcessing,
+			"claimed_at": now,
+			"claimed_by": claimToken,
+		}},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("claim batch: %w", err)
+	}
+
+	// Step 3: fetch exactly the messages we claimed.
+	// Primary key lookup on ids (efficient) + claimed_by filter to drop any
+	// that a concurrent relay won the race on between steps 1 and 2.
+	fetchCursor, err := s.collection.Find(ctx, bson.M{
+		"_id":        bson.M{"$in": ids},
+		"claimed_by": claimToken,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("fetch claimed: %w", err)
+	}
+	defer func() { _ = fetchCursor.Close(ctx) }()
+
+	var messages []*mongoMessage
+	for fetchCursor.Next(ctx) {
+		var msg mongoMessage
+		if err := fetchCursor.Decode(&msg); err != nil {
+			return nil, fmt.Errorf("decode message: %w", err)
+		}
+		messages = append(messages, &msg)
+	}
+	return messages, fetchCursor.Err()
 }
 
 // MarkPublished marks a message as successfully published
@@ -569,9 +600,8 @@ func (s *MongoStore) RetryFailed(ctx context.Context, maxRetries int) (int64, er
 		"retry_count": bson.M{"$lt": maxRetries},
 	}
 	update := bson.M{
-		"$set": bson.M{
-			"status": StatusPending,
-		},
+		"$set":   bson.M{"status": StatusPending},
+		"$unset": bson.M{"claimed_by": ""},
 	}
 
 	result, err := s.collection.UpdateMany(ctx, filter, update)
@@ -604,12 +634,8 @@ func (s *MongoStore) RecoverStuck(ctx context.Context, stuckDuration time.Durati
 		"claimed_at": bson.M{"$lt": cutoff},
 	}
 	update := bson.M{
-		"$set": bson.M{
-			"status": StatusPending,
-		},
-		"$unset": bson.M{
-			"claimed_at": "",
-		},
+		"$set":   bson.M{"status": StatusPending},
+		"$unset": bson.M{"claimed_at": "", "claimed_by": ""},
 	}
 
 	result, err := s.collection.UpdateMany(ctx, filter, update)
