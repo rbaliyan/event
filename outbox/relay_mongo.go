@@ -200,7 +200,7 @@ func (r *MongoRelay) startPolling(ctx context.Context) error {
 func (r *MongoRelay) nextPollTimer(_ context.Context) <-chan time.Time {
 	delay := r.pollDelay
 	if r.pollJitter > 0 {
-		delay += time.Duration(rand.Int64N(int64(r.pollJitter)))
+		delay += time.Duration(rand.Int64N(int64(r.pollJitter))) // #nosec G404 -- jitter needs no cryptographic security
 	}
 	return time.After(delay)
 }
