@@ -30,6 +30,7 @@ import (
 // Supports *redis.Client, *redis.ClusterClient, and redis.UniversalClient.
 type Client interface {
 	XAdd(ctx context.Context, a *redis.XAddArgs) *redis.StringCmd
+	XTrimMinIDApprox(ctx context.Context, key string, minID string, limit int64) *redis.IntCmd
 	XGroupCreateMkStream(ctx context.Context, stream, group, start string) *redis.StatusCmd
 	XGroupDestroy(ctx context.Context, stream, group string) *redis.IntCmd
 	XReadGroup(ctx context.Context, a *redis.XReadGroupArgs) *redis.XStreamSliceCmd
@@ -210,14 +211,16 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 		},
 	}
 
-	// Apply trimming: MINID takes precedence over MAXLEN when both are set,
-	// since combining them in a single XADD is only supported in Redis 7+.
-	if t.maxAge > 0 {
+	// Apply count-based trimming on XADD (hard cap regardless of message age).
+	// When only maxAge is set (no maxLen), fall back to MINID on XADD.
+	// Redis XADD only accepts one trimming strategy per call; age-based cleanup
+	// when both are set is applied via a separate XTRIM below.
+	if t.maxLen > 0 {
+		args.MaxLen = t.maxLen
+		args.Approx = true
+	} else if t.maxAge > 0 {
 		minTime := time.Now().Add(-t.maxAge).UnixMilli()
 		args.MinID = fmt.Sprintf("%d-0", minTime)
-		args.Approx = true
-	} else if t.maxLen > 0 {
-		args.MaxLen = t.maxLen
 		args.Approx = true
 	}
 
@@ -233,6 +236,19 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 	}
 
 	t.cb.RecordSuccess()
+
+	// When both maxLen and maxAge are configured, apply age-based cleanup as a
+	// separate XTRIM MINID after the XADD. Redis XADD cannot apply both in one
+	// command. XTRIM failure is non-fatal — the count cap already prevents OOM.
+	// Intentionally not calling cb.RecordFailure() here: the XADD succeeded so
+	// the publish succeeded; XTRIM is best-effort secondary cleanup only.
+	if t.maxLen > 0 && t.maxAge > 0 {
+		minTime := time.Now().Add(-t.maxAge).UnixMilli()
+		minID := fmt.Sprintf("%d-0", minTime)
+		if trimErr := t.client.XTrimMinIDApprox(ctx, streamName, minID, 0).Err(); trimErr != nil {
+			t.logger.Debug("age trim failed (non-fatal)", "stream", streamName, "error", trimErr)
+		}
+	}
 
 	t.logger.Debug("published message", "event", name, "msg_id", msg.ID())
 	return nil

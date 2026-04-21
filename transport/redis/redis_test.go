@@ -197,6 +197,12 @@ func (m *mockRedisClient) XInfoGroups(ctx context.Context, stream string) *redis
 	return cmd
 }
 
+func (m *mockRedisClient) XTrimMinIDApprox(ctx context.Context, key string, minID string, limit int64) *redis.IntCmd {
+	cmd := redis.NewIntCmd(ctx)
+	cmd.SetVal(0)
+	return cmd
+}
+
 func (m *mockRedisClient) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
