@@ -513,9 +513,15 @@ func (s *subscription) Close(ctx context.Context) error {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		// For broadcast mode, delete the unique consumer group to prevent resource leak
+		// For broadcast mode, delete the unique consumer group to prevent resource leak.
+		// Use a fresh context so a cancelled caller context does not silently skip cleanup.
 		if s.isBroadcast && s.client != nil {
-			s.client.XGroupDestroy(ctx, s.stream, s.group)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cleanupCancel()
+			if err := s.client.XGroupDestroy(cleanupCtx, s.stream, s.group).Err(); err != nil {
+				s.transport.logger.Warn("failed to destroy broadcast consumer group",
+					"stream", s.stream, "group", s.group, "error", err)
+			}
 			s.transport.groups.Delete(s.group)
 		}
 		return nil
@@ -523,10 +529,16 @@ func (s *subscription) Close(ctx context.Context) error {
 }
 
 // ack acknowledges a message in the consumer group with a bounded timeout.
+// Logs a warning on failure so operators can detect PEL accumulation.
 func (s *subscription) ack(msgID string) *redis.IntCmd {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return s.client.XAck(ctx, s.stream, s.group, msgID)
+	cmd := s.client.XAck(ctx, s.stream, s.group, msgID)
+	if err := cmd.Err(); err != nil {
+		s.transport.logger.Warn("failed to acknowledge message, will remain in PEL until claimed",
+			"msg_id", msgID, "stream", s.stream, "group", s.group, "error", err)
+	}
+	return cmd
 }
 
 // sendWithRetry sends a message to the channel with exponential backoff on timeout.
