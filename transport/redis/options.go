@@ -39,13 +39,15 @@ func WithMaxLen(n int64) Option {
 }
 
 // WithMaxAge sets the max age for messages in streams (MINID-based trimming).
-// Messages older than this duration will be automatically trimmed on each publish.
+// Messages older than this duration will be trimmed on each publish.
 //
-// This ensures messages don't stay in Redis forever when no consumers are registered.
-// Redis Streams use timestamp-based IDs, so this calculates MINID from (now - maxAge).
+// When used alone (no WithMaxLen), MINID trimming is applied directly on XADD.
+// When used together with WithMaxLen, count-based trimming is applied on XADD
+// and age-based trimming is applied as a separate XTRIM MINID call after the
+// XADD — both constraints are enforced, non-atomically. XTRIM failure is
+// non-fatal: the count cap from WithMaxLen already prevents unbounded growth.
 //
-// Set to 0 (default) for unlimited retention (messages stay forever).
-// Recommended: Set this to a reasonable value (e.g., 24*time.Hour) for production.
+// Set to 0 (default) for no age-based trimming.
 func WithMaxAge(d time.Duration) Option {
 	return func(t *Transport) {
 		if d > 0 {
