@@ -422,8 +422,9 @@ func (s *RedisStateManager) StorePayload(ctx context.Context, messageID string, 
 //
 // Performance note: this scans ALL stale state keys via SCAN, then checks each
 // one for a companion payload key. For large key spaces (>10k stale states),
-// consider using MongoDB-backed state management or setting a batch limit on
-// the RecoveryRunner to cap the number of entries processed per cycle.
+// consider setting a batch limit on the RecoveryRunner to cap the number of
+// entries processed per cycle, or use a MongoDB-backed state manager from the
+// event-mongodb module (https://github.com/rbaliyan/event-mongodb).
 func (s *RedisStateManager) LoadStalePayloads(ctx context.Context, staleTimeout time.Duration, limit int) ([]*StaleMessage, error) {
 	cutoff := time.Now().Add(-staleTimeout)
 	// Scan without limit since we need to filter by payload existence after
@@ -465,7 +466,9 @@ func (s *RedisStateManager) ClearPayload(ctx context.Context, messageID string) 
 
 // RedisStateManager does not implement WorkerStore because listing
 // worker entries via Redis SCAN is O(N) and impractical at scale.
-// Use MongoStateManager or MemoryStateManager for worker observability.
+// Use MemoryStateManager for worker observability in single-instance deployments,
+// or MongoStateManager from the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
+// for distributed worker observability.
 
 // Compile-time interface checks
 var (

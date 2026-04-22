@@ -96,8 +96,8 @@ No breaking changes planned. All v3.x APIs will remain stable.
 
 All store implementations follow the same interface patterns:
 
-| Store Type | PostgreSQL | MongoDB | Redis | Memory |
-|------------|:----------:|:-------:|:-----:|:------:|
+| Store Type | PostgreSQL | MongoDB† | Redis | Memory |
+|------------|:----------:|:--------:|:-----:|:------:|
 | Scheduler | ✅ | ✅ | ✅ | - |
 | DLQ | ✅ | ✅ | ✅ | ✅ |
 | Saga | ✅ | ✅ | ✅ | ✅ |
@@ -105,6 +105,8 @@ All store implementations follow the same interface patterns:
 | Schema | ✅ | ✅ | ✅ | ✅ |
 | Idempotency | ✅ | ✅ | ✅ | ✅ |
 | Poison | ✅ | - | ✅ | ✅ |
+
+† MongoDB store implementations are provided by the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module, not this package.
 
 ## Middleware Chain Order
 

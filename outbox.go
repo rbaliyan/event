@@ -16,10 +16,10 @@ import (
 //	orderEvent.Publish(ctx, order)
 //
 //	// Inside transaction - goes to outbox
-//	outbox.Transaction(ctx, mongoClient, func(ctx context.Context) error {
-//	    ordersCol.UpdateOne(ctx, filter, update)
-//	    return orderEvent.Publish(ctx, order)  // Routed to outbox!
-//	})
+//	tx, _ := db.BeginTx(ctx, nil)
+//	ctx = event.WithOutboxTx(ctx, tx)
+//	ordersTable.UpdateOne(ctx, filter, update)
+//	orderEvent.Publish(ctx, order) // Routed to outbox!
 type OutboxStore interface {
 	// Store persists a message in the outbox within the active transaction.
 	// The transaction session should be extracted from the context.
@@ -41,16 +41,16 @@ type outboxTxKey struct{}
 // WithOutboxTx adds a transaction session to the context.
 // This signals to the Bus that publishes should go to outbox instead of transport.
 //
-// The session value is implementation-specific (e.g., mongo.SessionContext for MongoDB).
+// The session value is implementation-specific (e.g., *sql.Tx for PostgreSQL,
+// or mongo.SessionContext for MongoDB via the event-mongodb module).
 //
 // Example:
 //
-//	// MongoDB transaction
-//	sess.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (any, error) {
-//	    ctx := event.WithOutboxTx(sessCtx, sessCtx)
-//	    // ... business logic ...
-//	    return nil, orderEvent.Publish(ctx, order)  // Goes to outbox
-//	})
+//	// PostgreSQL transaction
+//	tx, _ := db.BeginTx(ctx, nil)
+//	ctx = event.WithOutboxTx(ctx, tx)
+//	// ... business logic ...
+//	orderEvent.Publish(ctx, order)  // Goes to outbox
 func WithOutboxTx(ctx context.Context, session any) context.Context {
 	return context.WithValue(ctx, outboxTxKey{}, session)
 }

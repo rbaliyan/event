@@ -13,7 +13,8 @@ import (
 // persistence across restarts is not required.
 //
 // Note: Messages are lost on process restart. For true persistence,
-// use MongoStore or PostgresStore.
+// use a PostgreSQL store or the MongoDB persistent store from the
+// event-mongodb module (https://github.com/rbaliyan/event-mongodb).
 type MemoryStore struct {
 	mu       sync.RWMutex
 	events   map[string]*memoryEventStore

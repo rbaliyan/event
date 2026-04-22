@@ -32,7 +32,9 @@ type stateEntry struct {
 // IMPORTANT: MemoryStateManager does NOT provide distributed coordination.
 // In multi-instance deployments, each instance has its own independent state,
 // so the same message could be processed by multiple instances. Use
-// RedisStateManager or MongoStateManager for production distributed deployments.
+// RedisStateManager or a MongoDB-backed state manager (available in the
+// event-mongodb module: https://github.com/rbaliyan/event-mongodb) for
+// production distributed deployments.
 //
 // Features:
 //   - Thread-safe using mutex synchronization

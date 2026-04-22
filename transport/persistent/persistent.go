@@ -7,11 +7,12 @@
 //   - Provides natural backpressure (poll-based)
 //
 // This is useful when you need persistence without external infrastructure
-// like Redis or Kafka, using any storage backend (MongoDB, PostgreSQL, memory).
+// like Redis or Kafka, using any storage backend (PostgreSQL, memory, or
+// MongoDB via the event-mongodb module).
 //
 // Usage:
 //
-//	store := persistent.NewMemoryStore() // or NewMongoStore, NewPostgresStore
+//	store := persistent.NewMemoryStore() // or a PostgreSQL/MongoDB store
 //	t := persistent.New(store)
 //
 //	bus, _ := event.NewBus("mybus", event.WithTransport(t))

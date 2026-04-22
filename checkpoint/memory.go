@@ -9,7 +9,8 @@ import (
 // MemoryCheckpointStore is an in-memory checkpoint store for testing.
 //
 // This store is not suitable for production as data is lost on restart.
-// Use RedisStore or MongoStore for production workloads.
+// Use RedisStore for production workloads, or the MongoDB checkpoint store
+// from the event-mongodb module (https://github.com/rbaliyan/event-mongodb).
 type MemoryCheckpointStore struct {
 	mu          sync.RWMutex
 	checkpoints map[string]time.Time

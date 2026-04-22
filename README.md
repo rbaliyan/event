@@ -18,7 +18,7 @@ A **production-grade event pub-sub library** for Go with support for distributed
 - **Delivery Modes**: Broadcast (fan-out) or WorkerPool (load balancing)
 
 ### Reliability
-- **Transactional Outbox**: Atomic publish with database writes (PostgreSQL, MongoDB, Redis)
+- **Transactional Outbox**: Atomic publish with database writes (PostgreSQL, Redis; MongoDB via [event-mongodb](https://github.com/rbaliyan/event-mongodb))
 - **Idempotency**: Prevent duplicate processing (Redis, PostgreSQL, in-memory)
 - **Poison Detection**: Auto-quarantine repeatedly failing messages
 - **At-Least-Once Delivery**: Via Redis Streams, NATS, or Kafka
@@ -51,7 +51,9 @@ All packages share consistent patterns:
 - Functional options for configuration
 - Health checks via `health.Checker` interface
 - OpenTelemetry metrics support
-- Multiple backend implementations (PostgreSQL, MongoDB, Redis)
+- Multiple backend implementations (PostgreSQL, Redis, and MongoDB via event-mongodb)
+
+> **Note:** MongoDB implementations for outbox, monitor, distributed state manager, schema, idempotency, and checkpoint were moved to the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module. See each section below for migration details.
 
 ## Installation
 
@@ -210,10 +212,9 @@ func main() {
     db := client.Database("myapp")
 
     // Watch a specific collection
-    transport := mongodb.New(db,
+    transport, _ := mongodb.New(db,
         mongodb.WithCollection("orders"),
         mongodb.WithFullDocument(mongodb.FullDocumentUpdateLookup),
-        mongodb.WithResumeTokenStore(mongodb.NewMongoResumeTokenStore(db)),
     )
 
     bus, _ := event.NewBus("order-watcher", event.WithTransport(transport))
@@ -408,7 +409,10 @@ mongoEvent.Subscribe(ctx, handler,
 For transports without re-delivery (e.g., MongoDB Change Streams), the middleware automatically stores message payload so the RecoveryRunner can re-publish stale events if a worker crashes:
 
 ```go
-coord, _ := distributed.NewMongoStateManager(db)
+// Redis-backed coordinator with payload recovery
+coord, _ := distributed.NewRedisStateManager(redisClient,
+    distributed.WithCompletedTTL(48*time.Hour),
+)
 
 // RecoveryRunner detects PayloadStore capability automatically
 runner, _ := distributed.NewRecoveryRunner(coord,
@@ -419,6 +423,8 @@ runner, _ := distributed.NewRecoveryRunner(coord,
 
 go runner.Run(ctx)
 ```
+
+For MongoDB-backed payload recovery, use `distributed.NewMongoStateManager` from the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module.
 
 Recovery is two-phase:
 1. **Re-publish**: Stale entries with stored payload are re-published via the bus with a new event ID
@@ -443,15 +449,17 @@ orderEvent.Subscribe(ctx, collectAnalytics,
 | Backend | Package | Use Case |
 |---------|---------|----------|
 | Redis | `distributed.NewRedisStateManager` | Distributed deployments (recommended) |
-| MongoDB | `distributed.NewMongoStateManager` | When MongoDB is already your primary store |
+| MongoDB | `distributed.NewMongoStateManager` (event-mongodb) | When MongoDB is already your primary store |
 | Memory | `distributed.NewMemoryStateManager` | Single-instance or testing |
 
 All three backends implement both `Coordinator` and `PayloadStore` interfaces.
 
+The MongoDB backend is provided by the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module.
+
 ### Worker Observability
 
 Query active and completed worker states using the `WorkerStore` interface
-(implemented by `MongoStateManager` and `MemoryStateManager`):
+(implemented by `MemoryStateManager` and `MongoStateManager` from event-mongodb):
 
 ```go
 page, _ := sm.ListWorkers(ctx, distributed.WorkerFilter{
@@ -480,7 +488,7 @@ import (
 func main() {
     ctx := context.Background()
 
-    store, _ := outbox.NewMongoStore(mongoClient.Database("myapp"))
+    store, _ := outbox.NewPostgresStore(db)
 
     bus, _ := event.NewBus("order-service",
         event.WithTransport(transport),
@@ -495,19 +503,23 @@ func main() {
     orderEvent.Publish(ctx, Order{ID: "123"})
 
     // Inside transaction - automatically routes to outbox
-    err := outbox.Transaction(ctx, mongoClient, func(ctx context.Context) error {
-        _, err := ordersCol.InsertOne(ctx, order)
-        if err != nil {
-            return err
-        }
-        return orderEvent.Publish(ctx, order) // Goes to outbox
-    })
+    tx, _ := db.BeginTx(ctx, nil)
+    ctx = event.WithOutboxTx(ctx, tx)
+    _, err := tx.ExecContext(ctx, "INSERT INTO orders ...")
+    if err != nil {
+        tx.Rollback()
+        return
+    }
+    orderEvent.Publish(ctx, order) // Goes to outbox
+    tx.Commit()
 
     // Start relay to publish from outbox to transport
-    relay := outbox.NewMongoRelay(store, transport)
+    relay := outbox.NewRelay(store, transport)
     go relay.Start(ctx)
 }
 ```
+
+For MongoDB outbox support, use the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module.
 
 ## Idempotency
 
@@ -598,7 +610,7 @@ Endpoints:
 
 ### Worker Pool State (HTTP)
 
-When using distributed worker pools with MongoDB, expose worker state
+When using distributed worker pools, expose worker state
 via the monitor HTTP handler:
 
 ```go
@@ -768,8 +780,8 @@ if err := orderSaga.Execute(ctx, sagaID, order); err != nil {
 
 ## Database Support
 
-| Component | PostgreSQL | MongoDB | Redis | In-Memory |
-|-----------|:----------:|:-------:|:-----:|:---------:|
+| Component | PostgreSQL | MongoDB† | Redis | In-Memory |
+|-----------|:----------:|:--------:|:-----:|:---------:|
 | Outbox | ✅ | ✅ | ✅ | - |
 | Idempotency | ✅ | ✅ | ✅ | ✅ |
 | Poison | ✅ | - | ✅ | ✅ |
@@ -779,6 +791,8 @@ if err := orderSaga.Execute(ctx, sagaID, order); err != nil {
 | Scheduler | ✅ | ✅ | ✅ | - |
 | Saga | ✅ | ✅ | ✅ | ✅ |
 | Distributed WP | - | ✅ | ✅ | ✅ |
+
+† MongoDB implementations are provided by the separate [event-mongodb](https://github.com/rbaliyan/event-mongodb) module.
 
 ## Testing
 

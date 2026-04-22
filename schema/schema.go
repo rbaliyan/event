@@ -8,7 +8,8 @@
 //
 // Schema providers support two strategies:
 //   - Transport-based: Uses transport's KV/retention if available (NATS KV, Kafka compacted)
-//   - Database fallback: PostgreSQL, MongoDB, or Redis for transports without retention
+//   - Database fallback: PostgreSQL or Redis for transports without retention;
+//     for MongoDB, use the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
 //
 // Example usage:
 //

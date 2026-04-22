@@ -1,7 +1,7 @@
 // Package composite provides a transport that combines a durable store with
 // a real-time signal transport for low-latency, reliable event delivery.
 //
-// Storage systems (MongoDB, PostgreSQL) provide excellent durability but poor
+// Storage systems (PostgreSQL, MongoDB) provide excellent durability but poor
 // real-time notification. Real-time systems (Redis, NATS) provide instant
 // delivery but poor persistence. The composite transport combines both:
 //
@@ -15,7 +15,7 @@
 //
 // Usage:
 //
-//	store := persistent.NewMemoryStore() // or MongoStore, PostgresStore
+//	store := persistent.NewMemoryStore() // or a PostgreSQL/MongoDB persistent store
 //	signal := redis.New(redisClient)     // or nats.New, channel.New
 //
 //	t, _ := composite.New(store, signal,

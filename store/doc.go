@@ -25,7 +25,8 @@
 //
 // MemoryStore[T] - Thread-safe in-memory store for testing and development.
 //
-// MongoStore[T] - MongoDB store with cursor-based pagination and indexes.
+// For MongoDB store implementations, use the event-mongodb module:
+// https://github.com/rbaliyan/event-mongodb
 //
 // # Usage
 //
@@ -41,13 +42,15 @@
 //	    TransitionState(ctx context.Context, id string, from, to Status) error
 //	}
 //
-// Implementations satisfy both core and domain interfaces:
+// Implementations satisfy both core and domain interfaces. For example,
+// using the MongoDB store from the event-mongodb module:
 //
-//	type MongoStore struct {
-//	    *store.MongoStore[*State]
+//	// See github.com/rbaliyan/event-mongodb/store for MongoDB implementation
+//	type MyMongoStore struct {
+//	    *mongostore.MongoStore[*State]
 //	}
 //
-//	func (s *MongoStore) ListByStatus(ctx context.Context, statuses []Status) ([]*State, error) {
+//	func (s *MyMongoStore) ListByStatus(ctx context.Context, statuses []Status) ([]*State, error) {
 //	    return s.Collection().Find(ctx, bson.M{"status": bson.M{"$in": statuses}})
 //	}
 //
