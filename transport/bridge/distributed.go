@@ -33,7 +33,7 @@ import (
 //
 // metrics is optional — pass nil to disable skip counting.
 //
-// Example:
+// Example (mongodb refers to github.com/rbaliyan/event-mongodb):
 //
 //	bridge.WithMiddleware(
 //	    bridge.DistributedDedup(
@@ -64,7 +64,7 @@ func DistributedDedup(coord distributed.Coordinator, keyFn DedupKeyFn, ttl time.
 			// Scope the dedup key by event name so pumps for different
 			// registered events on the same source do not race for the
 			// same slot. Without this, all pumps on a shared-source bus
-			// (e.g. mongodb CS with Created/Updated/Deleted on the same
+			// (e.g. a MongoDB change stream with Created/Updated/Deleted on the same
 			// collection) compete for the same key and only one publishes
 			// — typically to the wrong sink stream for 2/3 of messages.
 			// Prefixing with the event name gives each pump its own

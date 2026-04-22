@@ -115,6 +115,7 @@
 //	orderEvent := event.New[Order]("order.created")
 //	event.Register(ctx, bus, orderEvent)  // Schema applied automatically
 //
-// Schema providers: MemoryProvider, PostgresProvider, MongoProvider, RedisProvider.
+// Schema providers: MemoryProvider, PostgresProvider, RedisProvider.
+// For MongoDB schema storage, use the separate event-mongodb module (https://github.com/rbaliyan/event-mongodb).
 // Use WithStrictSchema(true) to fail registration if schema provider returns an error.
 package event

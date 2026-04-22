@@ -208,7 +208,7 @@ func WithStrictSchema(strict bool) BusOption {
 //
 // Example:
 //
-//	store := outbox.NewMongoStore(mongoClient, "events", "outbox")
+//	store, _ := outbox.NewPostgresStore(db)
 //	bus, _ := event.NewBus("my-app",
 //	    event.WithTransport(transport),
 //	    event.WithOutbox(store),
@@ -218,11 +218,13 @@ func WithStrictSchema(strict bool) BusOption {
 //	orderEvent.Publish(ctx, order)
 //
 //	// Inside transaction - goes to outbox
-//	sess.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (any, error) {
-//	    ctx := event.WithOutboxTx(sessCtx, sessCtx)
-//	    ordersCol.UpdateOne(ctx, filter, update)
-//	    return nil, orderEvent.Publish(ctx, order) // Routed to outbox!
-//	})
+//	tx, _ := db.BeginTx(ctx, nil)
+//	ctx = event.WithOutboxTx(ctx, tx)
+//	tx.ExecContext(ctx, "UPDATE orders SET status = $1 WHERE id = $2", "paid", orderID)
+//	orderEvent.Publish(ctx, order) // Routed to outbox!
+//
+// For MongoDB outbox, use the separate event-mongodb module:
+// https://github.com/rbaliyan/event-mongodb
 func WithOutbox(store OutboxStore) BusOption {
 	return func(o *busOptions) {
 		if store != nil {
@@ -238,7 +240,7 @@ func WithOutbox(store OutboxStore) BusOption {
 //
 // Example:
 //
-//	dlqStore := dlq.NewMongoStore(db, dlq.WithCollection("_dlq"))
+//	dlqStore := dlq.NewPostgresStore(db)
 //	bus, _ := event.NewBus("my-app",
 //	    event.WithTransport(transport),
 //	    event.WithDLQ(dlq.NewStoreAdapter(dlqStore, "my-service")),

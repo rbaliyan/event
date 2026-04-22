@@ -1,8 +1,8 @@
 // Package store provides common store interfaces and utilities for persistence.
 //
 // This package defines a core set of interfaces that can be implemented by
-// different backends (MongoDB, PostgreSQL, Redis, in-memory) while allowing
-// domain-specific extensions.
+// different backends (PostgreSQL, Redis, in-memory, or MongoDB via event-mongodb)
+// while allowing domain-specific extensions.
 //
 // # Architecture
 //
@@ -10,7 +10,7 @@
 //
 //  1. Core Interfaces: Basic CRUD operations common to all stores
 //  2. Domain Extensions: Specialized interfaces for specific use cases
-//  3. Backend Implementations: MongoDB, PostgreSQL, Redis, memory stores
+//  3. Backend Implementations: PostgreSQL, Redis, memory stores (MongoDB via event-mongodb)
 //
 // # Usage
 //
@@ -21,9 +21,8 @@
 //	    ListByStatus(ctx context.Context, statuses []Status) ([]*State, error)
 //	}
 //
-// Backend implementations satisfy both the core and domain interfaces:
-//
-//	func NewMongoSagaStore(db *mongo.Database) SagaStore { ... }
+// Backend implementations satisfy both the core and domain interfaces.
+// For MongoDB implementations, use the event-mongodb module (https://github.com/rbaliyan/event-mongodb).
 package store
 
 import (

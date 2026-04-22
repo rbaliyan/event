@@ -305,7 +305,7 @@ type RecordStartParams struct {
 // Implementations:
 //   - monitor.NewMemoryStore(): In-memory store for development/testing
 //   - monitor.NewPostgresStore(db): PostgreSQL-based persistent store
-//   - monitor.NewMongoStore(db): MongoDB-based persistent store
+//   - For MongoDB, use the separate event-mongodb module (https://github.com/rbaliyan/event-mongodb)
 //
 // Example:
 //

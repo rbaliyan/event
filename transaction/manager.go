@@ -10,9 +10,11 @@
 //   - Transaction interface for database-agnostic transaction handling
 //   - Manager interface for transaction lifecycle management
 //   - SQLManager for SQL database transactions
-//   - MongoManager for MongoDB transactions (see mongodb.go)
 //   - IdempotentHandler for exactly-once message processing
 //   - TransactionalHandler for combining transactions with idempotency
+//
+// For MongoDB transaction management, use the event-mongodb module:
+// https://github.com/rbaliyan/event-mongodb
 //
 // # Basic Usage
 //
@@ -153,7 +155,7 @@ type SQLTransactionProvider interface {
 //
 // Implementations:
 //   - SQLManager: For SQL databases (PostgreSQL, MySQL, SQLite, etc.)
-//   - MongoManager: For MongoDB (see mongodb.go)
+//   - For MongoDB, use the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
 //
 // Example:
 //

@@ -12,9 +12,11 @@
 //   - Store interface for idempotency tracking
 //   - MemoryStore for single-instance deployments
 //   - RedisStore for distributed deployments with Redis
-//   - MongoStore for distributed deployments with MongoDB
 //   - PostgresStore for distributed deployments with PostgreSQL
 //   - TransactionalStore for database transaction support
+//
+// For MongoDB idempotency storage, use the event-mongodb module:
+// https://github.com/rbaliyan/event-mongodb
 //
 // # Basic Usage
 //
@@ -248,8 +250,7 @@ type TransactionalStore interface {
 	// IsDuplicateTx checks for duplicate within a database transaction.
 	//
 	// The tx parameter is the active database transaction. Implementations
-	// should type-assert to the expected type (e.g., *sql.Tx for SQL databases,
-	// mongo.SessionContext for MongoDB).
+	// should type-assert to the expected type (e.g., *sql.Tx for SQL databases).
 	//
 	// Parameters:
 	//   - ctx: Context for cancellation and deadlines

@@ -14,9 +14,11 @@
 //   - Store interface for outbox persistence
 //   - PostgresStore for PostgreSQL databases
 //   - RedisStore for Redis-based outbox (see redis.go)
-//   - MongoStore for MongoDB (see mongodb.go)
 //   - Publisher interface for storing messages
 //   - Relay for background publishing
+//
+// For MongoDB outbox support, use the event-mongodb module:
+// https://github.com/rbaliyan/event-mongodb
 //
 // # The Problem
 //
@@ -172,7 +174,7 @@ type Message struct {
 // Implementations:
 //   - PostgresStore: For PostgreSQL databases
 //   - RedisStore: For Redis (see redis.go)
-//   - MongoStore: For MongoDB (see mongodb.go)
+//   - For MongoDB, use the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
 type Store interface {
 	// Insert adds a message to the outbox within a transaction.
 	//

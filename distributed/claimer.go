@@ -23,8 +23,8 @@
 //   - PayloadStore: Optional interface for persisting message payload for recovery
 //   - WorkerPoolMiddleware: Middleware that uses a Coordinator to emulate WorkerPool
 //   - RedisStateManager: Redis-based implementation using atomic SETNX
-//   - MongoStateManager: MongoDB-based implementation using findOneAndUpdate
 //   - MemoryStateManager: In-memory implementation for single-instance or testing
+//   - For MongoDB, use NewMongoStateManager from the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
 //
 // Architecture:
 //
@@ -99,8 +99,8 @@ import (
 //
 // Implementations:
 //   - RedisStateManager: Uses Redis atomic SETNX for distributed deployments
-//   - MongoStateManager: Uses MongoDB atomic findOneAndUpdate
 //   - MemoryStateManager: In-memory for single-instance or testing
+//   - For MongoDB, use NewMongoStateManager from the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
 type Coordinator interface {
 	// Acquire atomically transitions a message to "processing" state.
 	//
@@ -130,9 +130,9 @@ type Coordinator interface {
 //   - RecoveryRunner re-publishes stale events via the injected Publisher
 //
 // Implementations:
-//   - MongoStateManager: Stores payload in the same document (atomic with state)
 //   - RedisStateManager: Stores payload in a companion key
 //   - MemoryStateManager: Stores payload in memory (for testing)
+//   - For MongoDB, use NewMongoStateManager from the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
 type PayloadStore interface {
 	// StorePayload persists payload alongside a message ID.
 	// Called after a successful Acquire when the transport doesn't support
@@ -193,7 +193,7 @@ type stateOptions struct {
 	cleanupEnabled bool
 	cleanupPeriod  time.Duration
 	instanceID     string
-	// MongoDB-specific options (only used by NewMongoStateManager)
+	// options reserved for use by external state manager implementations
 	collectionName string
 	capped         bool
 	cappedSize     int64
@@ -250,10 +250,10 @@ func WithCleanup(enabled bool, period time.Duration) Option {
 	}
 }
 
-// WithCollection sets the MongoDB collection name for state storage.
+// WithCollection sets the collection name for state storage.
 //
-// This option is only used by NewMongoStateManager and is ignored by other
-// state manager implementations.
+// This option is used by external state manager implementations (e.g., MongoDB)
+// and is ignored by the built-in Redis and Memory state managers.
 //
 // Default: "_message_state"
 func WithCollection(name string) Option {
@@ -279,10 +279,11 @@ func WithInstanceID(id string) Option {
 	}
 }
 
-// WithCapped enables MongoDB capped collection mode for high-throughput scenarios.
+// WithCapped enables capped collection mode for high-throughput scenarios.
 //
-// This option is only used by NewMongoStateManager and is ignored by other
-// state manager implementations.
+// This option is used by external state manager implementations that support
+// capped collections (e.g., MongoDB via event-mongodb) and is ignored by
+// the built-in Redis and Memory state managers.
 //
 // Capped collections are fixed-size collections that automatically remove
 // the oldest documents when the size limit is reached.
@@ -291,7 +292,7 @@ func WithInstanceID(id string) Option {
 //   - sizeBytes: Maximum collection size in bytes (required, minimum 4096)
 //   - maxDocs: Maximum number of documents (0 = unlimited, size-based only)
 //
-// IMPORTANT LIMITATIONS:
+// IMPORTANT LIMITATIONS (when used with MongoDB):
 //   - Reset() becomes a no-op (MongoDB doesn't allow deletes in capped collections)
 //   - No TTL index support
 //   - Failed states wait for size-based removal

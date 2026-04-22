@@ -5,7 +5,7 @@
 //
 // Available implementations:
 //   - RedisStore: Production-ready Redis-backed store
-//   - MongoStore: Production-ready MongoDB-backed store
+//   - For MongoDB checkpoint storage, use the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
 //
 // Usage with event subscriptions:
 //

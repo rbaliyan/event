@@ -40,12 +40,15 @@ import (
 //
 // Example:
 //
-//	coord := distributed.NewMongoStateManager(db)
+//	coord, _ := distributed.NewRedisStateManager(redisClient)
 //	runner := distributed.NewRecoveryRunner(coord,
 //	    distributed.WithStaleTimeout(2*time.Minute),
 //	    distributed.WithCheckInterval(30*time.Second),
 //	    distributed.WithPublisher(bus), // enables payload-aware recovery
 //	)
+//
+// For MongoDB-backed recovery, use NewMongoStateManager from the
+// event-mongodb module (https://github.com/rbaliyan/event-mongodb).
 //
 //	// Start recovery in background
 //	ctx, cancel := context.WithCancel(context.Background())

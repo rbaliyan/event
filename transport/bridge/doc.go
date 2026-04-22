@@ -27,6 +27,7 @@
 // dead-letter routing, distributed coordination, metrics, tracing — is
 // optional middleware composed via [WithMiddleware]:
 //
+//	// mongodb refers to github.com/rbaliyan/event-mongodb
 //	t, _ := bridge.New(source, sink,
 //	    bridge.WithMiddleware(
 //	        bridge.Dedup(coord, mongodb.DedupKeyFromChangeStream(), 24*time.Hour),
