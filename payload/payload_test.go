@@ -3,7 +3,6 @@ package payload
 import (
 	"testing"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -252,106 +251,6 @@ func TestProto(t *testing.T) {
 	})
 }
 
-// TestBSON tests BSON codec
-func TestBSON(t *testing.T) {
-	codec := BSON{}
-
-	t.Run("ContentType", func(t *testing.T) {
-		if got := codec.ContentType(); got != "application/bson" {
-			t.Errorf("ContentType() = %v, want application/bson", got)
-		}
-	})
-
-	t.Run("Encode", func(t *testing.T) {
-		order := TestOrder{
-			ID:       "order-bson-1",
-			Product:  "BSON Widget",
-			Quantity: 12,
-			Price:    89.99,
-		}
-
-		data, err := codec.Encode(order)
-		if err != nil {
-			t.Fatalf("Encode() error = %v", err)
-		}
-		if len(data) == 0 {
-			t.Error("Encode() returned empty data")
-		}
-	})
-
-	t.Run("Decode", func(t *testing.T) {
-		original := TestOrder{
-			ID:       "order-bson-2",
-			Product:  "BSON Gadget",
-			Quantity: 8,
-			Price:    59.99,
-		}
-
-		data, err := codec.Encode(original)
-		if err != nil {
-			t.Fatalf("Encode() error = %v", err)
-		}
-
-		var decoded TestOrder
-		if err := codec.Decode(data, &decoded); err != nil {
-			t.Fatalf("Decode() error = %v", err)
-		}
-
-		if decoded != original {
-			t.Errorf("Decode() = %+v, want %+v", decoded, original)
-		}
-	})
-
-	t.Run("RoundTrip", func(t *testing.T) {
-		original := TestOrder{
-			ID:       "order-bson-3",
-			Product:  "MongoDB Widget",
-			Quantity: 25,
-			Price:    179.99,
-		}
-
-		data, err := codec.Encode(original)
-		if err != nil {
-			t.Fatalf("Encode() error = %v", err)
-		}
-
-		var decoded TestOrder
-		if err := codec.Decode(data, &decoded); err != nil {
-			t.Fatalf("Decode() error = %v", err)
-		}
-
-		if decoded != original {
-			t.Errorf("RoundTrip failed: got %+v, want %+v", decoded, original)
-		}
-	})
-
-	t.Run("MongoDBTypes", func(t *testing.T) {
-		type BSONDoc struct {
-			ID   bson.ObjectID `bson:"_id"`
-			Name string        `bson:"name"`
-		}
-
-		original := BSONDoc{
-			ID:   bson.NewObjectID(),
-			Name: "test-doc",
-		}
-
-		data, err := codec.Encode(original)
-		if err != nil {
-			t.Fatalf("Encode() error = %v", err)
-		}
-
-		var decoded BSONDoc
-		if err := codec.Decode(data, &decoded); err != nil {
-			t.Fatalf("Decode() error = %v", err)
-		}
-
-		if decoded.ID != original.ID || decoded.Name != original.Name {
-			t.Errorf("MongoDB types failed: got %+v, want %+v", decoded, original)
-		}
-	})
-}
-
 // TestText tests Text codec
 func TestText(t *testing.T) {
 	codec := Text{}
@@ -564,17 +463,6 @@ func TestRegistry(t *testing.T) {
 		}
 	})
 
-	t.Run("Register_BSON", func(t *testing.T) {
-		// BSON should be registered by init
-		codec, ok := Get("application/bson")
-		if !ok {
-			t.Error("Get(application/bson) should return true (registered in init)")
-		}
-		if codec == nil {
-			t.Error("Get(application/bson) returned nil")
-		}
-	})
-
 	t.Run("Register_Text", func(t *testing.T) {
 		// Text should be registered by init
 		codec, ok := Get("text/plain")
@@ -593,7 +481,6 @@ func TestCodecInterface(t *testing.T) {
 		JSON{},
 		MsgPack{},
 		Proto{},
-		BSON{},
 		Text{},
 	}
 
@@ -648,37 +535,6 @@ func BenchmarkMsgPack(b *testing.B) {
 	order := TestOrder{
 		ID:       "bench-order-msgpack",
 		Product:  "Benchmark MsgPack Widget",
-		Quantity: 100,
-		Price:    999.99,
-	}
-
-	b.Run("Encode", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			_, err := codec.Encode(order)
-			if err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-
-	data, _ := codec.Encode(order)
-	b.Run("Decode", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			var decoded TestOrder
-			err := codec.Decode(data, &decoded)
-			if err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-}
-
-// BenchmarkBSON benchmarks BSON codec
-func BenchmarkBSON(b *testing.B) {
-	codec := BSON{}
-	order := TestOrder{
-		ID:       "bench-order-bson",
-		Product:  "Benchmark BSON Widget",
 		Quantity: 100,
 		Price:    999.99,
 	}
