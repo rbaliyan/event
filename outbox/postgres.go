@@ -18,7 +18,8 @@ import (
 type PostgresStoreOption func(*postgresStoreOptions)
 
 type postgresStoreOptions struct {
-	table string
+	table         string
+	notifyChannel string
 }
 
 // WithTable sets a custom table name for the PostgreSQL outbox store.
@@ -54,10 +55,49 @@ func WithTable(table string) PostgresStoreOption {
 //	);
 //	CREATE INDEX idx_outbox_pending ON event_outbox(status, priority DESC, created_at)
 //	    WHERE status IN ('pending', 'failed');
-type PostgresStore struct {
-	db        *sql.DB
-	tableName string
+// WithNotifyChannel sets the PostgreSQL NOTIFY channel name emitted on each Insert.
+// Listeners using pq.NewListener can subscribe to this channel to be woken up
+// immediately when new messages arrive instead of relying solely on polling.
+// The default channel is "event_outbox_pending".
+func WithNotifyChannel(channel string) PostgresStoreOption {
+	return func(o *postgresStoreOptions) {
+		if channel != "" {
+			o.notifyChannel = channel
+		}
+	}
 }
+
+// PostgresStore implements Store for PostgreSQL.
+//
+// PostgresStore uses PostgreSQL's transactional capabilities for reliable
+// message storage. It supports concurrent relay instances using
+// SELECT FOR UPDATE SKIP LOCKED to prevent duplicate processing.
+//
+// Required Schema:
+//
+//	CREATE TABLE event_outbox (
+//	    id           BIGSERIAL PRIMARY KEY,
+//	    event_name   VARCHAR(255) NOT NULL,
+//	    event_id     VARCHAR(36) NOT NULL,
+//	    payload      BYTEA NOT NULL,
+//	    metadata     JSONB,
+//	    created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+//	    published_at TIMESTAMP,
+//	    status       VARCHAR(20) NOT NULL DEFAULT 'pending',
+//	    retry_count  INT NOT NULL DEFAULT 0,
+//	    last_error   TEXT,
+//	    priority     INT NOT NULL DEFAULT 0
+//	);
+//	CREATE INDEX idx_outbox_pending ON event_outbox(status, priority DESC, created_at)
+//	    WHERE status IN ('pending', 'failed');
+type PostgresStore struct {
+	db            *sql.DB
+	tableName     string
+	notifyChannel string
+}
+
+// NotifyChannel returns the PostgreSQL NOTIFY channel name emitted on each Insert.
+func (s *PostgresStore) NotifyChannel() string { return s.notifyChannel }
 
 // NewPostgresStore creates a new PostgreSQL outbox store.
 //
@@ -69,15 +109,17 @@ func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) (*PostgresStore, 
 	}
 
 	o := &postgresStoreOptions{
-		table: "event_outbox",
+		table:         "event_outbox",
+		notifyChannel: "event_outbox_pending",
 	}
 	for _, opt := range opts {
 		opt(o)
 	}
 
 	return &PostgresStore{
-		db:        db,
-		tableName: o.table,
+		db:            db,
+		tableName:     o.table,
+		notifyChannel: o.notifyChannel,
 	}, nil
 }
 
@@ -135,7 +177,15 @@ func (s *PostgresStore) Insert(ctx context.Context, tx *sql.Tx, msg *Message) er
 		msg.Priority,
 	).Scan(&msg.ID)
 
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Notify any listening relay that a new message is pending.
+	// This fires when the caller's transaction commits, not at INSERT time.
+	// Ignored if no relay is listening — the relay catches up via its fallback ticker.
+	_, _ = tx.ExecContext(ctx, `SELECT pg_notify($1, '')`, s.notifyChannel)
+	return nil
 }
 
 // GetPending retrieves pending and failed messages for publishing.

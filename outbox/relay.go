@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/rbaliyan/event/v3/backoff"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
@@ -47,28 +48,32 @@ import (
 //	// Shutdown gracefully
 //	cancel()
 type Relay struct {
-	store        Store
-	transport    transport.Transport
-	pollDelay    time.Duration
-	batchSize    int
-	logger       *slog.Logger
-	cleanupAge   time.Duration // How old published messages should be before deletion
-	metrics      *Metrics
-	maxRetries   int              // 0 = unlimited retries (default)
-	retryBackoff backoff.Strategy // nil = no backoff delay between retries
+	store           Store
+	transport       transport.Transport
+	pollDelay       time.Duration
+	batchSize       int
+	logger          *slog.Logger
+	cleanupAge      time.Duration // How old published messages should be before deletion
+	metrics         *Metrics
+	maxRetries      int              // 0 = unlimited retries (default)
+	retryBackoff    backoff.Strategy // nil = no backoff delay between retries
+	listener        *pq.Listener     // optional: wake up on PG NOTIFY instead of only polling
+	listenerChannel string
 }
 
 // RelayOption configures a Relay.
 type RelayOption func(*relayOptions)
 
 type relayOptions struct {
-	pollDelay    time.Duration
-	batchSize    int
-	logger       *slog.Logger
-	cleanupAge   time.Duration
-	metrics      *Metrics
-	maxRetries   int
-	retryBackoff backoff.Strategy
+	pollDelay       time.Duration
+	batchSize       int
+	logger          *slog.Logger
+	cleanupAge      time.Duration
+	metrics         *Metrics
+	maxRetries      int
+	retryBackoff    backoff.Strategy
+	listener        *pq.Listener
+	listenerChannel string
 }
 
 // WithPollDelay sets the polling interval.
@@ -142,6 +147,34 @@ func WithRetryBackoff(strategy backoff.Strategy) RelayOption {
 	}
 }
 
+// WithNotifyListener configures the relay to wake up immediately on PostgreSQL
+// NOTIFY events in addition to its regular polling ticker.
+//
+// When set, the relay subscribes to channel on startup and calls publishPending
+// each time a notification arrives. The polling ticker remains active as a
+// fallback safety net (useful for catching up on notifications missed during
+// a relay restart).
+//
+// Pair this with a PostgresStore: the store emits NOTIFY on each Insert, and
+// the relay wakes up immediately instead of waiting for the next poll tick.
+//
+// Example:
+//
+//	listener := pq.NewListener(dsn, 10*time.Second, time.Minute, nil)
+//	store, _ := outbox.NewPostgresStore(db)
+//	relay := outbox.NewRelay(store, transport,
+//	    outbox.WithPollDelay(5*time.Second),          // fallback interval
+//	    outbox.WithNotifyListener(listener, store.NotifyChannel()),
+//	)
+func WithNotifyListener(l *pq.Listener, channel string) RelayOption {
+	return func(o *relayOptions) {
+		if l != nil && channel != "" {
+			o.listener = l
+			o.listenerChannel = channel
+		}
+	}
+}
+
 // NewRelay creates a new outbox relay.
 //
 // The relay polls the store for pending messages and publishes them to
@@ -178,15 +211,17 @@ func NewRelay(store Store, t transport.Transport, opts ...RelayOption) *Relay {
 	}
 
 	return &Relay{
-		store:        store,
-		transport:    t,
-		pollDelay:    o.pollDelay,
-		batchSize:    o.batchSize,
-		logger:       logger,
-		cleanupAge:   o.cleanupAge,
-		metrics:      o.metrics,
-		maxRetries:   o.maxRetries,
-		retryBackoff: o.retryBackoff,
+		store:           store,
+		transport:       t,
+		pollDelay:       o.pollDelay,
+		batchSize:       o.batchSize,
+		logger:          logger,
+		cleanupAge:      o.cleanupAge,
+		metrics:         o.metrics,
+		maxRetries:      o.maxRetries,
+		retryBackoff:    o.retryBackoff,
+		listener:        o.listener,
+		listenerChannel: o.listenerChannel,
 	}
 }
 
@@ -221,30 +256,50 @@ func (r *Relay) log() *slog.Logger {
 //	// Later, to stop:
 //	cancel()
 func (r *Relay) Start(ctx context.Context) error {
+	// Subscribe to PG NOTIFY if a listener is configured.
+	// Errors here are non-fatal: fall back to polling only.
+	if r.listener != nil {
+		if err := r.listener.Listen(r.listenerChannel); err != nil {
+			r.log().Warn("failed to listen on notify channel, using polling only",
+				"channel", r.listenerChannel, "error", err)
+		} else {
+			defer func() { _ = r.listener.Unlisten(r.listenerChannel) }()
+		}
+	}
+
 	ticker := time.NewTicker(r.pollDelay)
 	defer ticker.Stop()
 
-	// Also start a cleanup ticker
 	cleanupTicker := time.NewTicker(time.Hour)
 	defer cleanupTicker.Stop()
 
 	var consecutiveFailures int
 
+	publish := func() {
+		failures := r.publishPending(ctx)
+		if r.retryBackoff != nil && failures > 0 {
+			consecutiveFailures++
+			delay := r.retryBackoff.NextDelay(consecutiveFailures)
+			ticker.Reset(delay)
+		} else if consecutiveFailures > 0 {
+			consecutiveFailures = 0
+			ticker.Reset(r.pollDelay)
+		}
+	}
+
+	var notifyC <-chan *pq.Notification
+	if r.listener != nil {
+		notifyC = r.listener.Notify
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-notifyC:
+			publish()
 		case <-ticker.C:
-			failures := r.publishPending(ctx)
-			// Adaptive backpressure: back off polling when failures occur
-			if r.retryBackoff != nil && failures > 0 {
-				consecutiveFailures++
-				delay := r.retryBackoff.NextDelay(consecutiveFailures)
-				ticker.Reset(delay)
-			} else if consecutiveFailures > 0 {
-				consecutiveFailures = 0
-				ticker.Reset(r.pollDelay)
-			}
+			publish()
 		case <-cleanupTicker.C:
 			r.cleanup(ctx)
 		}
