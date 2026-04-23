@@ -2,6 +2,8 @@ package distributed
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -309,5 +311,84 @@ func TestRecoveryRunner_Run(t *testing.T) {
 	acquired, _ = sm.Acquire(ctx, "msg-1", time.Hour)
 	if !acquired {
 		t.Fatal("expected acquisition to succeed after runner reset stale state")
+	}
+}
+
+// faultyCoord wraps MemoryStateManager: MarkProcessed can be made to fail,
+// and ClearPayload calls are counted.
+type faultyCoord struct {
+	*MemoryStateManager
+	failMark      bool
+	clearPayloads atomic.Int32
+}
+
+func (f *faultyCoord) MarkProcessed(ctx context.Context, id string) error {
+	if f.failMark {
+		return errors.New("mark processed failed")
+	}
+	return f.MemoryStateManager.MarkProcessed(ctx, id)
+}
+
+func (f *faultyCoord) ClearPayload(ctx context.Context, id string) error {
+	f.clearPayloads.Add(1)
+	return f.MemoryStateManager.ClearPayload(ctx, id)
+}
+
+// countingSender counts Send calls and implements the Publisher (event.Sender) interface.
+type countingSender struct{ n atomic.Int32 }
+
+func (s *countingSender) Send(_ context.Context, _, _ string, _ []byte, _ map[string]string) error {
+	s.n.Add(1)
+	return nil
+}
+
+// TestRecovery_ClearPayloadAfterMarkProcessed verifies that ClearPayload is only
+// called after MarkProcessed succeeds. If MarkProcessed fails, payload must be
+// retained so the next recovery cycle can retry the re-publish.
+func TestRecovery_ClearPayloadAfterMarkProcessed(t *testing.T) {
+	ctx := context.Background()
+
+	inner := NewMemoryStateManager(WithCleanup(false, 0))
+	defer inner.Close()
+
+	coord := &faultyCoord{MemoryStateManager: inner, failMark: true}
+
+	// Acquire and store payload so Phase 1 fires.
+	_, _ = inner.Acquire(ctx, "msg-1", time.Hour)
+	_ = inner.StorePayload(ctx, "msg-1", &MessageData{
+		EventName: "test.event",
+		Payload:   []byte(`"payload"`),
+	})
+
+	pub := &countingSender{}
+
+	runner, err := NewRecoveryRunner(coord,
+		WithStaleTimeout(10*time.Millisecond),
+		WithPublisher(pub),
+	)
+	if err != nil {
+		t.Fatalf("NewRecoveryRunner: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	// First pass: MarkProcessed fails → payload must NOT be cleared.
+	if _, err := runner.RecoverOnce(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n := pub.n.Load(); n != 1 {
+		t.Fatalf("expected 1 re-publish attempt, got %d", n)
+	}
+	if n := coord.clearPayloads.Load(); n != 0 {
+		t.Fatalf("ClearPayload called %d time(s) when MarkProcessed failed; want 0", n)
+	}
+
+	// Second pass: MarkProcessed succeeds → payload must be cleared.
+	coord.failMark = false
+	if _, err := runner.RecoverOnce(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n := coord.clearPayloads.Load(); n != 1 {
+		t.Fatalf("ClearPayload called %d time(s) after successful MarkProcessed; want 1", n)
 	}
 }

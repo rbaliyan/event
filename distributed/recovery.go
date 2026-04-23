@@ -369,16 +369,21 @@ func (r *RecoveryRunner) recoverPayloadEntries(ctx context.Context, ps PayloadSt
 			continue
 		}
 
-		// Re-publish succeeded — clear payload and mark as processed
-		_ = ps.ClearPayload(ctx, entry.MessageID)
+		// Re-publish succeeded — mark processed first, then clear payload.
+		// Order matters: if MarkProcessed fails we keep the payload so the
+		// next recovery cycle can retry. Clearing before marking would leave
+		// the state stuck in "processing" with no payload, causing Phase 2
+		// to reset it and allowing the original message to be reacquired.
 		if err := r.coord.MarkProcessed(ctx, entry.MessageID); err != nil {
 			if r.logger != nil {
-				r.logger.Warn("failed to mark re-published state as processed",
+				r.logger.Warn("failed to mark re-published state as processed, payload retained for next cycle",
 					"message_id", entry.MessageID,
 					"error", err)
 			}
 			r.metrics.recordError(ctx, "mark_processed")
+			continue
 		}
+		_ = ps.ClearPayload(ctx, entry.MessageID)
 		recovered++
 		r.metrics.recordRepublished(ctx, entry.Data.EventName)
 		r.metrics.recordRecovered(ctx)
