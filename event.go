@@ -634,7 +634,7 @@ func (e *eventImpl[T]) subscribeWithCoalesce(
 
 				handlerStart := time.Now()
 				handlerErr := wrappedHandler(handlerCtx, e, out.value)
-				bus.recordHandlerMetrics(handlerCtx, e.name, time.Since(handlerStart), handlerErr)
+				bus.recordHandlerMetrics(handlerCtx, e.name, time.Since(handlerStart), handlerStart.Sub(out.msg.Timestamp()), handlerErr)
 
 				if bestEffort {
 					if handlerErr != nil {
@@ -839,7 +839,7 @@ func (e *eventImpl[T]) processMessage(
 	handlerCtx = ContextWithRawPayload(handlerCtx, msg.Payload())
 	handlerStart := time.Now()
 	handlerErr := wrappedHandler(handlerCtx, e, typedData)
-	bus.recordHandlerMetrics(handlerCtx, e.name, time.Since(handlerStart), handlerErr)
+	bus.recordHandlerMetrics(handlerCtx, e.name, time.Since(handlerStart), handlerStart.Sub(msg.Timestamp()), handlerErr)
 
 	if bestEffort {
 		// Already acked. Log errors and move on.

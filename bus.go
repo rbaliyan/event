@@ -70,6 +70,7 @@ type Bus struct {
 	handlerDuration       metric.Float64Histogram
 	handlerErrors         metric.Int64Counter
 	filterDroppedCounter  metric.Int64Counter
+	receiveLag            metric.Float64Histogram
 }
 
 // NewBus creates a new event bus and registers it in the global registry.
@@ -138,6 +139,10 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		bus.filterDroppedCounter, _ = meter.Int64Counter("event_messages_filter_dropped_total",
 			metric.WithDescription("Messages silently dropped by WithMessageFilter before handler dispatch"),
 			metric.WithUnit("{message}"))
+		bus.receiveLag, _ = meter.Float64Histogram("event.transport_receive_lag_seconds",
+			metric.WithDescription("Time between message creation and handler start (queue residence time)"),
+			metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0))
 		initGauges(meter)
 	}
 
@@ -480,14 +485,18 @@ func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payloa
 	return err
 }
 
-// recordHandlerMetrics records handler duration and error metrics for a subscriber invocation.
-func (b *Bus) recordHandlerMetrics(ctx context.Context, eventName string, duration time.Duration, handlerErr error) {
+// recordHandlerMetrics records handler duration, receive lag, and error metrics for a subscriber invocation.
+// lag is the time from message creation to handler start (queue residence time).
+func (b *Bus) recordHandlerMetrics(ctx context.Context, eventName string, duration, lag time.Duration, handlerErr error) {
 	if !b.metricsEnabled {
 		return
 	}
 	attrs := metric.WithAttributes(b.busAttr, attribute.String("event", eventName))
 	if b.handlerDuration != nil {
 		b.handlerDuration.Record(ctx, duration.Seconds(), attrs)
+	}
+	if b.receiveLag != nil && lag >= 0 {
+		b.receiveLag.Record(ctx, lag.Seconds(), attrs)
 	}
 	if handlerErr != nil && b.handlerErrors != nil {
 		b.handlerErrors.Add(ctx, 1, attrs)
