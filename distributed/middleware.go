@@ -2,6 +2,7 @@ package distributed
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -15,6 +16,7 @@ type poolOptions struct {
 	storePayload   *bool // nil = unset; resolved at WorkerPoolMiddleware call time
 	maxPayloadSize int   // 0 = no limit
 	logger         *slog.Logger
+	err            error // first validation error from an option
 }
 
 // WithPayloadRecovery explicitly enables payload storage for recovery.
@@ -44,11 +46,12 @@ func WithPayloadRecovery() PoolOption {
 // support is resolved once at construction time rather than lazily on
 // the first message.
 //
-// If b is nil the option is a no-op; use [WithPayloadRecovery] to enable
-// payload storage explicitly when no bus is available.
+// Passing a nil Bus causes [WorkerPoolMiddleware] to return an error.
+// Use [WithPayloadRecovery] to enable payload storage when no Bus is available.
 func WithBus(b *event.Bus) PoolOption {
 	return func(o *poolOptions) {
 		if b == nil {
+			o.err = errors.New("distributed: WithBus requires a non-nil Bus")
 			return
 		}
 		store := !b.SupportsRedelivery()
@@ -104,17 +107,19 @@ func WithMaxPayloadSize(size int) PoolOption {
 //   - coord: A Coordinator implementation (RedisStateManager for distributed)
 //   - stateTTL: How long to hold the state (should exceed handler timeout)
 //
+// Returns an error if coord is nil or any option is invalid (e.g. WithBus(nil)).
+//
 // Example:
 //
 //	// Redis state manager for distributed deployments
 //	sm := distributed.NewRedisStateManager(redisClient)
 //
 //	// Subscribe with worker emulation
-//	event.Subscribe(ctx, handler,
-//	    event.WithMiddleware(
-//	        distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute),
-//	    ),
-//	)
+//	mw, err := distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute)
+//	if err != nil {
+//	    return err
+//	}
+//	event.Subscribe(ctx, handler, event.WithMiddleware(mw))
 //
 // State TTL Guidelines:
 //
@@ -149,10 +154,17 @@ func WithMaxPayloadSize(size int) PoolOption {
 //
 //	orderEvent.Subscribe(ctx, collectAnalytics,
 //	    event.WithMiddleware(distributed.WorkerPoolMiddleware[Order](smB, ttl)))
-func WorkerPoolMiddleware[T any](coord Coordinator, stateTTL time.Duration, opts ...PoolOption) event.Middleware[T] {
+func WorkerPoolMiddleware[T any](coord Coordinator, stateTTL time.Duration, opts ...PoolOption) (event.Middleware[T], error) {
+	if coord == nil {
+		return nil, errors.New("distributed: WorkerPoolMiddleware requires a non-nil Coordinator")
+	}
+
 	o := &poolOptions{}
 	for _, opt := range opts {
 		opt(o)
+	}
+	if o.err != nil {
+		return nil, o.err
 	}
 
 	// Check if coordinator also implements PayloadStore
@@ -301,5 +313,5 @@ func WorkerPoolMiddleware[T any](coord Coordinator, stateTTL time.Duration, opts
 
 			return handlerErr
 		}
-	}
+	}, nil
 }

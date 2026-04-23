@@ -67,11 +67,22 @@ func (h *testHandler[T]) handle(ctx context.Context, ev event.Event[T], data T) 
 	return h.err
 }
 
+// mustMW unwraps the (Middleware, error) return of WorkerPoolMiddleware in tests
+// that expect construction to succeed. It can be called as
+// mustMW(WorkerPoolMiddleware[T](...)) because Go unpacks multi-return
+// values when they are the sole argument to a function call.
+func mustMW[T any](mw event.Middleware[T], err error) event.Middleware[T] {
+	if err != nil {
+		panic("WorkerPoolMiddleware: unexpected error: " + err.Error())
+	}
+	return mw
+}
+
 func TestMiddleware_NoEventID_PassesThrough(t *testing.T) {
 	coord := &mockCoordinator{acquireResult: true}
 	handler := &testHandler[string]{}
 
-	mw := WorkerPoolMiddleware[string](coord, time.Minute)
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute))
 	wrapped := mw(handler.handle)
 
 	// Context without event ID - should pass through to handler
@@ -92,7 +103,7 @@ func TestMiddleware_AcquireFails_FailOpen(t *testing.T) {
 	coord := &mockCoordinator{acquireErr: errors.New("redis down")}
 	handler := &testHandler[string]{}
 
-	mw := WorkerPoolMiddleware[string](coord, time.Minute)
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute))
 	wrapped := mw(handler.handle)
 
 	ctx := event.ContextWithEventID(context.Background(), "msg-1")
@@ -109,7 +120,7 @@ func TestMiddleware_NotAcquired_Skips(t *testing.T) {
 	coord := &mockCoordinator{acquireResult: false}
 	handler := &testHandler[string]{}
 
-	mw := WorkerPoolMiddleware[string](coord, time.Minute)
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute))
 	wrapped := mw(handler.handle)
 
 	ctx := event.ContextWithEventID(context.Background(), "msg-1")
@@ -126,7 +137,7 @@ func TestMiddleware_Acquired_CallsHandlerAndMarksProcessed(t *testing.T) {
 	coord := &mockCoordinator{acquireResult: true}
 	handler := &testHandler[string]{}
 
-	mw := WorkerPoolMiddleware[string](coord, time.Minute)
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute))
 	wrapped := mw(handler.handle)
 
 	ctx := event.ContextWithEventID(context.Background(), "msg-1")
@@ -150,7 +161,7 @@ func TestMiddleware_HandlerError_ResetsState(t *testing.T) {
 	handlerErr := errors.New("processing failed")
 	handler := &testHandler[string]{err: handlerErr}
 
-	mw := WorkerPoolMiddleware[string](coord, time.Minute)
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute))
 	wrapped := mw(handler.handle)
 
 	ctx := event.ContextWithEventID(context.Background(), "msg-1")
@@ -172,7 +183,7 @@ func TestMiddleware_NoPayloadInContext_NoStore(t *testing.T) {
 	}
 	handler := &testHandler[string]{}
 
-	mw := WorkerPoolMiddleware[string](coord, time.Minute, WithPayloadRecovery())
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute, WithPayloadRecovery()))
 	wrapped := mw(handler.handle)
 
 	// Context with event ID but NO raw payload
@@ -200,7 +211,7 @@ func TestMiddleware_PayloadStored_ClearedOnSuccess(t *testing.T) {
 	}
 	handler := &testHandler[string]{}
 
-	mw := WorkerPoolMiddleware[string](coord, time.Minute, WithPayloadRecovery())
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute, WithPayloadRecovery()))
 	wrapped := mw(handler.handle)
 
 	// Context with event ID AND raw payload
@@ -233,7 +244,7 @@ func TestMiddleware_PayloadStored_NotClearedOnHandlerError(t *testing.T) {
 	handlerErr := errors.New("processing failed")
 	handler := &testHandler[string]{err: handlerErr}
 
-	mw := WorkerPoolMiddleware[string](coord, time.Minute, WithPayloadRecovery())
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute, WithPayloadRecovery()))
 	wrapped := mw(handler.handle)
 
 	ctx := event.ContextWithEventID(context.Background(), "msg-1")
@@ -265,7 +276,7 @@ func TestMiddleware_StorePayloadFails_NoClearOnSuccess(t *testing.T) {
 	}
 	handler := &testHandler[string]{}
 
-	mw := WorkerPoolMiddleware[string](coord, time.Minute, WithPayloadRecovery())
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute, WithPayloadRecovery()))
 	wrapped := mw(handler.handle)
 
 	// With raw payload in context, StorePayload is called but fails
@@ -292,10 +303,10 @@ func TestMiddleware_MaxPayloadSize(t *testing.T) {
 	handler := &testHandler[string]{}
 
 	// Set max payload size very small (10 bytes)
-	mw := WorkerPoolMiddleware[string](coord, time.Minute,
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute,
 		WithPayloadRecovery(),
 		WithMaxPayloadSize(10),
-	)
+	))
 	wrapped := mw(handler.handle)
 
 	// Payload exceeds 10 bytes → skipped
@@ -316,13 +327,28 @@ func TestMiddleware_MaxPayloadSize(t *testing.T) {
 	}
 }
 
+func TestWorkerPoolMiddleware_NilCoord_ReturnsError(t *testing.T) {
+	_, err := WorkerPoolMiddleware[string](nil, time.Minute)
+	if err == nil {
+		t.Fatal("expected error for nil coordinator")
+	}
+}
+
+func TestWorkerPoolMiddleware_WithBusNil_ReturnsError(t *testing.T) {
+	coord := &mockCoordinator{acquireResult: true}
+	_, err := WorkerPoolMiddleware[string](coord, time.Minute, WithBus(nil))
+	if err == nil {
+		t.Fatal("expected error when WithBus receives a nil bus")
+	}
+}
+
 func TestMiddleware_CoordWithoutPayloadStore(t *testing.T) {
 	// Plain coordinator without PayloadStore
 	coord := &mockCoordinator{acquireResult: true}
 	handler := &testHandler[string]{}
 
 	// Even with WithPayloadRecovery, should work fine (just no payload storage)
-	mw := WorkerPoolMiddleware[string](coord, time.Minute, WithPayloadRecovery())
+	mw := mustMW(WorkerPoolMiddleware[string](coord, time.Minute, WithPayloadRecovery()))
 	wrapped := mw(handler.handle)
 
 	ctx := event.ContextWithEventID(context.Background(), "msg-1")
