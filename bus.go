@@ -142,7 +142,7 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 		bus.receiveLag, _ = meter.Float64Histogram("event.transport_receive_lag_seconds",
 			metric.WithDescription("Time between message creation and handler start (queue residence time)"),
 			metric.WithUnit("s"),
-			metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0))
+			metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0))
 		initGauges(meter)
 	}
 

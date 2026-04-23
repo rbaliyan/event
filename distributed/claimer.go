@@ -49,11 +49,11 @@
 //	sm := distributed.NewRedisStateManager(redisClient, distributed.WithCompletedTTL(48*time.Hour))
 //
 //	// Subscribe with middleware to emulate WorkerPool
-//	mongoEvent.Subscribe(ctx, handler,
-//	    event.WithMiddleware(
-//	        distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute),
-//	    ),
-//	)
+//	mw, err := distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute)
+//	if err != nil {
+//	    return err
+//	}
+//	mongoEvent.Subscribe(ctx, handler, event.WithMiddleware(mw))
 //
 // State TTL:
 //
@@ -69,15 +69,19 @@
 //
 //	// Group A workers
 //	smA := distributed.NewRedisStateManager(redis, distributed.WithPrefix("group-a:"))
-//	eventA.Subscribe(ctx, handlerA, event.WithMiddleware(
-//	    distributed.WorkerPoolMiddleware[T](smA, ttl),
-//	))
+//	mwA, err := distributed.WorkerPoolMiddleware[T](smA, ttl)
+//	if err != nil {
+//	    return err
+//	}
+//	eventA.Subscribe(ctx, handlerA, event.WithMiddleware(mwA))
 //
 //	// Group B workers
 //	smB := distributed.NewRedisStateManager(redis, distributed.WithPrefix("group-b:"))
-//	eventB.Subscribe(ctx, handlerB, event.WithMiddleware(
-//	    distributed.WorkerPoolMiddleware[T](smB, ttl),
-//	))
+//	mwB, err := distributed.WorkerPoolMiddleware[T](smB, ttl)
+//	if err != nil {
+//	    return err
+//	}
+//	eventB.Subscribe(ctx, handlerB, event.WithMiddleware(mwB))
 package distributed
 
 import (

@@ -53,11 +53,11 @@ type stateEntry struct {
 //	)
 //
 //	// Use with middleware
-//	event.Subscribe(ctx, handler,
-//	    event.WithMiddleware(
-//	        distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute),
-//	    ),
-//	)
+//	mw, err := distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute)
+//	if err != nil {
+//	    return err
+//	}
+//	event.Subscribe(ctx, handler, event.WithMiddleware(mw))
 type MemoryStateManager struct {
 	mu            sync.RWMutex
 	states        map[string]*stateEntry
@@ -81,11 +81,11 @@ type MemoryStateManager struct {
 //	sm := distributed.NewMemoryStateManager()
 //	defer sm.Close()
 //
-//	event.Subscribe(ctx, handler,
-//	    event.WithMiddleware(
-//	        distributed.WorkerPoolMiddleware[Order](sm, ttl),
-//	    ),
-//	)
+//	mw, err := distributed.WorkerPoolMiddleware[Order](sm, ttl)
+//	if err != nil {
+//	    return err
+//	}
+//	event.Subscribe(ctx, handler, event.WithMiddleware(mw))
 func NewMemoryStateManager(opts ...Option) *MemoryStateManager {
 	o := defaultStateOptions()
 	for _, opt := range opts {

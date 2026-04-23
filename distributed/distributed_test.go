@@ -337,7 +337,13 @@ func (f *faultyCoord) ClearPayload(ctx context.Context, id string) error {
 // countingSender counts Send calls and implements the Publisher (event.Sender) interface.
 type countingSender struct{ n atomic.Int32 }
 
-func (s *countingSender) Send(_ context.Context, _, _ string, _ []byte, _ map[string]string) error {
+func (s *countingSender) Send(_ context.Context, eventName, _ string, payload []byte, _ map[string]string) error {
+	if eventName == "" {
+		return errors.New("Send: empty eventName")
+	}
+	if payload == nil {
+		return errors.New("Send: nil payload")
+	}
 	s.n.Add(1)
 	return nil
 }
