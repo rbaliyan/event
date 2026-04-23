@@ -149,11 +149,17 @@ func WithMaxPayloadSize(size int) PoolOption {
 //	smB := distributed.NewRedisStateManager(redis,
 //	    distributed.WithPrefix("analytics:"))
 //
-//	orderEvent.Subscribe(ctx, processOrder,
-//	    event.WithMiddleware(distributed.WorkerPoolMiddleware[Order](smA, ttl)))
+//	mwA, err := distributed.WorkerPoolMiddleware[Order](smA, ttl)
+//	if err != nil {
+//	    return err
+//	}
+//	orderEvent.Subscribe(ctx, processOrder, event.WithMiddleware(mwA))
 //
-//	orderEvent.Subscribe(ctx, collectAnalytics,
-//	    event.WithMiddleware(distributed.WorkerPoolMiddleware[Order](smB, ttl)))
+//	mwB, err := distributed.WorkerPoolMiddleware[Order](smB, ttl)
+//	if err != nil {
+//	    return err
+//	}
+//	orderEvent.Subscribe(ctx, collectAnalytics, event.WithMiddleware(mwB))
 func WorkerPoolMiddleware[T any](coord Coordinator, stateTTL time.Duration, opts ...PoolOption) (event.Middleware[T], error) {
 	if coord == nil {
 		return nil, errors.New("distributed: WorkerPoolMiddleware requires a non-nil Coordinator")

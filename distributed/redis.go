@@ -72,11 +72,11 @@ type redisPayloadValue struct {
 //	)
 //
 //	// Use with middleware
-//	event.Subscribe(ctx, handler,
-//	    event.WithMiddleware(
-//	        distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute),
-//	    ),
-//	)
+//	mw, err := distributed.WorkerPoolMiddleware[Order](sm, 5*time.Minute)
+//	if err != nil {
+//	    return err
+//	}
+//	event.Subscribe(ctx, handler, event.WithMiddleware(mw))
 type RedisStateManager struct {
 	client        redis.Cmdable
 	prefix        string
