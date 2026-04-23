@@ -2,7 +2,7 @@ package distributed
 
 import (
 	"context"
-	"sync"
+	"log/slog"
 	"time"
 
 	"github.com/rbaliyan/event/v3"
@@ -12,7 +12,7 @@ import (
 type PoolOption func(*poolOptions)
 
 type poolOptions struct {
-	storePayload   *bool // nil = auto-detect from transport, non-nil = explicit
+	storePayload   *bool // nil = unset; resolved at WorkerPoolMiddleware call time
 	maxPayloadSize int   // 0 = no limit
 }
 
@@ -23,13 +23,34 @@ type poolOptions struct {
 // required for transports that don't support re-delivery (e.g., MongoDB
 // Change Streams).
 //
-// By default, payload storage is auto-detected from the transport's
-// SupportsRedelivery() capability. Use this option to override the detection
-// or to make the behavior deterministic at construction time.
+// Use this option when constructing the middleware manually without a Bus
+// reference. Prefer WithBus when a Bus is available — it detects redelivery
+// support automatically and fails construction if the bus is nil.
 func WithPayloadRecovery() PoolOption {
 	return func(o *poolOptions) {
 		t := true
 		o.storePayload = &t
+	}
+}
+
+// WithBus configures the middleware using the bus's transport capabilities.
+// It detects whether the bus transport supports message re-delivery and
+// enables payload storage accordingly. Payload storage is required when
+// the transport cannot re-deliver messages on worker failure (e.g. MongoDB
+// Change Streams).
+//
+// This is the preferred way to configure payload recovery: redelivery
+// support is resolved once at construction time rather than lazily on
+// the first message.
+//
+// Panics if b is nil.
+func WithBus(b *event.Bus) PoolOption {
+	if b == nil {
+		panic("distributed: WithBus requires a non-nil Bus")
+	}
+	return func(o *poolOptions) {
+		store := !b.SupportsRedelivery()
+		o.storePayload = &store
 	}
 }
 
@@ -125,18 +146,21 @@ func WorkerPoolMiddleware[T any](coord Coordinator, stateTTL time.Duration, opts
 	// Check if coordinator also implements PayloadStore
 	ps, hasPayloadStore := coord.(PayloadStore)
 
+	// Resolve payload storage at construction time.
+	// WithBus or WithPayloadRecovery set o.storePayload explicitly.
+	// If neither is provided, default to false (no payload storage) and warn
+	// so callers know they may need to act.
+	storePayload := false
+	if o.storePayload != nil {
+		storePayload = *o.storePayload
+	} else if hasPayloadStore {
+		// Coordinator supports payload storage but no bus or explicit option was
+		// provided — warn once at construction time so the issue is visible
+		// before any messages flow.
+		slog.Warn("distributed.WorkerPoolMiddleware: coordinator supports payload recovery but redelivery support is unknown; use WithBus(bus) or WithPayloadRecovery() to enable payload storage")
+	}
+
 	return func(next event.Handler[T]) event.Handler[T] {
-		// Track whether the transport supports redelivery
-		var (
-			detectOnce   sync.Once
-			storePayload bool // true when transport lacks redelivery
-		)
-
-		// If explicitly configured, set immediately (no auto-detection needed)
-		if o.storePayload != nil {
-			storePayload = *o.storePayload
-		}
-
 		return func(ctx context.Context, ev event.Event[T], data T) error {
 			// Get message ID from context
 			messageID := event.ContextEventID(ctx)
@@ -144,16 +168,6 @@ func WorkerPoolMiddleware[T any](coord Coordinator, stateTTL time.Duration, opts
 				// No message ID available, can't acquire state - proceed with processing
 				// This shouldn't happen in normal operation but fail open for safety
 				return next(ctx, ev, data)
-			}
-
-			// Auto-detect transport capability once per subscriber (skipped if explicit)
-			if o.storePayload == nil {
-				detectOnce.Do(func() {
-					bus := event.ContextBus(ctx)
-					if bus != nil && !bus.SupportsRedelivery() {
-						storePayload = true
-					}
-				})
 			}
 
 			// Attempt to acquire the message state
