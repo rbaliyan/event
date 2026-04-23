@@ -356,6 +356,17 @@ func (r *RecoveryRunner) recoverPayloadEntries(ctx context.Context, ps PayloadSt
 		// Track all entries seen by Phase 1 to exclude from Phase 2
 		handled[entry.MessageID] = struct{}{}
 
+		// Guard against entries written before EventName was added to MessageData.
+		// Sending to an empty event name produces a confusing downstream error.
+		if entry.Data.EventName == "" {
+			if r.logger != nil {
+				r.logger.Warn("stale payload missing event name, skipping re-publish",
+					"message_id", entry.MessageID)
+			}
+			r.metrics.recordSkipped(ctx, "missing_event_name", "")
+			continue
+		}
+
 		// Re-publish with a new event ID so WorkerPool can acquire fresh state
 		newID := event.NewID()
 		if err := r.pub.Send(ctx, entry.Data.EventName, newID, entry.Data.Payload, entry.Data.Metadata); err != nil {

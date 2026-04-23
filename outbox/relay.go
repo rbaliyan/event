@@ -287,6 +287,8 @@ func (r *Relay) Start(ctx context.Context) error {
 		}
 	}
 
+	// nil channel blocks forever in the select below — the ticker and cleanup
+	// cases handle polling when no listener is configured.
 	var notifyC <-chan *pq.Notification
 	if r.listener != nil {
 		notifyC = r.listener.Notify
@@ -388,6 +390,11 @@ func (r *Relay) publishPending(ctx context.Context) (failures int) {
 			r.log().Error("failed to mark message as published",
 				"id", msg.ID,
 				"error", err)
+			// Count as failure: the transport received the message but the outbox
+			// record stays pending, so it will be re-published on the next poll.
+			// This is observable via the failures counter and avoids silent duplicates.
+			failures++
+			continue
 		}
 
 		r.log().Debug("published outbox message",

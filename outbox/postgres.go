@@ -325,7 +325,9 @@ func (s *PostgresStore) scanMessages(rows *sql.Rows) ([]*Message, error) {
 		}
 
 		if metadataJSON != nil {
-			json.Unmarshal(metadataJSON, &msg.Metadata)
+			if err := json.Unmarshal(metadataJSON, &msg.Metadata); err != nil {
+				return nil, fmt.Errorf("unmarshal metadata for id=%d: %w", msg.ID, err)
+			}
 		}
 
 		msg.Status = StatusPending
