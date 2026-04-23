@@ -14,6 +14,7 @@ type PoolOption func(*poolOptions)
 type poolOptions struct {
 	storePayload   *bool // nil = unset; resolved at WorkerPoolMiddleware call time
 	maxPayloadSize int   // 0 = no limit
+	logger         *slog.Logger
 }
 
 // WithPayloadRecovery explicitly enables payload storage for recovery.
@@ -43,14 +44,25 @@ func WithPayloadRecovery() PoolOption {
 // support is resolved once at construction time rather than lazily on
 // the first message.
 //
-// Panics if b is nil.
+// If b is nil the option is a no-op; use [WithPayloadRecovery] to enable
+// payload storage explicitly when no bus is available.
 func WithBus(b *event.Bus) PoolOption {
-	if b == nil {
-		panic("distributed: WithBus requires a non-nil Bus")
-	}
 	return func(o *poolOptions) {
+		if b == nil {
+			return
+		}
 		store := !b.SupportsRedelivery()
 		o.storePayload = &store
+	}
+}
+
+// WithPoolLogger sets the logger used for construction-time warnings emitted
+// by WorkerPoolMiddleware. Defaults to slog.Default() when not set.
+func WithPoolLogger(l *slog.Logger) PoolOption {
+	return func(o *poolOptions) {
+		if l != nil {
+			o.logger = l
+		}
 	}
 }
 
@@ -150,6 +162,11 @@ func WorkerPoolMiddleware[T any](coord Coordinator, stateTTL time.Duration, opts
 	// WithBus or WithPayloadRecovery set o.storePayload explicitly.
 	// If neither is provided, default to false (no payload storage) and warn
 	// so callers know they may need to act.
+	logger := o.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	storePayload := false
 	if o.storePayload != nil {
 		storePayload = *o.storePayload
@@ -157,7 +174,7 @@ func WorkerPoolMiddleware[T any](coord Coordinator, stateTTL time.Duration, opts
 		// Coordinator supports payload storage but no bus or explicit option was
 		// provided — warn once at construction time so the issue is visible
 		// before any messages flow.
-		slog.Warn("distributed.WorkerPoolMiddleware: coordinator supports payload recovery but redelivery support is unknown; use WithBus(bus) or WithPayloadRecovery() to enable payload storage")
+		logger.Warn("distributed.WorkerPoolMiddleware: coordinator supports payload recovery but redelivery support is unknown; use WithBus(bus) or WithPayloadRecovery() to enable payload storage")
 	}
 
 	return func(next event.Handler[T]) event.Handler[T] {

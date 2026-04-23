@@ -32,29 +32,6 @@ func WithTable(table string) PostgresStoreOption {
 	}
 }
 
-// PostgresStore implements Store for PostgreSQL.
-//
-// PostgresStore uses PostgreSQL's transactional capabilities for reliable
-// message storage. It supports concurrent relay instances using
-// SELECT FOR UPDATE SKIP LOCKED to prevent duplicate processing.
-//
-// Required Schema:
-//
-//	CREATE TABLE event_outbox (
-//	    id           BIGSERIAL PRIMARY KEY,
-//	    event_name   VARCHAR(255) NOT NULL,
-//	    event_id     VARCHAR(36) NOT NULL,
-//	    payload      BYTEA NOT NULL,
-//	    metadata     JSONB,
-//	    created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
-//	    published_at TIMESTAMP,
-//	    status       VARCHAR(20) NOT NULL DEFAULT 'pending',
-//	    retry_count  INT NOT NULL DEFAULT 0,
-//	    last_error   TEXT,
-//	    priority     INT NOT NULL DEFAULT 0
-//	);
-//	CREATE INDEX idx_outbox_pending ON event_outbox(status, priority DESC, created_at)
-//	    WHERE status IN ('pending', 'failed');
 // WithNotifyChannel sets the PostgreSQL NOTIFY channel name emitted on each Insert.
 // Listeners using pq.NewListener can subscribe to this channel to be woken up
 // immediately when new messages arrive instead of relying solely on polling.
