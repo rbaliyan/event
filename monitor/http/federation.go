@@ -49,9 +49,9 @@ type StuckPendingStats struct {
 	Samples   []*monitor.Entry `json:"samples,omitempty"`
 }
 
-// StuckPendingProvider supplies stuck-pending detection for /v1/system.
+// StuckPendingStatsProvider supplies stuck-pending detection for /v1/system.
 // Implementations should cache results externally; this is called on every
 // system view refresh (typically every 10–30 seconds).
-type StuckPendingProvider interface {
+type StuckPendingStatsProvider interface {
 	StuckPendingStats(ctx context.Context) (*StuckPendingStats, error)
 }

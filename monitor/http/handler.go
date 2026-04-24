@@ -30,7 +30,7 @@ type handlerOptions struct {
 	workerStore            distributed.WorkerStore
 	dlqProvider            DLQProvider
 	schedProvider          SchedulerProvider
-	stuckPendingProvider   StuckPendingProvider
+	stuckPendingProvider   StuckPendingStatsProvider
 	systemRefreshInterval  time.Duration
 	dlqAlertFunc           DLQAlertFunc
 	dlqAlertThreshold      int64
@@ -90,7 +90,7 @@ func WithSystemRefreshInterval(d time.Duration) Option {
 // so it must be cheap — results should come from an indexed query or a cache.
 // A "stuck pending" entry has status=pending longer than the provider's configured
 // threshold, indicating the handling pod likely crashed before completing.
-func WithStuckPendingProvider(p StuckPendingProvider) Option {
+func WithStuckPendingProvider(p StuckPendingStatsProvider) Option {
 	return func(o *handlerOptions) {
 		o.stuckPendingProvider = p
 	}
@@ -102,7 +102,7 @@ type Handler struct {
 	workerStore          distributed.WorkerStore
 	dlqProvider          DLQProvider
 	schedProvider        SchedulerProvider
-	stuckPendingProvider StuckPendingProvider
+	stuckPendingProvider StuckPendingStatsProvider
 	dlqAlertFunc         DLQAlertFunc
 	dlqAlertThreshold    int64
 	mux                  *http.ServeMux
@@ -162,7 +162,6 @@ func New(store monitor.Store, opts ...Option) *Handler {
 	h.mux.HandleFunc("/v1/topology", h.handleTopology)
 	h.mux.HandleFunc("/v1/topology/", h.handleTopologyWithPath)
 
-	// Register coverage endpoint: cross-reference monitor entries with topology
 	h.mux.HandleFunc("/v1/monitor/coverage/", h.handleCoverage)
 
 	// Register system view endpoints

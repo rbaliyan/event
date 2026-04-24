@@ -55,11 +55,15 @@ func (h *Handler) handleCoverage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Index recorded entries by subscription_id for O(1) lookup.
+	// Index recorded entries for O(1) lookup in the topology walk below.
 	entryBySubID := make(map[string]*monitor.Entry, len(entries))
+	entryByGroup := make(map[string]*monitor.Entry)
 	eventNames := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		entryBySubID[e.SubscriptionID] = e
+		if e.DeliveryMode == monitor.WorkerPool {
+			entryByGroup[e.WorkerGroup] = e
+		}
 		eventNames[e.EventName] = struct{}{}
 	}
 
@@ -96,13 +100,10 @@ func (h *Handler) handleCoverage(w http.ResponseWriter, r *http.Request) {
 					ce.HasEntry = true
 					ce.Entry = e
 				} else if sub.DeliveryMode == transport.WorkerPool {
-					// WorkerPool entries store empty subscription_id — match on worker_group.
-					for _, e := range entries {
-						if e.DeliveryMode == monitor.WorkerPool && e.WorkerGroup == sub.WorkerGroup {
-							ce.HasEntry = true
-							ce.Entry = e
-							break
-						}
+					// WorkerPool entries store empty subscription_id — match by worker_group.
+					if e, ok := entryByGroup[sub.WorkerGroup]; ok {
+						ce.HasEntry = true
+						ce.Entry = e
 					}
 				}
 

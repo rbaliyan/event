@@ -496,7 +496,8 @@ func (t *Transport) ConsumerLag(ctx context.Context) ([]transport.ConsumerLag, e
 					if pending, pErr := t.client.XPending(ctx, streamName, group.Name).Result(); pErr == nil && pending.Lower != "" {
 						if parts := strings.SplitN(pending.Lower, "-", 2); len(parts) == 2 {
 							if ms, parseErr := strconv.ParseInt(parts[0], 10, 64); parseErr == nil {
-								lag.OldestPending = time.Since(time.UnixMilli(ms))
+								d := time.Since(time.UnixMilli(ms))
+								lag.OldestPending = &d
 							}
 						}
 					}

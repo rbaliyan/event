@@ -454,7 +454,7 @@ func (t *JetStreamTransport) ConsumerLag(ctx context.Context) ([]transport.Consu
 						duration := time.Since(streamInfo.State.FirstTime)
 						rate := float64(streamInfo.State.Msgs) / duration.Seconds()
 						if rate > 0 {
-							lag.OldestPending = time.Duration(float64(consumerInfo.NumPending) / rate * float64(time.Second))
+							d := time.Duration(float64(consumerInfo.NumPending) / rate * float64(time.Second)); lag.OldestPending = &d
 						}
 					}
 				}
