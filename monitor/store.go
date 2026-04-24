@@ -114,6 +114,21 @@ type SummaryProvider interface {
 	Summary(ctx context.Context, filter Filter) (*Summary, error)
 }
 
+// StuckPendingProvider is an optional interface for stores that can efficiently
+// detect entries stuck in pending state beyond a threshold duration.
+// Implementations must have an index on (status, started_at) to avoid collection scans.
+type StuckPendingProvider interface {
+	// StuckPendingCount returns the number of entries with status=pending
+	// whose started_at is older than olderThan. Intended for /v1/system polling;
+	// callers must cache results — do not call on every HTTP request.
+	StuckPendingCount(ctx context.Context, olderThan time.Duration) (int64, error)
+
+	// StuckPendingEntries returns up to limit entries with status=pending older
+	// than olderThan, sorted ascending by started_at (oldest first).
+	// limit should be small (≤50) — this is for alerting samples, not auditing.
+	StuckPendingEntries(ctx context.Context, olderThan time.Duration, limit int) ([]*Entry, error)
+}
+
 // Summary contains aggregated statistics for monitor entries matching a filter.
 type Summary struct {
 	TotalEntries  int64                  `json:"total_entries"`

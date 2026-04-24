@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/rbaliyan/event/v3/health"
+	"github.com/rbaliyan/event/v3/monitor"
 )
 
 // DLQProvider supplies DLQ summary and health.
@@ -36,4 +37,21 @@ type SchedulerStats struct {
 	PendingMessages int64      `json:"pending_messages"`
 	StuckMessages   int64      `json:"stuck_messages,omitempty"`
 	NextDue         *time.Time `json:"next_due,omitempty"`
+}
+
+// StuckPendingStats contains statistics about monitor entries stuck in pending state.
+// A stuck entry has status=pending and started_at older than the configured threshold,
+// indicating the pod that claimed the message likely crashed before completing.
+type StuckPendingStats struct {
+	Count     int64            `json:"count"`
+	Threshold time.Duration    `json:"threshold"`
+	OldestAt  *time.Time       `json:"oldest_at,omitempty"`
+	Samples   []*monitor.Entry `json:"samples,omitempty"`
+}
+
+// StuckPendingProvider supplies stuck-pending detection for /v1/system.
+// Implementations should cache results externally; this is called on every
+// system view refresh (typically every 10–30 seconds).
+type StuckPendingProvider interface {
+	StuckPendingStats(ctx context.Context) (*StuckPendingStats, error)
 }

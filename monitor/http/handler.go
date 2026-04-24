@@ -27,12 +27,13 @@ type DLQAlertFunc func(stats *DLQStats)
 
 // handlerOptions holds configuration for the Handler.
 type handlerOptions struct {
-	workerStore           distributed.WorkerStore
-	dlqProvider           DLQProvider
-	schedProvider         SchedulerProvider
-	systemRefreshInterval time.Duration
-	dlqAlertFunc          DLQAlertFunc
-	dlqAlertThreshold     int64
+	workerStore            distributed.WorkerStore
+	dlqProvider            DLQProvider
+	schedProvider          SchedulerProvider
+	stuckPendingProvider   StuckPendingProvider
+	systemRefreshInterval  time.Duration
+	dlqAlertFunc           DLQAlertFunc
+	dlqAlertThreshold      int64
 }
 
 // Option configures the Handler.
@@ -84,17 +85,29 @@ func WithSystemRefreshInterval(d time.Duration) Option {
 	}
 }
 
+// WithStuckPendingProvider enables stuck-pending detection in /v1/system.
+// The provider is queried on every system view refresh (see WithSystemRefreshInterval)
+// so it must be cheap — results should come from an indexed query or a cache.
+// A "stuck pending" entry has status=pending longer than the provider's configured
+// threshold, indicating the handling pod likely crashed before completing.
+func WithStuckPendingProvider(p StuckPendingProvider) Option {
+	return func(o *handlerOptions) {
+		o.stuckPendingProvider = p
+	}
+}
+
 // Handler implements http.Handler for the monitor service using protoJSON.
 type Handler struct {
-	store             monitor.Store
-	workerStore       distributed.WorkerStore
-	dlqProvider       DLQProvider
-	schedProvider     SchedulerProvider
-	dlqAlertFunc      DLQAlertFunc
-	dlqAlertThreshold int64
-	mux               *http.ServeMux
-	marshaler         protojson.MarshalOptions
-	unmarshaler       protojson.UnmarshalOptions
+	store                monitor.Store
+	workerStore          distributed.WorkerStore
+	dlqProvider          DLQProvider
+	schedProvider        SchedulerProvider
+	stuckPendingProvider StuckPendingProvider
+	dlqAlertFunc         DLQAlertFunc
+	dlqAlertThreshold    int64
+	mux                  *http.ServeMux
+	marshaler            protojson.MarshalOptions
+	unmarshaler          protojson.UnmarshalOptions
 
 	// Background system view cache
 	systemView    atomic.Pointer[SystemView]
@@ -114,12 +127,13 @@ func New(store monitor.Store, opts ...Option) *Handler {
 	}
 
 	h := &Handler{
-		store:             store,
-		workerStore:       o.workerStore,
-		dlqProvider:       o.dlqProvider,
-		schedProvider:     o.schedProvider,
-		dlqAlertFunc:      o.dlqAlertFunc,
-		dlqAlertThreshold: o.dlqAlertThreshold,
+		store:                store,
+		workerStore:          o.workerStore,
+		dlqProvider:          o.dlqProvider,
+		schedProvider:        o.schedProvider,
+		stuckPendingProvider: o.stuckPendingProvider,
+		dlqAlertFunc:         o.dlqAlertFunc,
+		dlqAlertThreshold:    o.dlqAlertThreshold,
 		mux:           http.NewServeMux(),
 		done:          make(chan struct{}),
 		marshaler: protojson.MarshalOptions{
@@ -147,6 +161,9 @@ func New(store monitor.Store, opts ...Option) *Handler {
 	// Register topology endpoints
 	h.mux.HandleFunc("/v1/topology", h.handleTopology)
 	h.mux.HandleFunc("/v1/topology/", h.handleTopologyWithPath)
+
+	// Register coverage endpoint: cross-reference monitor entries with topology
+	h.mux.HandleFunc("/v1/monitor/coverage/", h.handleCoverage)
 
 	// Register system view endpoints
 	h.mux.HandleFunc("/v1/system", h.handleSystemView)
