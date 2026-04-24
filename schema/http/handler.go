@@ -28,6 +28,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rbaliyan/event/v3/schema"
@@ -37,7 +38,10 @@ import (
 type Handler struct {
 	provider schema.SchemaProvider
 	mux      *http.ServeMux
+	mu       sync.Mutex // serializes concurrent PUT requests
 }
+
+var _ http.Handler = (*Handler)(nil)
 
 // New creates a Handler backed by the given provider.
 func New(provider schema.SchemaProvider) *Handler {
@@ -69,7 +73,7 @@ func (h *Handler) handleSchemas(w http.ResponseWriter, r *http.Request) {
 	if schemas == nil {
 		schemas = []*schema.EventSchema{}
 	}
-	h.writeJSON(w, map[string]any{"schemas": schemas})
+	h.writeJSON(w, http.StatusOK, map[string]any{"schemas": schemas})
 }
 
 // handleSchemaByName handles GET, PUT, DELETE /v1/schemas/{name}.
@@ -102,7 +106,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, name string)
 		h.writeError(w, http.StatusNotFound, "schema not found")
 		return
 	}
-	h.writeJSON(w, s)
+	h.writeJSON(w, http.StatusOK, s)
 }
 
 // schemaInput is the request body for PUT /v1/schemas/{name}.
@@ -126,7 +130,10 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, name string)
 		return
 	}
 
-	// Determine next version
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Determine next version: Get+Set must be atomic to prevent TOCTOU under concurrent PUTs.
 	existing, err := h.provider.Get(r.Context(), name)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
@@ -160,15 +167,13 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, name string)
 		return
 	}
 
-	// Return the stored schema (with timestamps filled in by provider)
+	// Return the stored schema (with timestamps filled in by provider).
 	stored, err := h.provider.Get(r.Context(), name)
 	if err != nil || stored == nil {
-		// Fall back to what we built
-		h.writeJSON(w, s)
+		h.writeJSON(w, http.StatusOK, s)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	h.writeJSON(w, stored)
+	h.writeJSON(w, http.StatusOK, stored)
 }
 
 func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request, name string) {
@@ -179,13 +184,14 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request, name stri
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) writeJSON(w http.ResponseWriter, v any) {
+func (h *Handler) writeJSON(w http.ResponseWriter, code int, v any) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
 	w.Write(data) //nolint:errcheck
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -223,5 +224,59 @@ func TestPut_MetadataRoundtrip(t *testing.T) {
 
 	if s.Metadata["owner"] != "payments-team" {
 		t.Errorf("metadata owner: want payments-team, got %s", s.Metadata["owner"])
+	}
+}
+
+// TestPut_ServerFieldsIgnored verifies that version supplied in the PUT body is ignored.
+func TestPut_ServerFieldsIgnored(t *testing.T) {
+	h, _ := newHandler(t)
+
+	body := map[string]any{
+		"version":            999,
+		"enable_monitor":     false,
+		"enable_idempotency": false,
+		"enable_poison":      false,
+	}
+	w := do(t, h, http.MethodPut, "/v1/schemas/server.fields", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT: want 200, got %d body: %s", w.Code, w.Body)
+	}
+
+	var s schema.EventSchema
+	decodeJSON(t, w, &s)
+	if s.Version != 1 {
+		t.Errorf("version: want 1 (server-assigned), got %d", s.Version)
+	}
+}
+
+// TestPut_ConcurrentVersionIncrement verifies that concurrent PUTs serialize version increments.
+func TestPut_ConcurrentVersionIncrement(t *testing.T) {
+	h, _ := newHandler(t)
+
+	body := map[string]any{"enable_monitor": false, "enable_idempotency": false, "enable_poison": false}
+
+	// Seed version 1.
+	w := do(t, h, http.MethodPut, "/v1/schemas/concurrent.event", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("seed PUT: want 200, got %d", w.Code)
+	}
+
+	const workers = 10
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			do(t, h, http.MethodPut, "/v1/schemas/concurrent.event", body)
+		}()
+	}
+	wg.Wait()
+
+	// After 1 seed + 10 concurrent PUTs, version must be exactly 11.
+	w = do(t, h, http.MethodGet, "/v1/schemas/concurrent.event", nil)
+	var s schema.EventSchema
+	decodeJSON(t, w, &s)
+	if s.Version != workers+1 {
+		t.Errorf("version: want %d, got %d (concurrent increment lost)", workers+1, s.Version)
 	}
 }
