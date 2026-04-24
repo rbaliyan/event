@@ -264,6 +264,26 @@ func WithDrainTimeout(d time.Duration) BusOption {
 	}
 }
 
+// WithAll combines multiple BusOptions into a single option. This is useful
+// when building helper functions outside the event package that compose
+// several bus options together, since busOptions is unexported.
+//
+// Example:
+//
+//	func WithMyDefaults() event.BusOption {
+//	    return event.WithAll(
+//	        event.WithTracing(true),
+//	        event.WithRecovery(true),
+//	    )
+//	}
+func WithAll(opts ...BusOption) BusOption {
+	return func(o *busOptions) {
+		for _, opt := range opts {
+			opt(o)
+		}
+	}
+}
+
 // newBusOptions creates options with defaults and applies provided options
 func newBusOptions(opts ...BusOption) *busOptions {
 	o := &busOptions{

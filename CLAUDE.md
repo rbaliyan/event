@@ -124,6 +124,11 @@ func New(opts ...Option) *Client {
 - Subscribers auto-load schema on `Register()`
 - Schema flags control which middleware is applied
 - Providers: PostgreSQL, MongoDB, Redis, in-memory
+- HTTP API: `schema/http` - REST CRUD handler (list/get/put/delete, version auto-increment)
+
+**Reliability Stack (stack/)** - Convenience BusOption that wires Monitor + Idempotency + Poison detection:
+- `stack.WithReliabilityStack(...Option) event.BusOption` — in-memory defaults, all stores replaceable
+- `event.WithAll(opts ...BusOption) BusOption` — combiner for composing BusOptions from sub-packages
 
 ### V3 Design
 
