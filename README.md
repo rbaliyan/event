@@ -397,11 +397,12 @@ coord, _ := distributed.NewRedisStateManager(redisClient,
 )
 
 // Subscribe with WorkerPool emulation
-mongoEvent.Subscribe(ctx, handler,
-    event.WithMiddleware(
-        distributed.WorkerPoolMiddleware[Order](coord, 5*time.Minute),
-    ),
-)
+// WorkerPoolMiddleware returns (event.Middleware[T], error) — check the error.
+mw, err := distributed.WorkerPoolMiddleware[Order](coord, 5*time.Minute)
+if err != nil {
+    log.Fatal(err)
+}
+mongoEvent.Subscribe(ctx, handler, event.WithMiddleware(mw))
 ```
 
 ### Payload Recovery
@@ -438,10 +439,17 @@ Use separate coordinators with different prefixes per group:
 smA, _ := distributed.NewRedisStateManager(redis, distributed.WithPrefix("processors:"))
 smB, _ := distributed.NewRedisStateManager(redis, distributed.WithPrefix("analytics:"))
 
-orderEvent.Subscribe(ctx, processOrder,
-    event.WithMiddleware(distributed.WorkerPoolMiddleware[Order](smA, ttl)))
-orderEvent.Subscribe(ctx, collectAnalytics,
-    event.WithMiddleware(distributed.WorkerPoolMiddleware[Order](smB, ttl)))
+// WorkerPoolMiddleware returns (event.Middleware[T], error) — check the error.
+mwA, err := distributed.WorkerPoolMiddleware[Order](smA, ttl)
+if err != nil {
+    log.Fatal(err)
+}
+mwB, err := distributed.WorkerPoolMiddleware[Order](smB, ttl)
+if err != nil {
+    log.Fatal(err)
+}
+orderEvent.Subscribe(ctx, processOrder, event.WithMiddleware(mwA))
+orderEvent.Subscribe(ctx, collectAnalytics, event.WithMiddleware(mwB))
 ```
 
 ### Coordinator Backends
@@ -629,7 +637,9 @@ Define event configuration centrally:
 ```go
 import "github.com/rbaliyan/event/v3/schema"
 
-provider, _ := schema.NewPostgresProvider(db, nil)
+// The second argument is a publish function called when schema changes are made.
+// Pass nil only if your application never needs schema-change notifications.
+provider, _ := schema.NewPostgresProvider(db, nil /* publisher */)
 defer provider.Close()
 
 bus, _ := event.NewBus("order-service",
@@ -688,11 +698,27 @@ Use **event-dlq** for failed message management:
 ```go
 import dlq "github.com/rbaliyan/event-dlq"
 
-store := dlq.NewPostgresStore(db)
-manager := dlq.NewManager(store, transport)
+// NewPostgresStore and NewManager both return errors — check them.
+// See github.com/rbaliyan/event-dlq for full API reference.
+store, err := dlq.NewPostgresStore(db)
+if err != nil {
+    log.Fatal(err)
+}
+manager, err := dlq.NewManager(store, transport)
+if err != nil {
+    log.Fatal(err)
+}
 
-// Store failed message
-manager.Store(ctx, "order.created", msgID, payload, metadata, err, retryCount, "order-service")
+// Store failed message (Store takes a StoreParams struct, not positional args)
+manager.Store(ctx, dlq.StoreParams{
+    EventName:  "order.created",
+    OriginalID: msgID,
+    Payload:    payload,
+    Metadata:   metadata,
+    Err:        failErr,
+    RetryCount: retryCount,
+    Source:     "order-service",
+})
 
 // Replay failed messages
 replayed, _ := manager.Replay(ctx, dlq.Filter{
@@ -712,18 +738,26 @@ Use **event-scheduler** for delayed delivery:
 ```go
 import scheduler "github.com/rbaliyan/event-scheduler"
 
-sched := scheduler.NewRedisScheduler(redisClient, transport,
+// NewRedisScheduler returns (*RedisScheduler, error).
+sched, err := scheduler.NewRedisScheduler(redisClient, transport,
     scheduler.WithPollInterval(100*time.Millisecond),
 )
-defer sched.Close(ctx)
+if err != nil {
+    log.Fatal(err)
+}
 
 go sched.Start(ctx)
 
-// Schedule for future delivery
-sched.Schedule(ctx, "order.reminder", payload, time.Now().Add(24*time.Hour))
+// Schedule for future delivery using a Message struct.
+// Set ID for cancellation support; leave empty for auto-generated ID.
+sched.Schedule(ctx, scheduler.Message{
+    ID:          "reminder-123",
+    EventName:   "order.reminder",
+    Payload:     payload,
+    ScheduledAt: time.Now().Add(24 * time.Hour),
+})
 
-// Schedule with ID for cancellation
-sched.ScheduleWithID(ctx, "reminder-123", "order.reminder", payload, deliverAt)
+// Cancel a scheduled message
 sched.Cancel(ctx, "reminder-123")
 ```
 
@@ -761,14 +795,21 @@ Use **event-extras/saga** for distributed transactions:
 ```go
 import "github.com/rbaliyan/event-extras/saga"
 
-orderSaga := saga.New("order-creation",
+// saga.New takes a name, a []saga.Step slice, and functional options. It returns (*Saga, error).
+// See github.com/rbaliyan/event-extras/saga for full API reference.
+steps := []saga.Step{
     &CreateOrderStep{orderService},
     &ReserveInventoryStep{inventoryService},
     &ProcessPaymentStep{paymentService},
-).
-    WithStore(saga.NewRedisStore(redisClient)).
-    WithBackoff(&backoff.Exponential{Initial: time.Second, Max: 30*time.Second}).
-    WithMaxRetries(3)
+}
+orderSaga, err := saga.New("order-creation", steps,
+    saga.WithStore(saga.NewRedisStore(redisClient)),
+    saga.WithBackoff(&backoff.Exponential{Initial: time.Second, Max: 30 * time.Second}),
+    saga.WithMaxRetries(3),
+)
+if err != nil {
+    log.Fatal(err)
+}
 
 // Execute saga
 sagaID := uuid.New().String()
