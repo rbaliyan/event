@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -479,12 +481,29 @@ func (t *Transport) ConsumerLag(ctx context.Context) ([]transport.ConsumerLag, e
 				}
 				matched = true
 
-				results[idx].lags = append(results[idx].lags, transport.ConsumerLag{
+				lag := transport.ConsumerLag{
 					Event:           name,
 					ConsumerGroup:   group.Name,
 					Lag:             group.Lag,
 					PendingMessages: group.Pending,
-				})
+				}
+
+				// Populate OldestPending from the XPending summary. This is a single
+				// O(1) Redis call per group that returns the oldest PEL entry ID,
+				// from which we extract the insertion timestamp. Only called when
+				// there are pending messages to avoid unnecessary round-trips.
+				if group.Pending > 0 {
+					if pending, pErr := t.client.XPending(ctx, streamName, group.Name).Result(); pErr == nil && pending.Lower != "" {
+						if parts := strings.SplitN(pending.Lower, "-", 2); len(parts) == 2 {
+							if ms, parseErr := strconv.ParseInt(parts[0], 10, 64); parseErr == nil {
+								d := time.Since(time.UnixMilli(ms))
+								lag.OldestPending = &d
+							}
+						}
+					}
+				}
+
+				results[idx].lags = append(results[idx].lags, lag)
 			}
 
 			// Add overall stream info if no tracked groups found

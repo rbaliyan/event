@@ -17,13 +17,14 @@ import (
 
 // mockRedisClient implements Client for testing
 type mockRedisClient struct {
-	mu       sync.Mutex
-	streams  map[string][]redis.XMessage
-	groups   map[string]map[string]string // stream -> group -> lastID
-	msgID    int
-	closed   bool
-	xaddErr  error
-	xreadErr error
+	mu             sync.Mutex
+	streams        map[string][]redis.XMessage
+	groups         map[string]map[string]string // stream -> group -> lastID
+	msgID          int
+	closed         bool
+	xaddErr        error
+	xreadErr       error
+	xpendingResult map[string]*redis.XPending // stream:group -> result (nil = use default)
 }
 
 func newMockRedisClient() *mockRedisClient {
@@ -159,12 +160,17 @@ func (m *mockRedisClient) Ping(ctx context.Context) *redis.StatusCmd {
 }
 
 func (m *mockRedisClient) XPending(ctx context.Context, stream, group string) *redis.XPendingCmd {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	cmd := redis.NewXPendingCmd(ctx)
-	cmd.SetVal(&redis.XPending{
-		Count:  0,
-		Lower:  "",
-		Higher: "",
-	})
+	key := stream + ":" + group
+	if m.xpendingResult != nil {
+		if r, ok := m.xpendingResult[key]; ok {
+			cmd.SetVal(r)
+			return cmd
+		}
+	}
+	cmd.SetVal(&redis.XPending{Count: 0, Lower: "", Higher: ""})
 	return cmd
 }
 
@@ -185,10 +191,17 @@ func (m *mockRedisClient) XInfoGroups(ctx context.Context, stream string) *redis
 	groups := make([]redis.XInfoGroup, 0)
 	if m.groups[stream] != nil {
 		for name := range m.groups[stream] {
+			pending := int64(0)
+			key := stream + ":" + name
+			if m.xpendingResult != nil {
+				if r, ok := m.xpendingResult[key]; ok {
+					pending = r.Count
+				}
+			}
 			groups = append(groups, redis.XInfoGroup{
 				Name:      name,
 				Consumers: 0,
-				Pending:   0,
+				Pending:   pending,
 				Lag:       0,
 			})
 		}
@@ -566,5 +579,56 @@ func TestTransportErrorHandler(t *testing.T) {
 
 	if capturedErr == nil {
 		t.Error("expected error handler to be called")
+	}
+}
+
+func TestConsumerLag_OldestPending(t *testing.T) {
+	client := newMockRedisClient()
+	tr, err := New(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close(context.Background())
+
+	ctx := context.Background()
+	// RegisterEvent creates the stream and default consumer group.
+	tr.RegisterEvent(ctx, "lag-event")
+
+	// Inject a known XPending result with a stream entry ID whose millisecond
+	// prefix encodes a known past timestamp (2023-11-14T22:13:20Z).
+	knownMs := int64(1700000000000)
+	streamName := tr.streamName("lag-event")
+	groupKey := streamName + ":" + tr.groupID
+	client.mu.Lock()
+	if client.xpendingResult == nil {
+		client.xpendingResult = make(map[string]*redis.XPending)
+	}
+	client.xpendingResult[groupKey] = &redis.XPending{
+		Count: 1,
+		Lower: fmt.Sprintf("%d-0", knownMs),
+	}
+	client.mu.Unlock()
+
+	lags, err := tr.ConsumerLag(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var found *transport.ConsumerLag
+	for i := range lags {
+		if lags[i].Event == "lag-event" {
+			found = &lags[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no lag entry found for lag-event")
+	}
+	if found.OldestPending == nil {
+		t.Fatal("OldestPending is nil, want non-nil for pending > 0")
+	}
+	// The age should be roughly time.Since(time.UnixMilli(knownMs)) — at least several months.
+	if *found.OldestPending < time.Hour {
+		t.Errorf("OldestPending %v too small; expected age of known past timestamp", *found.OldestPending)
 	}
 }

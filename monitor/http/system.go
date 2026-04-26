@@ -15,14 +15,15 @@ import (
 
 // SystemView is the unified response for GET /v1/system.
 type SystemView struct {
-	Topology    []event.BusInfo         `json:"topology"`
-	DLQ         *DLQStats               `json:"dlq,omitempty"`
-	Scheduler   *SchedulerStats         `json:"scheduler,omitempty"`
-	Health      *health.AggregateResult `json:"health"`
-	BusHealth   map[string]*event.Status `json:"bus_health,omitempty"`
-	ConsumerLag []event.ConsumerLag      `json:"consumer_lag,omitempty"`
-	Summary     *monitor.Summary         `json:"summary,omitempty"`
-	CollectedAt time.Time                `json:"collected_at"`
+	Topology     []event.BusInfo          `json:"topology"`
+	DLQ          *DLQStats                `json:"dlq,omitempty"`
+	Scheduler    *SchedulerStats          `json:"scheduler,omitempty"`
+	StuckPending *StuckPendingStats       `json:"stuck_pending,omitempty"`
+	Health       *health.AggregateResult  `json:"health"`
+	BusHealth    map[string]*event.Status `json:"bus_health,omitempty"`
+	ConsumerLag  []event.ConsumerLag      `json:"consumer_lag,omitempty"`
+	Summary      *monitor.Summary         `json:"summary,omitempty"`
+	CollectedAt  time.Time                `json:"collected_at"`
 }
 
 // runSystemRefresh periodically collects the system view in the background.
@@ -133,6 +134,25 @@ func (h *Handler) refreshSystemView(ctx context.Context) {
 				view.Summary = summary
 			} else {
 				slog.WarnContext(ctx, "summary query failed", "error", err)
+			}
+			mu.Unlock()
+		}()
+	}
+
+	// Stuck-pending detection: entries in pending state beyond the configured
+	// threshold indicate pods that crashed after claiming a message but before
+	// completing the handler. Uses an indexed query; results are cached in
+	// SystemView at the configured refresh interval (no per-request overhead).
+	if h.stuckPendingProvider != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stats, err := h.stuckPendingProvider.StuckPendingStats(ctx)
+			mu.Lock()
+			if err == nil {
+				view.StuckPending = stats
+			} else {
+				slog.WarnContext(ctx, "stuck pending query failed", "error", err)
 			}
 			mu.Unlock()
 		}()

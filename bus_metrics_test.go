@@ -190,7 +190,7 @@ func TestConsumerLagGauges(t *testing.T) {
 				ConsumerGroup:   "processor",
 				Lag:             42,
 				PendingMessages: 5,
-				OldestPending:   10 * time.Second,
+				OldestPending:   durationPtr(10 * time.Second),
 			},
 		},
 	}
@@ -456,3 +456,5 @@ func TestFilterDropCounter(t *testing.T) {
 		t.Errorf("filter_dropped_total = %d, want 2", got)
 	}
 }
+
+func durationPtr(d time.Duration) *time.Duration { return &d }

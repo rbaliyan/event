@@ -141,7 +141,7 @@ type ConsumerLag struct {
 	Event           string        `json:"event"`
 	ConsumerGroup   string        `json:"consumer_group,omitempty"`
 	Lag             int64         `json:"lag"`              // Number of unprocessed messages
-	OldestPending   time.Duration `json:"oldest_pending"`   // Age of oldest unacknowledged message
+	OldestPending   *time.Duration `json:"oldest_pending,omitempty"` // Age of oldest unacknowledged message; nil when unknown or zero pending
 	PendingMessages int64         `json:"pending_messages"` // Messages delivered but not yet acked
 }
 

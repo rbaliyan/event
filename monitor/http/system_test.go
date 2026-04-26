@@ -332,3 +332,55 @@ func TestCachedTopology(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
+
+// mockStuckPendingProvider is a test double for StuckPendingStatsProvider.
+type mockStuckPendingProvider struct {
+	stats *StuckPendingStats
+	err   error
+}
+
+func (m *mockStuckPendingProvider) StuckPendingStats(_ context.Context) (*StuckPendingStats, error) {
+	return m.stats, m.err
+}
+
+func TestHandleSystemView_StuckPending(t *testing.T) {
+	store := monitor.NewMemoryStore()
+	defer store.Close()
+
+	oldest := time.Now().Add(-10 * time.Minute)
+	provider := &mockStuckPendingProvider{
+		stats: &StuckPendingStats{
+			Count:     3,
+			Threshold: 6 * time.Minute,
+			OldestAt:  &oldest,
+		},
+	}
+
+	h := New(store,
+		WithSystemRefreshInterval(50*time.Millisecond),
+		WithStuckPendingProvider(provider),
+	)
+	defer h.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/system", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	var view SystemView
+	if err := json.NewDecoder(w.Body).Decode(&view); err != nil {
+		t.Fatal(err)
+	}
+	if view.StuckPending == nil {
+		t.Fatal("stuck_pending field is nil, want non-nil")
+	}
+	if view.StuckPending.Count != 3 {
+		t.Errorf("count: want 3, got %d", view.StuckPending.Count)
+	}
+	if view.StuckPending.OldestAt == nil {
+		t.Error("oldest_at: want non-nil")
+	}
+}
