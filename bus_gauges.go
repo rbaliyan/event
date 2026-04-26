@@ -90,7 +90,9 @@ func initGauges(meter metric.Meter) {
 								)
 								observer.ObserveInt64(lagGauge, lag.Lag, attrs)
 								observer.ObserveInt64(pendingGauge, lag.PendingMessages, attrs)
-								observer.ObserveFloat64(oldestPendingGauge, lag.OldestPending.Seconds(), attrs)
+								if lag.OldestPending != nil {
+									observer.ObserveFloat64(oldestPendingGauge, lag.OldestPending.Seconds(), attrs)
+								}
 							}
 						}
 					}
