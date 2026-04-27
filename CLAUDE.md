@@ -118,6 +118,12 @@ func New(opts ...Option) *Client {
 - HTTP API: `monitor/http` - REST handler using protoJSON
 - gRPC API: `monitor/grpc` - gRPC service implementation
 - Shared protobuf definitions in `monitor/proto`
+- `monitor/DEBUGGING.md` — operational runbook for debugging stuck events, consumer lag, and coverage gaps
+- `StuckPendingProvider` optional interface on monitor stores: `StuckPendingCount` and `StuckPendingEntries` methods
+- `WithStuckPendingProvider(p StuckPendingStatsProvider)` option on the HTTP handler enables stuck-pending stats in `/v1/system`
+- `WithDLQAlertHook(fn DLQAlertFunc, threshold int64)` option fires a callback when DLQ pending count exceeds threshold during each system refresh
+- `/v1/monitor/coverage/{event_id}` endpoint — cross-references live topology with monitor entries to show subscription coverage gaps
+- `DLQProvider` and `SchedulerProvider` optional interfaces in `monitor/http/federation.go` for system view federation
 
 **Schema Registry (schema/)** - Publisher-defined event configuration with subscriber auto-sync:
 - Publishers define event configuration (timeouts, retries, feature flags)

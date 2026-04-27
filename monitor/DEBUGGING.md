@@ -50,13 +50,15 @@ Monitor middleware (updates to "completed" or "failed" AFTER handler returns)
 
 ### Key Timing Constants
 
-| Constant | Default | Meaning |
+The values below are **example values chosen by the operator** — they are not library defaults. Configure them to match your SLOs and handler runtimes.
+
+| Constant | Example Value | Meaning |
 |---|---|---|
 | `claimInterval` | 2 minutes | How often a pod sweeps for orphaned PEL messages |
 | `claimMinIdle` | 5 minutes | Minimum age before an unclaimed message is stolen |
 | `stuckPendingThreshold` | 6 minutes | Age at which a "pending" monitor entry is flagged as stuck |
 
-The 5-minute window between a pod crashing and the PEL being reclaimed means a monitor entry can appear stuck for up to ~5 minutes after a crash, then silently recover when another pod claims and processes the message.
+With example values above, a pod crash means a monitor entry can appear stuck for up to ~5 minutes, then silently recover when another pod claims and processes the message.
 
 ### Delivery Modes
 
@@ -138,7 +140,6 @@ Cross-references recorded monitor entries with the **live in-process subscriptio
 ```
 GET /v1/topology                    # All buses and events
 GET /v1/topology/{bus_name}         # Single bus
-GET /v1/topology/{bus_name}/{event} # Single event
 ```
 
 Shows the live in-process subscription graph: bus names, event names, subscription IDs, worker groups, delivery modes.
@@ -171,7 +172,7 @@ A non-zero `count` means pods crashed after recording "pending" but before compl
 
 ```
 GET /v1/workers          # All worker leases
-GET /v1/workers/{id}     # Single worker by subscription ID
+GET /v1/workers/{id}     # Single worker by message_id (the worker's claim ID)
 GET /v1/workers/count    # Count active workers
 ```
 
@@ -259,22 +260,24 @@ Look at `consumer_lag[]`:
       "consumer_group": "mybus-case_record.created-workflow",
       "lag": 1500,
       "pending_messages": 3,
-      "oldest_pending": "4m30s"
+      "oldest_pending": 270000000000
     }
   ]
 }
 ```
 
+`oldest_pending` is serialized as an int64 nanosecond count (e.g. `270000000000` = 4m30s). The field is omitted from the JSON output when the value is unknown (nil).
+
 | Field | Concern threshold | Meaning |
 |---|---|---|
 | `lag` | > a few hundred | Unconsumed messages in the stream |
 | `pending_messages` | > 0 | Delivered but not ACKed (in-flight or crashed) |
-| `oldest_pending` | > `claimMinIdle` (5 min) | A pod claimed this message and has not ACKed it — likely crashed |
+| `oldest_pending` | > operator-configured `claimMinIdle` | A pod claimed this message and has not ACKed it — likely crashed |
 
 ### Step 2: Identify the bottleneck
 
 - **High lag, low pending**: handlers are too slow or there aren't enough pods. Scale horizontally — each pod in the worker group is a consumer.
-- **High pending, old oldest_pending**: pod crashed and the PEL is not yet reclaimed. Wait for `claimMinIdle` (5 min) and check again. If it persists, check stuck pending (next section).
+- **High pending, old oldest_pending**: pod crashed and the PEL is not yet reclaimed. Wait for the configured `claimMinIdle` duration and check again. If it persists, check stuck pending (next section).
 - **High lag, zero pending**: the consumer group has no active consumers. All pods may be down.
 
 ### Step 3: Direct Redis inspection
@@ -305,7 +308,7 @@ The monitor middleware records "pending" **before** the handler runs. If a pod c
 
 1. The monitor entry stays `pending` forever (nothing updates it).
 2. The Redis PEL still holds the message.
-3. After `claimMinIdle` (5 min), another pod claims the message and processes it.
+3. After the configured `claimMinIdle` duration, another pod claims the message and processes it.
 4. **The original "pending" entry is never updated** because `Record()` uses `$setOnInsert` for WorkerPool mode — a new completion entry cannot overwrite the old pod's pending entry.
 
 This means a stuck pending entry does **not** always mean the event was lost. The new pod's completion is a separate `(event_id, "")` upsert that conflicts with the orphaned entry. Check whether a completion entry exists with the same `event_id` and `worker_group`.
@@ -581,7 +584,7 @@ XPENDING evt.mybus.case_record.created mybus-case_record.created-workflow
 XPENDING evt.mybus.case_record.created mybus-case_record.created-workflow - + 10
 ```
 
-The `idle` time in the detailed output shows how long since the message was last delivered. Messages idle longer than `claimMinIdle` (5 min) will be auto-claimed by the next pod that runs a claim sweep.
+The `idle` time in the detailed output shows how long since the message was last delivered. Messages idle longer than the configured `claimMinIdle` duration will be auto-claimed by the next pod that runs a claim sweep.
 
 ### Active consumers in a group
 
