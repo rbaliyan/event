@@ -26,6 +26,8 @@ type busOptions struct {
 	outboxStore OutboxStore
 	// DLQ store for automatic dead letter routing
 	dlqStore DLQStore
+	// Publish audit store for producer-side event tracking
+	publishAuditStore PublishAuditStore
 }
 
 // BusOption option function for bus configuration
@@ -249,6 +251,31 @@ func WithDLQ(store DLQStore) BusOption {
 	return func(o *busOptions) {
 		if store != nil {
 			o.dlqStore = store
+		}
+	}
+}
+
+// WithPublishAudit configures producer-side publish audit logging.
+// When set, every successful transport.Publish call is recorded in the store.
+// This closes the observability gap between "event published" and "event processed":
+// if an event has no monitor entry but does have a publish audit entry, the fault
+// lies in the transport or subscriber layer rather than the application code.
+//
+// Outbox-routed publishes (messages stored in the outbox for later relay) are
+// not recorded here; they bypass the transport path and are tracked separately
+// by the outbox store until the relay delivers them.
+//
+// Example:
+//
+//	ps := monitor.NewPublishMemoryStore()
+//	bus, _ := event.NewBus("my-app",
+//	    event.WithTransport(transport),
+//	    event.WithPublishAudit(ps),
+//	)
+func WithPublishAudit(store PublishAuditStore) BusOption {
+	return func(o *busOptions) {
+		if store != nil {
+			o.publishAuditStore = store
 		}
 	}
 }

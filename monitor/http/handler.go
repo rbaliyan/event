@@ -27,13 +27,13 @@ type DLQAlertFunc func(stats *DLQStats)
 
 // handlerOptions holds configuration for the Handler.
 type handlerOptions struct {
-	workerStore            distributed.WorkerStore
-	dlqProvider            DLQProvider
-	schedProvider          SchedulerProvider
-	stuckPendingProvider   StuckPendingStatsProvider
-	systemRefreshInterval  time.Duration
-	dlqAlertFunc           DLQAlertFunc
-	dlqAlertThreshold      int64
+	workerStore           distributed.WorkerStore
+	dlqProvider           DLQProvider
+	schedProvider         SchedulerProvider
+	stuckPendingProvider  StuckPendingStatsProvider
+	systemRefreshInterval time.Duration
+	dlqAlertFunc          DLQAlertFunc
+	dlqAlertThreshold     int64
 }
 
 // Option configures the Handler.
@@ -134,8 +134,8 @@ func New(store monitor.Store, opts ...Option) *Handler {
 		stuckPendingProvider: o.stuckPendingProvider,
 		dlqAlertFunc:         o.dlqAlertFunc,
 		dlqAlertThreshold:    o.dlqAlertThreshold,
-		mux:           http.NewServeMux(),
-		done:          make(chan struct{}),
+		mux:                  http.NewServeMux(),
+		done:                 make(chan struct{}),
 		marshaler: protojson.MarshalOptions{
 			EmitUnpopulated: true,
 			UseProtoNames:   true,

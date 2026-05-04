@@ -325,6 +325,32 @@ type MonitorStore interface {
 	RecordComplete(ctx context.Context, params RecordCompleteParams) error
 }
 
+// RecordPublishParams contains the parameters for recording a successful event publish.
+type RecordPublishParams struct {
+	EventID     string
+	EventName   string
+	BusID       string // bus instance ID (unique per process)
+	BusName     string // bus name (human-readable)
+	PayloadSize int
+	Metadata    map[string]string
+	TraceID     string
+	SpanID      string
+}
+
+// PublishAuditStore records successful publish attempts made through Bus.Send.
+//
+// The Bus calls RecordPublish after each successful transport.Publish call.
+// This closes the gap in the monitoring system: if an event has no Entry in
+// the monitor store, cross-referencing the publish audit reveals whether the
+// event was ever published (transport fault) or never fired at all (app bug).
+//
+// Implementations:
+//   - monitor.NewPublishMemoryStore(): In-memory store for development/testing
+//   - For production, implement PublishStore from the monitor package and wrap it
+type PublishAuditStore interface {
+	RecordPublish(ctx context.Context, params RecordPublishParams) error
+}
+
 // SchemaProvider is an alias for schema.SchemaProvider.
 //
 // This type alias exists for backward compatibility. New code should
