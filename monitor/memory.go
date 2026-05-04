@@ -417,6 +417,34 @@ func (s *MemoryStore) RecordComplete(ctx context.Context, params event.RecordCom
 	return s.UpdateStatus(ctx, params.EventID, params.SubscriptionID, Status(params.Status), params.Error, params.Duration)
 }
 
+// RecordPublish records a producer-side publish milestone.
+// Implements event.PublishAuditStore by writing an Entry with Status == StatusPublished
+// and SubscriptionID == PublishMarker, so it shares the existing storage, indexes,
+// pagination, filters, and HTTP/gRPC query surface used by handler entries.
+//
+// The entry is keyed under (EventID, PublishMarker), which cannot collide with
+// real subscription IDs (random base32 strings) or WorkerPool entries (whose
+// key is just EventID). Publishing the same event twice silently overwrites —
+// at-least-once semantics from outbox relays make this safe.
+func (s *MemoryStore) RecordPublish(ctx context.Context, params event.RecordPublishParams) error {
+	now := time.Now()
+	entry := &Entry{
+		EventID:        params.EventID,
+		SubscriptionID: PublishMarker,
+		EventName:      params.EventName,
+		BusID:          params.BusID,
+		InstanceID:     params.BusName,
+		DeliveryMode:   Broadcast,
+		Metadata:       params.Metadata,
+		Status:         StatusPublished,
+		StartedAt:      now,
+		CompletedAt:    &now,
+		TraceID:        params.TraceID,
+		SpanID:         params.SpanID,
+	}
+	return s.Record(ctx, entry)
+}
+
 // Summary returns aggregated statistics for entries matching the filter.
 func (s *MemoryStore) Summary(ctx context.Context, filter Filter) (*Summary, error) {
 	s.mu.RLock()

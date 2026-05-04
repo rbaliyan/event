@@ -2,6 +2,10 @@
 // auto-configures Monitor, Idempotency, and Poison detection on a Bus with
 // safe in-memory defaults — no external stores required for basic use.
 //
+// Producer-side publish audit reuses the monitor store: each successful
+// Bus.Send writes an Entry with Status == StatusPublished alongside the
+// subscriber entries, so a single GetByEventID returns the full lineage.
+//
 // # Quick start
 //
 //	bus, err := event.NewBus("mybus",
@@ -11,7 +15,9 @@
 //
 // # Custom stores
 //
-// Replace any default store with a production-grade backend:
+// Replace any default store with a production-grade backend. The monitor
+// store, when it implements event.PublishAuditStore, also receives publish
+// records (monitor.MemoryStore does this out of the box):
 //
 //	bus, err := event.NewBus("mybus",
 //	    event.WithTransport(t),
@@ -54,6 +60,10 @@ type Option func(*options)
 // WithMonitorStore replaces the default in-memory monitor store.
 // Use a production backend such as monitor.NewPostgresStore or
 // monitor.NewMemoryStore for development.
+//
+// If the supplied store also implements event.PublishAuditStore (the
+// in-memory store does), the stack wires it as the publish audit store
+// as well, so producer-side publish entries land in the same backend.
 func WithMonitorStore(store event.MonitorStore) Option {
 	return func(o *options) {
 		if store != nil {
@@ -123,8 +133,13 @@ func WithPoisonQuarantine(d time.Duration) Option {
 // and Poison detection with sensible defaults. All three features use in-memory
 // stores unless replaced via the Option functions above.
 //
+// Producer-side publish audit reuses the monitor store: when the configured
+// monitor store also implements event.PublishAuditStore (monitor.MemoryStore
+// does), every successful Bus.Send writes a publish entry alongside subscriber
+// entries — no extra option required.
+//
 // Default configuration:
-//   - Monitor: in-memory store
+//   - Monitor: in-memory store (also serves as publish audit)
 //   - Idempotency: in-memory store, 24-hour TTL
 //   - Poison detection: in-memory store, threshold=5, quarantine=1 hour
 //
@@ -179,9 +194,17 @@ func WithReliabilityStack(opts ...Option) event.BusOption {
 		)
 	}
 
-	return event.WithAll(
+	busOpts := []event.BusOption{
 		event.WithMonitor(ms),
 		event.WithIdempotency(is),
 		event.WithPoisonDetection(pd),
-	)
+	}
+	// If the monitor store also satisfies PublishAuditStore (e.g.
+	// monitor.MemoryStore), reuse it for producer-side audit so every
+	// publish lands alongside the subscriber entries it triggers.
+	if pa, ok := ms.(event.PublishAuditStore); ok {
+		busOpts = append(busOpts, event.WithPublishAudit(pa))
+	}
+
+	return event.WithAll(busOpts...)
 }

@@ -62,15 +62,17 @@ type Bus struct {
 	outboxStore OutboxStore
 	// DLQ store for automatic dead letter routing
 	dlqStore DLQStore
+	// Publish audit store for producer-side event tracking
+	publishAuditStore PublishAuditStore
 	// Cached OTel instruments (initialized once during construction)
-	busAttr          attribute.KeyValue // bus="name" attribute for all metrics
-	publishedCounter metric.Int64Counter
-	subscribedCounter metric.Int64Counter
-	publishDuration       metric.Float64Histogram
-	handlerDuration       metric.Float64Histogram
-	handlerErrors         metric.Int64Counter
-	filterDroppedCounter  metric.Int64Counter
-	receiveLag            metric.Float64Histogram
+	busAttr              attribute.KeyValue // bus="name" attribute for all metrics
+	publishedCounter     metric.Int64Counter
+	subscribedCounter    metric.Int64Counter
+	publishDuration      metric.Float64Histogram
+	handlerDuration      metric.Float64Histogram
+	handlerErrors        metric.Int64Counter
+	filterDroppedCounter metric.Int64Counter
+	receiveLag           metric.Float64Histogram
 }
 
 // NewBus creates a new event bus and registers it in the global registry.
@@ -96,25 +98,26 @@ func NewBus(name string, opts ...BusOption) (*Bus, error) {
 	}
 
 	bus := &Bus{
-		name:             name,
-		status:           busRunning,
-		id:               NewID(),
-		shutdownChan:     make(chan struct{}),
-		drainTimeout:     o.drainTimeout,
-		transport:        transport,
-		logger:           o.logger.With("component", "bus>"+name),
-		tracingEnabled:   o.tracingEnabled,
-		recoveryEnabled:  o.recoveryEnabled,
-		metricsEnabled:   o.metricsEnabled,
-		events:           make(map[string]any),
-		eventTypes:       make(map[string]reflect.Type),
-		idempotencyStore: o.idempotencyStore,
-		poisonDetector:   o.poisonDetector,
-		monitorStore:     o.monitorStore,
-		schemaProvider:   o.schemaProvider,
-		strictSchema:     o.strictSchema,
-		outboxStore:      o.outboxStore,
-		dlqStore:         o.dlqStore,
+		name:              name,
+		status:            busRunning,
+		id:                NewID(),
+		shutdownChan:      make(chan struct{}),
+		drainTimeout:      o.drainTimeout,
+		transport:         transport,
+		logger:            o.logger.With("component", "bus>"+name),
+		tracingEnabled:    o.tracingEnabled,
+		recoveryEnabled:   o.recoveryEnabled,
+		metricsEnabled:    o.metricsEnabled,
+		events:            make(map[string]any),
+		eventTypes:        make(map[string]reflect.Type),
+		idempotencyStore:  o.idempotencyStore,
+		poisonDetector:    o.poisonDetector,
+		monitorStore:      o.monitorStore,
+		schemaProvider:    o.schemaProvider,
+		strictSchema:      o.strictSchema,
+		outboxStore:       o.outboxStore,
+		dlqStore:          o.dlqStore,
+		publishAuditStore: o.publishAuditStore,
 	}
 
 	// Initialize OTel instruments if metrics enabled.
@@ -238,6 +241,13 @@ func (b *Bus) OutboxStore() OutboxStore {
 // When configured, rejected messages are automatically routed to the DLQ.
 func (b *Bus) DLQStore() DLQStore {
 	return b.dlqStore
+}
+
+// PublishAuditStore returns the bus-level publish audit store (may be nil).
+// When configured, each successful transport publish is recorded for
+// producer-side event tracing.
+func (b *Bus) PublishAuditStore() PublishAuditStore {
+	return b.publishAuditStore
 }
 
 // sendToDLQ stores a message in the DLQ if configured.
@@ -482,6 +492,28 @@ func (b *Bus) Send(ctx context.Context, eventName string, eventID string, payloa
 		b.publishDuration.Record(ctx, time.Since(publishStart).Seconds(),
 			metric.WithAttributes(b.busAttr, attribute.String("event", eventName)))
 	}
+
+	// Record successful publish in the audit log (best-effort, never blocks Send).
+	// Outbox-routed publishes are not recorded here; they bypass the transport and
+	// are tracked in the outbox store until the relay delivers them.
+	if err == nil && b.publishAuditStore != nil {
+		var traceID, spanID string
+		if spanCtx.IsValid() {
+			traceID = spanCtx.TraceID().String()
+			spanID = spanCtx.SpanID().String()
+		}
+		_ = b.publishAuditStore.RecordPublish(ctx, RecordPublishParams{
+			EventID:     eventID,
+			EventName:   eventName,
+			BusID:       b.id,
+			BusName:     b.name,
+			PayloadSize: len(payload),
+			Metadata:    metadata,
+			TraceID:     traceID,
+			SpanID:      spanID,
+		})
+	}
+
 	return err
 }
 

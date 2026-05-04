@@ -194,6 +194,46 @@ func TestWithReliabilityStack_IdempotencyTTL(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 }
 
+// TestWithReliabilityStack_PublishAuditReusesMonitor verifies that the
+// monitor store also receives a Status=published entry after a successful
+// publish, since monitor.MemoryStore implements event.PublishAuditStore.
+func TestWithReliabilityStack_PublishAuditReusesMonitor(t *testing.T) {
+	mstore := monitor.NewMemoryStore()
+	t.Cleanup(func() { _ = mstore.Close() })
+
+	bus := newBus(t, stack.WithReliabilityStack(
+		stack.WithMonitorStore(mstore),
+	))
+
+	type msg struct{ V int }
+	ev := event.New[msg]("stack.pubaudit")
+	ctx := context.Background()
+
+	if err := event.Register(ctx, bus, ev); err != nil {
+		t.Fatal(err)
+	}
+	ev.Subscribe(ctx, func(ctx context.Context, e event.Event[msg], m msg) error {
+		return nil
+	})
+
+	if err := ev.Publish(ctx, msg{42}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	published := monitor.StatusPublished
+	count, err := mstore.Count(ctx, monitor.Filter{
+		EventName: "stack.pubaudit",
+		Status:    []monitor.Status{published},
+	})
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 published entry for stack.pubaudit, got %d", count)
+	}
+}
+
 // TestWithReliabilityStack_PoisonOptions verifies threshold/quarantine knobs.
 func TestWithReliabilityStack_PoisonOptions(t *testing.T) {
 	bus := newBus(t, stack.WithReliabilityStack(

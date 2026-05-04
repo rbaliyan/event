@@ -82,7 +82,19 @@ const (
 	// StatusRetrying indicates the handler returned an error that will be retried.
 	// This includes both immediate retries (nack) and backoff retries (defer).
 	StatusRetrying Status = "retrying"
+
+	// StatusPublished is a producer-side milestone: the bus successfully handed
+	// the event to its transport. The entry has SubscriptionID == PublishMarker
+	// and CompletedAt set to the publish time. Subscriber entries for the same
+	// EventID coexist in the store, enabling a single GetByEventID query to
+	// answer "was this fired and which subscribers processed it?".
+	StatusPublished Status = "published"
 )
+
+// PublishMarker is the synthetic SubscriptionID used for producer-side
+// publish entries (Status == StatusPublished). It cannot collide with a real
+// subscription ID because subscription IDs are random base32-encoded strings.
+const PublishMarker = "$publish"
 
 // Entry represents a single monitor record for event processing.
 //
