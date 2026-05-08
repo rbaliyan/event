@@ -342,7 +342,7 @@ func RequireNotNil(value any, name string) error {
 	// This handles cases like var db *sql.DB = nil
 	v := reflect.ValueOf(value)
 	kind := v.Kind()
-	if (kind == reflect.Ptr || kind == reflect.Interface ||
+	if (kind == reflect.Pointer || kind == reflect.Interface ||
 		kind == reflect.Map || kind == reflect.Slice ||
 		kind == reflect.Chan || kind == reflect.Func) && v.IsNil() {
 		return fmt.Errorf("%s must not be nil: %w", name, ErrInvalidArgument)
