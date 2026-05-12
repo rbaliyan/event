@@ -271,16 +271,6 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	streamName := t.streamName(name)
 	subID := transport.NewID()
 
-	// Determine start position for Redis stream
-	// "0" = from beginning, "$" = from latest (new messages only)
-	startID := "0"
-	if subOpts.StartFrom == transport.StartFromLatest {
-		startID = "$"
-	} else if subOpts.StartFrom == transport.StartFromTimestamp && !subOpts.StartTime.IsZero() {
-		// Redis stream IDs are millisecond timestamps
-		startID = fmt.Sprintf("%d-0", subOpts.StartTime.UnixMilli())
-	}
-
 	var groupID string
 	var needsGroupCreate bool
 	if subOpts.DeliveryMode == transport.WorkerPool {
@@ -297,6 +287,28 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		// Broadcast: unique consumer group per subscriber (fan-out)
 		groupID = t.groupID + "-" + subID
 		needsGroupCreate = true
+	}
+
+	// Determine start position for Redis stream.
+	//   "0" = read from the earliest message currently in the stream
+	//   "$" = read only messages added after the group is created
+	//
+	// Broadcast subscribers mint a random consumer group per Subscribe call;
+	// the group has no continuity across pod restarts. With startID="0" a
+	// restarted broadcast subscriber would replay every retained message on
+	// the stream — typically a large fan-out of stale events. Broadcast
+	// subscribers therefore default to "$"; callers needing replay semantics
+	// should use a stable group via AsWorker + WithWorkerGroup so the offset
+	// survives restarts.
+	startID := "0"
+	if subOpts.DeliveryMode == transport.Broadcast {
+		startID = "$"
+	}
+	if subOpts.StartFrom == transport.StartFromLatest {
+		startID = "$"
+	} else if subOpts.StartFrom == transport.StartFromTimestamp && !subOpts.StartTime.IsZero() {
+		// Redis stream IDs are millisecond timestamps
+		startID = fmt.Sprintf("%d-0", subOpts.StartTime.UnixMilli())
 	}
 
 	// Create consumer group if needed (named worker groups or broadcast)

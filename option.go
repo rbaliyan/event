@@ -442,6 +442,16 @@ func AsWorker[T any]() SubscribeOption[T] {
 // AsBroadcast configures the subscription for Broadcast delivery mode.
 // All subscribers receive every message. This is the default mode.
 //
+// Restart-safety note for distributed transports (Redis Streams, Kafka,
+// NATS JetStream): broadcast subscribers are implemented with a fresh
+// per-Subscribe consumer group, which means the group has no continuity
+// across pod restarts and there is no automatic recovery of pending
+// (unacked) messages. Long-lived services that need broadcast semantics
+// AND restart resilience should use AsWorker + WithWorkerGroup(stableID)
+// with stableID stable per replica (e.g. the pod IP or hostname): each
+// stable group still receives every message, and the offset/PEL survive
+// restarts.
+//
 // Example:
 //
 //	orderEvent.Subscribe(ctx, handler, event.AsBroadcast[Order]())

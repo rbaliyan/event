@@ -270,7 +270,13 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 			groupID = t.groupID + "-" + name
 		}
 	} else {
-		// Broadcast: unique group per subscriber (fan-out)
+		// Broadcast: unique group per subscriber (fan-out).
+		// The random group has no continuity across pod restarts: with
+		// sarama.Config.Consumer.Offsets.Initial set to OffsetOldest the
+		// restarted subscriber will replay the full retained log. Callers
+		// should either set Consumer.Offsets.Initial = sarama.OffsetNewest
+		// or use AsWorker + WithWorkerGroup(stableID) for a durable group
+		// whose committed offset survives restarts.
 		groupID = t.groupID + "-" + name + "-" + transport.NewID()
 	}
 

@@ -185,6 +185,13 @@ type StartPosition int
 const (
 	// StartFromBeginning processes all available historical messages.
 	// Use this for event sourcing or when you need complete history.
+	//
+	// For Broadcast subscribers on the Redis transport this position is
+	// ignored: broadcast groups are minted fresh per Subscribe and have no
+	// continuity across restarts, so reading "from the beginning of what is
+	// currently retained" would replay the entire retained window on every
+	// restart. Broadcast subscribers always effectively start at the latest
+	// offset; use WorkerPool + WithWorkerGroup for replay semantics.
 	StartFromBeginning StartPosition = iota
 
 	// StartFromLatest only receives messages published after subscription.
