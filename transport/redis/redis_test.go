@@ -443,6 +443,82 @@ func TestTransportSubscribe(t *testing.T) {
 		}
 	})
 
+	t.Run("broadcast mode starts at latest to avoid restart replay", func(t *testing.T) {
+		// Broadcast subscribers mint a fresh per-Subscribe group, so a default
+		// startID of "0" would replay the retained stream on every restart.
+		// They must be created with startID="$".
+		mock := newMockRedisClient()
+		tr2, _ := New(mock)
+		defer tr2.Close(context.Background())
+
+		tr2.RegisterEvent(ctx, "broadcast-startid")
+		sub, _ := tr2.Subscribe(ctx, "broadcast-startid")
+		defer sub.Close(context.Background())
+
+		rs := sub.(*subscription)
+		mock.mu.Lock()
+		got := mock.groups[rs.stream][rs.group]
+		mock.mu.Unlock()
+		if got != "$" {
+			t.Errorf("expected broadcast group to be created at $, got %q", got)
+		}
+	})
+
+	t.Run("worker pool with stable group starts from beginning", func(t *testing.T) {
+		// Stable worker groups survive restarts via BUSYGROUP, so it is safe
+		// (and useful) to read from the beginning on first creation.
+		mock := newMockRedisClient()
+		tr2, _ := New(mock)
+		defer tr2.Close(context.Background())
+
+		tr2.RegisterEvent(ctx, "worker-startid")
+		sub, _ := tr2.Subscribe(ctx, "worker-startid",
+			transport.WithDeliveryMode(transport.WorkerPool),
+			transport.WithWorkerGroup("g1"))
+		defer sub.Close(context.Background())
+
+		rs := sub.(*subscription)
+		mock.mu.Lock()
+		got := mock.groups[rs.stream][rs.group]
+		mock.mu.Unlock()
+		if got != "0" {
+			t.Errorf("expected worker-group to be created at 0, got %q", got)
+		}
+	})
+
+	t.Run("broadcast honours explicit StartFromLatest and timestamp", func(t *testing.T) {
+		mock := newMockRedisClient()
+		tr2, _ := New(mock)
+		defer tr2.Close(context.Background())
+
+		tr2.RegisterEvent(ctx, "broadcast-explicit")
+
+		subLatest, _ := tr2.Subscribe(ctx, "broadcast-explicit",
+			transport.WithStartFrom(transport.StartFromLatest))
+		defer subLatest.Close(context.Background())
+
+		ts := time.Now().Add(-1 * time.Hour)
+		subTime, _ := tr2.Subscribe(ctx, "broadcast-explicit",
+			transport.WithStartFrom(transport.StartFromTimestamp),
+			transport.WithStartTime(ts))
+		defer subTime.Close(context.Background())
+
+		rsLatest := subLatest.(*subscription)
+		rsTime := subTime.(*subscription)
+		mock.mu.Lock()
+		gotLatest := mock.groups[rsLatest.stream][rsLatest.group]
+		gotTime := mock.groups[rsTime.stream][rsTime.group]
+		mock.mu.Unlock()
+
+		if gotLatest != "$" {
+			t.Errorf("StartFromLatest: expected $, got %q", gotLatest)
+		}
+		wantTime := fmt.Sprintf("%d-0", ts.UnixMilli())
+		if gotTime != wantTime {
+			t.Errorf("StartFromTimestamp: expected %q, got %q", wantTime, gotTime)
+		}
+	})
+
 	t.Run("worker groups use separate consumer groups", func(t *testing.T) {
 		tr2, _ := New(newMockRedisClient(), WithConsumerGroup("test-bus"))
 		defer tr2.Close(context.Background())

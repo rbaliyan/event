@@ -291,10 +291,21 @@ func (t *JetStreamTransport) Subscribe(ctx context.Context, name string, opts ..
 			DeliverPolicy: deliverPolicy,
 		}
 	} else {
-		// Broadcast: ephemeral consumer per subscriber (fan-out)
+		// Broadcast: ephemeral consumer per subscriber (fan-out).
+		//
+		// Ephemeral consumers have no continuity across restarts, so the
+		// default StartFromBeginning (DeliverAllPolicy) would cause every
+		// reconnect to replay the full retained stream — a large fan-out of
+		// stale events. Default to DeliverNewPolicy; callers that need
+		// broadcast-with-replay should use a durable consumer via
+		// AsWorker + WithWorkerGroup so the offset survives restarts.
+		bcastPolicy := deliverPolicy
+		if subOpts.StartFrom == transport.StartFromBeginning {
+			bcastPolicy = jetstream.DeliverNewPolicy
+		}
 		consumerConfig = jetstream.ConsumerConfig{
 			AckPolicy:     jetstream.AckExplicitPolicy,
-			DeliverPolicy: deliverPolicy,
+			DeliverPolicy: bcastPolicy,
 		}
 	}
 
