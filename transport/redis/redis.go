@@ -544,6 +544,10 @@ func (s *subscription) Close(ctx context.Context) error {
 		if s.cancel != nil {
 			s.cancel()
 		}
+		// Drain the consume goroutine before tearing down the consumer group.
+		// Otherwise a blocked XREADGROUP races with XGroupDestroy and surfaces
+		// a spurious NOGROUP error during normal shutdown.
+		s.WaitGroup().Wait()
 		// For broadcast mode, delete the unique consumer group to prevent resource leak.
 		// Use a fresh context so a cancelled caller context does not silently skip cleanup.
 		if s.isBroadcast && s.client != nil {
@@ -665,6 +669,16 @@ func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration,
 			if errors.Is(err, redis.Nil) || errors.Is(err, context.Canceled) {
 				readBackoff = 100 * time.Millisecond
 				continue
+			}
+			// If shutdown is in progress, any read error here is teardown noise
+			// (e.g. NOGROUP from a concurrent XGroupDestroy on a sibling path,
+			// or a connection closed during transport shutdown). Exit silently.
+			select {
+			case <-s.ClosedCh():
+				return
+			case <-ctx.Done():
+				return
+			default:
 			}
 			jitteredBackoff := transport.Jitter(readBackoff, 0.3)
 			logger.Error("read error, retrying with backoff", "error", err, "backoff", jitteredBackoff)

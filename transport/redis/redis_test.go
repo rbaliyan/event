@@ -1,11 +1,14 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,13 +28,38 @@ type mockRedisClient struct {
 	xaddErr        error
 	xreadErr       error
 	xpendingResult map[string]*redis.XPending // stream:group -> result (nil = use default)
+
+	// blockReadGroup makes XReadGroup park until either the context is canceled
+	// or the consumer group is destroyed. Used to reproduce shutdown races where
+	// the consume loop is blocked inside Redis when teardown begins.
+	blockReadGroup bool
+
+	xreadgroupActive              int32 // count of in-flight blocking XReadGroup calls (atomic)
+	destroyCalledWithActiveReader atomic.Bool
+	destroyCh                     map[string]chan struct{} // stream|group -> close on destroy
 }
 
 func newMockRedisClient() *mockRedisClient {
 	return &mockRedisClient{
-		streams: make(map[string][]redis.XMessage),
-		groups:  make(map[string]map[string]string),
+		streams:   make(map[string][]redis.XMessage),
+		groups:    make(map[string]map[string]string),
+		destroyCh: make(map[string]chan struct{}),
 	}
+}
+
+// destroyKey returns the map key used to track per-group destroy channels.
+func destroyKey(stream, group string) string { return stream + "|" + group }
+
+// destroyChannel returns (or creates) the destroy signal channel for (stream, group).
+// Caller must hold m.mu.
+func (m *mockRedisClient) destroyChannel(stream, group string) chan struct{} {
+	k := destroyKey(stream, group)
+	ch, ok := m.destroyCh[k]
+	if !ok {
+		ch = make(chan struct{})
+		m.destroyCh[k] = ch
+	}
+	return ch
 }
 
 func (m *mockRedisClient) XAdd(ctx context.Context, a *redis.XAddArgs) *redis.StringCmd {
@@ -85,32 +113,48 @@ func (m *mockRedisClient) XGroupCreateMkStream(ctx context.Context, stream, grou
 
 func (m *mockRedisClient) XReadGroup(ctx context.Context, a *redis.XReadGroupArgs) *redis.XStreamSliceCmd {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	cmd := redis.NewXStreamSliceCmd(ctx)
 	if m.xreadErr != nil {
+		m.mu.Unlock()
 		cmd.SetErr(m.xreadErr)
 		return cmd
 	}
 
-	// Return empty if no messages
 	stream := a.Streams[0]
 	messages := m.streams[stream]
-	if len(messages) == 0 {
+
+	if len(messages) > 0 {
+		// Return all pending messages and clear them.
+		result := []redis.XStream{{Stream: stream, Messages: messages}}
+		m.streams[stream] = nil
+		m.mu.Unlock()
+		cmd.SetVal(result)
+		return cmd
+	}
+
+	if !m.blockReadGroup {
+		m.mu.Unlock()
 		cmd.SetErr(redis.Nil)
 		return cmd
 	}
 
-	// Return all pending messages and clear them
-	result := []redis.XStream{
-		{
-			Stream:   stream,
-			Messages: messages,
-		},
+	// Blocking mode: park until ctx is canceled or the group is destroyed. This
+	// mirrors a real Redis BLOCK XREADGROUP that sits idle on a connection.
+	destroyCh := m.destroyChannel(stream, a.Group)
+	m.mu.Unlock()
+
+	atomic.AddInt32(&m.xreadgroupActive, 1)
+	defer atomic.AddInt32(&m.xreadgroupActive, -1)
+
+	select {
+	case <-destroyCh:
+		cmd.SetErr(errors.New("NOGROUP No such key '" + stream + "' or consumer group '" + a.Group + "' in XREADGROUP with GROUP option"))
+		return cmd
+	case <-ctx.Done():
+		cmd.SetErr(context.Canceled)
+		return cmd
 	}
-	m.streams[stream] = nil
-	cmd.SetVal(result)
-	return cmd
 }
 
 func (m *mockRedisClient) XAck(ctx context.Context, stream, group string, ids ...string) *redis.IntCmd {
@@ -140,6 +184,12 @@ func (m *mockRedisClient) XClaim(ctx context.Context, a *redis.XClaimArgs) *redi
 }
 
 func (m *mockRedisClient) XGroupDestroy(ctx context.Context, stream, group string) *redis.IntCmd {
+	// Record whether the consume loop is still parked inside XReadGroup at the
+	// moment destroy lands. This is the invariant the shutdown fix protects.
+	if atomic.LoadInt32(&m.xreadgroupActive) > 0 {
+		m.destroyCalledWithActiveReader.Store(true)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -149,6 +199,11 @@ func (m *mockRedisClient) XGroupDestroy(ctx context.Context, stream, group strin
 		cmd.SetVal(1)
 	} else {
 		cmd.SetVal(0)
+	}
+	// Wake any blocked XReadGroup with NOGROUP semantics.
+	if ch, ok := m.destroyCh[destroyKey(stream, group)]; ok {
+		close(ch)
+		delete(m.destroyCh, destroyKey(stream, group))
 	}
 	return cmd
 }
@@ -706,5 +761,60 @@ func TestConsumerLag_OldestPending(t *testing.T) {
 	// The age should be roughly time.Since(time.UnixMilli(knownMs)) — at least several months.
 	if *found.OldestPending < time.Hour {
 		t.Errorf("OldestPending %v too small; expected age of known past timestamp", *found.OldestPending)
+	}
+}
+
+// TestBroadcastCloseDoesNotRaceWithConsumeLoop verifies that closing a broadcast
+// subscription drains the consume goroutine before destroying its consumer group.
+// Otherwise a blocked XREADGROUP would race with XGroupDestroy and log a spurious
+// "read error, retrying with backoff" NOGROUP at ERROR level during normal shutdown.
+//
+// Regression for the shutdown-burst NOGROUP errors seen in event-server with
+// per-Subscribe broadcast consumer groups (call-scheduler-<uuid>).
+func TestBroadcastCloseDoesNotRaceWithConsumeLoop(t *testing.T) {
+	client := newMockRedisClient()
+	client.blockReadGroup = true
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	tr, err := New(client, WithLogger(logger))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close(context.Background())
+
+	ctx := context.Background()
+	if err := tr.RegisterEvent(ctx, "broadcast-event"); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+
+	sub, err := tr.Subscribe(ctx, "broadcast-event") // Broadcast is the default
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// Wait until the consume goroutine is parked inside the blocking XREADGROUP.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&client.xreadgroupActive) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("consume goroutine never entered blocking XReadGroup")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := sub.Close(context.Background()); err != nil {
+		t.Fatalf("sub.Close: %v", err)
+	}
+
+	if client.destroyCalledWithActiveReader.Load() {
+		t.Error("XGroupDestroy was called while the consume goroutine was still active; teardown ordering bug regressed")
+	}
+
+	if strings.Contains(logBuf.String(), "read error, retrying with backoff") {
+		t.Errorf("unexpected read-error log during shutdown:\n%s", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "NOGROUP") {
+		t.Errorf("unexpected NOGROUP log during shutdown:\n%s", logBuf.String())
 	}
 }
