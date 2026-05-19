@@ -356,15 +356,29 @@ func TestTransportRegisterEvent(t *testing.T) {
 
 	ctx := context.Background()
 
-	t.Run("register event creates stream and group", func(t *testing.T) {
+	t.Run("register event does not touch redis", func(t *testing.T) {
 		err := tr.RegisterEvent(ctx, "test-event")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// Verify group was created
-		if _, ok := client.groups["evt:test-event"]; !ok {
-			t.Error("expected stream group to be created")
+		// Group/stream creation is deferred to Publish/Subscribe so publish-only
+		// or worker-group-only buses don't accrue an unused base consumer group.
+		client.mu.Lock()
+		_, hasGroups := client.groups["evt:test-event"]
+		_, hasStream := client.streams["evt:test-event"]
+		client.mu.Unlock()
+		if hasGroups {
+			t.Error("did not expect RegisterEvent to create a consumer group")
+		}
+		if hasStream {
+			t.Error("did not expect RegisterEvent to create a stream")
+		}
+
+		// And the transport should not track the base group until something
+		// subscribes via it.
+		if _, ok := tr.groups.Load(tr.groupID); ok {
+			t.Error("did not expect base groupID to be tracked after RegisterEvent")
 		}
 	})
 
@@ -383,6 +397,77 @@ func TestTransportRegisterEvent(t *testing.T) {
 			t.Errorf("expected ErrTransportClosed, got %v", err)
 		}
 	})
+}
+
+// TestPublishOnlyDoesNotCreateConsumerGroup verifies that a bus that only
+// publishes (never subscribes) does not leave an orphan base consumer group
+// behind. The stream itself is created by XADD on first publish; consumer
+// groups are created only when Subscribe runs.
+func TestPublishOnlyDoesNotCreateConsumerGroup(t *testing.T) {
+	client := newMockRedisClient()
+	tr, _ := New(client)
+	defer tr.Close(context.Background())
+
+	ctx := context.Background()
+	if err := tr.RegisterEvent(ctx, "pub-only"); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+
+	if err := tr.Publish(ctx, "pub-only", testMessage("src", "p")); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	client.mu.Lock()
+	hasStream := len(client.streams["evt:pub-only"]) > 0
+	groupCount := len(client.groups["evt:pub-only"])
+	client.mu.Unlock()
+
+	if !hasStream {
+		t.Error("expected stream to be created by Publish")
+	}
+	if groupCount != 0 {
+		t.Errorf("expected no consumer groups on publish-only stream, got %d", groupCount)
+	}
+}
+
+// TestDefaultWorkerPoolCreatesBaseGroupOnSubscribe verifies the lazy-creation
+// invariant for the default worker pool: the base consumer group is created
+// by the first Subscribe call, not by RegisterEvent.
+func TestDefaultWorkerPoolCreatesBaseGroupOnSubscribe(t *testing.T) {
+	client := newMockRedisClient()
+	tr, _ := New(client, WithConsumerGroup("bus-a"))
+	defer tr.Close(context.Background())
+
+	ctx := context.Background()
+	if err := tr.RegisterEvent(ctx, "wp-evt"); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+
+	client.mu.Lock()
+	_, before := client.groups["evt:wp-evt"]
+	client.mu.Unlock()
+	if before {
+		t.Fatal("group present before Subscribe")
+	}
+
+	sub, err := tr.Subscribe(ctx, "wp-evt", transport.WithDeliveryMode(transport.WorkerPool))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close(context.Background())
+
+	client.mu.Lock()
+	startID, has := client.groups["evt:wp-evt"]["bus-a"]
+	client.mu.Unlock()
+	if !has {
+		t.Fatal("expected base group to be created by Subscribe")
+	}
+	if startID != "0" {
+		t.Errorf("expected default WorkerPool to create base group at start \"0\", got %q", startID)
+	}
+	if _, tracked := tr.groups.Load("bus-a"); !tracked {
+		t.Error("expected base group to be tracked in transport.groups after Subscribe")
+	}
 }
 
 func TestTransportUnregisterEvent(t *testing.T) {
@@ -742,8 +827,14 @@ func TestConsumerLag_OldestPending(t *testing.T) {
 	defer tr.Close(context.Background())
 
 	ctx := context.Background()
-	// RegisterEvent creates the stream and default consumer group.
 	tr.RegisterEvent(ctx, "lag-event")
+	// Subscribe creates the default consumer group (group creation is lazy
+	// post-fix; RegisterEvent no longer touches Redis).
+	sub, err := tr.Subscribe(ctx, "lag-event", transport.WithDeliveryMode(transport.WorkerPool))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close(context.Background())
 
 	// Inject a known XPending result with a stream entry ID whose millisecond
 	// prefix encodes a known past timestamp (2023-11-14T22:13:20Z).

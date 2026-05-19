@@ -143,21 +143,14 @@ func (t *Transport) streamName(eventName string) string {
 	return t.streamPrefix + ":" + eventName
 }
 
-// RegisterEvent creates resources for an event
+// RegisterEvent records the event in the local routing table. Redis-side
+// resources (stream, consumer groups) are created lazily: the stream by the
+// first Publish (XADD auto-creates), and consumer groups by Subscribe. This
+// keeps publish-only buses and worker-group-only subscribers from leaving an
+// unused base consumer group whose PEL grows unboundedly.
 func (t *Transport) RegisterEvent(ctx context.Context, name string) error {
 	if !t.isOpen() {
 		return transport.ErrTransportClosed
-	}
-
-	streamName := t.streamName(name)
-
-	// Create consumer group (also creates stream if it doesn't exist)
-	err := t.client.XGroupCreateMkStream(ctx, streamName, t.groupID, "$").Err()
-	if err != nil && !errors.Is(err, redis.Nil) {
-		// Ignore "BUSYGROUP" error (group already exists)
-		if err.Error() != "BUSYGROUP Consumer Group name already exists" {
-			return err
-		}
 	}
 
 	ev := &redisEvent{
@@ -168,10 +161,7 @@ func (t *Transport) RegisterEvent(ctx context.Context, name string) error {
 		return transport.ErrEventAlreadyExists
 	}
 
-	// Track the base consumer group
-	t.groups.Store(t.groupID, struct{}{})
-
-	t.logger.Debug("registered event", "event", name, "stream", streamName)
+	t.logger.Debug("registered event", "event", name, "stream", t.streamName(name))
 	return nil
 }
 
@@ -274,13 +264,11 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	subID := transport.NewID()
 
 	var groupID string
-	var needsGroupCreate bool
 	if subOpts.DeliveryMode == transport.WorkerPool {
 		if subOpts.WorkerGroup != "" {
 			// WorkerPool with named group: workers in same group compete
 			// Different groups each receive all messages
 			groupID = t.groupID + "-" + name + "-" + subOpts.WorkerGroup
-			needsGroupCreate = true
 		} else {
 			// WorkerPool default: all workers share the base group
 			groupID = t.groupID
@@ -288,7 +276,6 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 	} else {
 		// Broadcast: unique consumer group per subscriber (fan-out)
 		groupID = t.groupID + "-" + subID
-		needsGroupCreate = true
 	}
 
 	// Determine start position for Redis stream.
@@ -313,12 +300,13 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		startID = fmt.Sprintf("%d-0", subOpts.StartTime.UnixMilli())
 	}
 
-	// Create consumer group if needed (named worker groups or broadcast)
-	if needsGroupCreate {
-		err := t.client.XGroupCreateMkStream(ctx, streamName, groupID, startID).Err()
-		if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
-			return nil, err
-		}
+	// Lazily create the consumer group. Idempotent — BUSYGROUP means another
+	// subscriber (or a prior process incarnation, for stable worker groups)
+	// already created it, so we reuse the existing offset. This also creates
+	// the stream if Publish hasn't run yet.
+	err := t.client.XGroupCreateMkStream(ctx, streamName, groupID, startID).Err()
+	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
+		return nil, err
 	}
 
 	// Track this consumer group for lag monitoring
@@ -481,9 +469,16 @@ func (t *Transport) ConsumerLag(ctx context.Context) ([]transport.ConsumerLag, e
 				return
 			}
 
-			// Get consumer group info
+			// Get consumer group info. The stream is created lazily by the first
+			// Publish or Subscribe; until then XInfoGroups errors with
+			// "ERR no such key". Report the event as zero-lag in that case
+			// rather than logging an operator-facing error.
 			groups, err := t.client.XInfoGroups(ctx, streamName).Result()
 			if err != nil {
+				if isNoSuchKeyErr(err) {
+					results[idx].lags = append(results[idx].lags, transport.ConsumerLag{Event: name})
+					return
+				}
 				t.logger.Error("failed to get group info", "stream", streamName, "error", err)
 				return
 			}
@@ -548,6 +543,14 @@ func (t *Transport) ConsumerLag(ctx context.Context) ([]transport.ConsumerLag, e
 // switch to it.
 func isNoGroupErr(err error) bool {
 	return err != nil && strings.HasPrefix(err.Error(), "NOGROUP ")
+}
+
+// isNoSuchKeyErr reports whether err is the Redis "ERR no such key" reply,
+// returned by stream-introspection commands (e.g., XINFO GROUPS) when the
+// target stream does not exist yet. Detection is by error-text prefix for the
+// same reason as isNoGroupErr.
+func isNoSuchKeyErr(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "ERR no such key")
 }
 
 // tryRecreateGroup attempts to recreate the subscription's consumer group at
