@@ -1,3 +1,10 @@
+//go:build !integration
+
+// This file holds the miniredis-backed unit tests for RedisStateManager. The
+// real-Redis suite lives in redis_integration_test.go and reuses the
+// setupRedisStateManager helper name, so the two files are mutually exclusive
+// via build tags.
+
 package distributed
 
 import (

@@ -1,0 +1,31 @@
+# Codecov is in informational mode during the test-quality lift. Targets are
+# 80% on both the project as a whole and on changed code in a PR, but neither
+# blocks merges yet — the badge surfaces the trend so contributors can see
+# regressions without being rejected by a flaky number.
+#
+# Flip threshold from `auto` to a fixed delta and remove informational: true
+# once the unit suite + the new sqlmock/miniredis stores raise project
+# coverage above 80% steady-state.
+
+coverage:
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 1%
+        informational: true
+    patch:
+      default:
+        target: 80%
+        threshold: 1%
+        informational: true
+
+comment:
+  layout: "reach, diff, flags, tree"
+  behavior: default
+  require_changes: false
+
+ignore:
+  - "**/*_test.go"
+  - "internal/testutil/**"
+  - "monitor/proto/**"
