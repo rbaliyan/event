@@ -37,6 +37,11 @@ type mockRedisClient struct {
 	xreadgroupActive              int32 // count of in-flight blocking XReadGroup calls (atomic)
 	destroyCalledWithActiveReader atomic.Bool
 	destroyCh                     map[string]chan struct{} // stream|group -> close on destroy
+
+	// xgroupCreateErr, when non-nil, is returned from XGroupCreateMkStream
+	// instead of creating the group. Used to exercise the recreate-fails
+	// fallback path.
+	xgroupCreateErr error
 }
 
 func newMockRedisClient() *mockRedisClient {
@@ -99,6 +104,10 @@ func (m *mockRedisClient) XGroupCreateMkStream(ctx context.Context, stream, grou
 	defer m.mu.Unlock()
 
 	cmd := redis.NewStatusCmd(ctx)
+	if m.xgroupCreateErr != nil {
+		cmd.SetErr(m.xgroupCreateErr)
+		return cmd
+	}
 	if m.groups[stream] == nil {
 		m.groups[stream] = make(map[string]string)
 	}
@@ -122,6 +131,16 @@ func (m *mockRedisClient) XReadGroup(ctx context.Context, a *redis.XReadGroupArg
 	}
 
 	stream := a.Streams[0]
+
+	// Real Redis returns NOGROUP immediately (regardless of BLOCK) if the
+	// group doesn't exist on the stream. Mimic that so tests can drive
+	// recovery paths by destroying groups out-of-band.
+	if _, ok := m.groups[stream][a.Group]; !ok {
+		m.mu.Unlock()
+		cmd.SetErr(errors.New("NOGROUP No such key '" + stream + "' or consumer group '" + a.Group + "' in XREADGROUP with GROUP option"))
+		return cmd
+	}
+
 	messages := m.streams[stream]
 
 	if len(messages) > 0 {
@@ -133,14 +152,15 @@ func (m *mockRedisClient) XReadGroup(ctx context.Context, a *redis.XReadGroupArg
 		return cmd
 	}
 
-	if !m.blockReadGroup {
+	// Block only if the caller asked for it AND the mock is configured to
+	// simulate parking. Non-blocking reads (Block <= 0) match Redis's
+	// non-blocking semantics and return redis.Nil for an empty stream.
+	if a.Block <= 0 || !m.blockReadGroup {
 		m.mu.Unlock()
 		cmd.SetErr(redis.Nil)
 		return cmd
 	}
 
-	// Blocking mode: park until ctx is canceled or the group is destroyed. This
-	// mirrors a real Redis BLOCK XREADGROUP that sits idle on a connection.
 	destroyCh := m.destroyChannel(stream, a.Group)
 	m.mu.Unlock()
 
@@ -775,8 +795,8 @@ func TestBroadcastCloseDoesNotRaceWithConsumeLoop(t *testing.T) {
 	client := newMockRedisClient()
 	client.blockReadGroup = true
 
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logBuf := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	tr, err := New(client, WithLogger(logger))
 	if err != nil {
@@ -816,5 +836,448 @@ func TestBroadcastCloseDoesNotRaceWithConsumeLoop(t *testing.T) {
 	}
 	if strings.Contains(logBuf.String(), "NOGROUP") {
 		t.Errorf("unexpected NOGROUP log during shutdown:\n%s", logBuf.String())
+	}
+}
+
+// safeBuffer is a sync-safe wrapper around bytes.Buffer for capturing slog
+// output from goroutines that race with test assertions.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitForActiveReader polls until the mock has at least one in-flight blocking
+// XReadGroup, or fails the test on timeout.
+func waitForActiveReader(t *testing.T, m *mockRedisClient) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&m.xreadgroupActive) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("consume goroutine never entered blocking XReadGroup")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// pickBlockedGroup returns the group name that currently has a blocked
+// XReadGroup waiting on the given stream. Only the consume goroutine of the
+// subscription under test parks in blocking mode, so this targets the right
+// group even when the base groupID is also registered on the stream.
+func pickBlockedGroup(t *testing.T, m *mockRedisClient, stream string) string {
+	t.Helper()
+	prefix := stream + "|"
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k := range m.destroyCh {
+		if strings.HasPrefix(k, prefix) {
+			return strings.TrimPrefix(k, prefix)
+		}
+	}
+	t.Fatalf("no blocked reader on stream %q (groups: %v)", stream, m.groups[stream])
+	return ""
+}
+
+func TestAutoRecreateGroup_BroadcastRecoversFromNoGroup(t *testing.T) {
+	client := newMockRedisClient()
+	client.blockReadGroup = true
+
+	logBuf := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var recreateCount atomic.Int32
+	var recreateMode atomic.Int32
+	tr, err := New(client,
+		WithLogger(logger),
+		WithAutoRecreateGroup(RecreateBroadcast),
+		WithRecreateHandler(func(_, _ string, mode RecreateMode) {
+			recreateCount.Add(1)
+			recreateMode.Store(int32(mode))
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close(context.Background())
+
+	ctx := context.Background()
+	if err := tr.RegisterEvent(ctx, "evt"); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+	sub, err := tr.Subscribe(ctx, "evt") // broadcast (default)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close(context.Background())
+
+	waitForActiveReader(t, client)
+
+	streamName := "evt:evt"
+	groupName := pickBlockedGroup(t, client, streamName)
+
+	// Simulate Redis losing the group.
+	client.XGroupDestroy(context.Background(), streamName, groupName)
+
+	// Wait for the recreate callback to fire.
+	deadline := time.Now().Add(2 * time.Second)
+	for recreateCount.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("recreate handler never fired; logs:\n%s", logBuf.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if got := RecreateMode(recreateMode.Load()); got != RecreateBroadcast {
+		t.Errorf("recreate handler mode = %v, want %v", got, RecreateBroadcast)
+	}
+
+	// Group should be back.
+	client.mu.Lock()
+	_, exists := client.groups[streamName][groupName]
+	client.mu.Unlock()
+	if !exists {
+		t.Errorf("group %q not recreated on stream %q", groupName, streamName)
+	}
+
+	if strings.Contains(logBuf.String(), "read error, retrying with backoff") {
+		t.Errorf("unexpected error log after NOGROUP recovery:\n%s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "consumer group recreated after NOGROUP") {
+		t.Errorf("expected warn log on recreate; got:\n%s", logBuf.String())
+	}
+}
+
+func TestAutoRecreateGroup_WorkerPoolRecoversFromNoGroup(t *testing.T) {
+	client := newMockRedisClient()
+	client.blockReadGroup = true
+
+	logBuf := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var recreateCount atomic.Int32
+	var recreateMode atomic.Int32
+	tr, err := New(client,
+		WithLogger(logger),
+		WithAutoRecreateGroup(RecreateWorkerPool),
+		WithRecreateHandler(func(_, _ string, mode RecreateMode) {
+			recreateCount.Add(1)
+			recreateMode.Store(int32(mode))
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close(context.Background())
+
+	ctx := context.Background()
+	if err := tr.RegisterEvent(ctx, "evt"); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+	sub, err := tr.Subscribe(ctx, "evt",
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup("g1"),
+	)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close(context.Background())
+
+	waitForActiveReader(t, client)
+
+	streamName := "evt:evt"
+	groupName := pickBlockedGroup(t, client, streamName)
+
+	client.XGroupDestroy(context.Background(), streamName, groupName)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for recreateCount.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("recreate handler never fired; logs:\n%s", logBuf.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if got := RecreateMode(recreateMode.Load()); got != RecreateWorkerPool {
+		t.Errorf("recreate handler mode = %v, want %v", got, RecreateWorkerPool)
+	}
+
+	client.mu.Lock()
+	_, exists := client.groups[streamName][groupName]
+	client.mu.Unlock()
+	if !exists {
+		t.Errorf("worker group %q not recreated", groupName)
+	}
+}
+
+func TestAutoRecreateGroup_DisabledLeavesErrorLog(t *testing.T) {
+	client := newMockRedisClient()
+	client.blockReadGroup = true
+
+	logBuf := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var recreateCount atomic.Int32
+	tr, err := New(client,
+		WithLogger(logger),
+		// No WithAutoRecreateGroup — default is zero (no recreation).
+		WithRecreateHandler(func(_, _ string, _ RecreateMode) {
+			recreateCount.Add(1)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close(context.Background())
+
+	ctx := context.Background()
+	if err := tr.RegisterEvent(ctx, "evt"); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+	sub, err := tr.Subscribe(ctx, "evt")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close(context.Background())
+
+	waitForActiveReader(t, client)
+
+	streamName := "evt:evt"
+	groupName := pickBlockedGroup(t, client, streamName)
+
+	client.XGroupDestroy(context.Background(), streamName, groupName)
+
+	// Wait for the existing error-log + backoff path to log.
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(logBuf.String(), "read error, retrying with backoff") {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected error log never appeared; logs:\n%s", logBuf.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if recreateCount.Load() != 0 {
+		t.Errorf("recreate handler fired %d times with auto-recreate disabled", recreateCount.Load())
+	}
+
+	client.mu.Lock()
+	_, exists := client.groups[streamName][groupName]
+	client.mu.Unlock()
+	if exists {
+		t.Errorf("group %q was unexpectedly recreated with auto-recreate disabled", groupName)
+	}
+}
+
+func TestAutoRecreateGroup_WrongModeLeavesErrorLog(t *testing.T) {
+	// Worker-pool subscription, but only RecreateBroadcast is enabled. Recovery
+	// must NOT fire for the worker subscription.
+	client := newMockRedisClient()
+	client.blockReadGroup = true
+
+	logBuf := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var recreateCount atomic.Int32
+	tr, err := New(client,
+		WithLogger(logger),
+		WithAutoRecreateGroup(RecreateBroadcast), // mismatch
+		WithRecreateHandler(func(_, _ string, _ RecreateMode) {
+			recreateCount.Add(1)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close(context.Background())
+
+	ctx := context.Background()
+	if err := tr.RegisterEvent(ctx, "evt"); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+	sub, err := tr.Subscribe(ctx, "evt",
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup("g1"),
+	)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close(context.Background())
+
+	waitForActiveReader(t, client)
+
+	streamName := "evt:evt"
+	groupName := pickBlockedGroup(t, client, streamName)
+
+	client.XGroupDestroy(context.Background(), streamName, groupName)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(logBuf.String(), "read error, retrying with backoff") {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected error log never appeared; logs:\n%s", logBuf.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if recreateCount.Load() != 0 {
+		t.Errorf("recreate fired with mismatched mode (got count=%d)", recreateCount.Load())
+	}
+}
+
+func TestRecreateMode_String(t *testing.T) {
+	cases := []struct {
+		mode RecreateMode
+		want string
+	}{
+		{0, "none"},
+		{RecreateBroadcast, "broadcast"},
+		{RecreateWorkerPool, "worker_pool"},
+		{RecreateAll, "all"},
+		{RecreateMode(0x80), "RecreateMode(0x80)"},
+	}
+	for _, c := range cases {
+		if got := c.mode.String(); got != c.want {
+			t.Errorf("RecreateMode(%d).String() = %q, want %q", c.mode, got, c.want)
+		}
+	}
+}
+
+// TestAutoRecreateGroup_RecreateFailsFallsBack verifies that when
+// XGroupCreateMkStream returns a non-BUSYGROUP error (e.g., Redis still
+// unreachable), the consume loop falls through to the existing error log +
+// exponential backoff path and the recreate handler is NOT invoked.
+func TestAutoRecreateGroup_RecreateFailsFallsBack(t *testing.T) {
+	client := newMockRedisClient()
+	client.blockReadGroup = true
+
+	logBuf := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var recreateCount atomic.Int32
+	tr, err := New(client,
+		WithLogger(logger),
+		WithAutoRecreateGroup(RecreateBroadcast),
+		WithRecreateHandler(func(_, _ string, _ RecreateMode) {
+			recreateCount.Add(1)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close(context.Background())
+
+	ctx := context.Background()
+	if err := tr.RegisterEvent(ctx, "evt"); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+	sub, err := tr.Subscribe(ctx, "evt")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close(context.Background())
+
+	waitForActiveReader(t, client)
+
+	streamName := "evt:evt"
+	groupName := pickBlockedGroup(t, client, streamName)
+
+	// Arm the mock so the recreate attempt fails with a non-BUSYGROUP error.
+	client.mu.Lock()
+	client.xgroupCreateErr = errors.New("ERR connection lost")
+	client.mu.Unlock()
+
+	client.XGroupDestroy(context.Background(), streamName, groupName)
+
+	// Wait for both the recreate-failure Warn and the fall-through ERROR log.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s := logBuf.String()
+		if strings.Contains(s, "failed to recreate consumer group after NOGROUP") &&
+			strings.Contains(s, "read error, retrying with backoff") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected failure + fall-through logs never both appeared; logs:\n%s", s)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if recreateCount.Load() != 0 {
+		t.Errorf("recreate handler fired %d times despite recreate failure", recreateCount.Load())
+	}
+}
+
+// TestAutoRecreateGroup_BusyGroupTreatedAsSuccess verifies that a concurrent
+// sibling who already recreated the group (yielding BUSYGROUP on our retry)
+// is treated as success rather than a hard failure.
+func TestAutoRecreateGroup_BusyGroupTreatedAsSuccess(t *testing.T) {
+	client := newMockRedisClient()
+	client.blockReadGroup = true
+
+	logBuf := &safeBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var recreateCount atomic.Int32
+	tr, err := New(client,
+		WithLogger(logger),
+		WithAutoRecreateGroup(RecreateBroadcast),
+		WithRecreateHandler(func(_, _ string, _ RecreateMode) {
+			recreateCount.Add(1)
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer tr.Close(context.Background())
+
+	ctx := context.Background()
+	if err := tr.RegisterEvent(ctx, "evt"); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+	sub, err := tr.Subscribe(ctx, "evt")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close(context.Background())
+
+	waitForActiveReader(t, client)
+
+	streamName := "evt:evt"
+	groupName := pickBlockedGroup(t, client, streamName)
+
+	// Simulate the destroy + sibling-recreate race: the group is gone (so
+	// XReadGroup returns NOGROUP), then a concurrent peer recreates it before
+	// our XGroupCreateMkStream lands. We model this by having the destroy
+	// channel close but the group entry remain present in m.groups, so the
+	// mock returns BUSYGROUP from XGroupCreateMkStream.
+	client.mu.Lock()
+	// Close the destroy channel manually to wake the blocked XReadGroup with
+	// NOGROUP semantics, but leave the group registered so XReadGroup will
+	// also re-find it on retry (group "still there" from our POV).
+	if ch, ok := client.destroyCh[destroyKey(streamName, groupName)]; ok {
+		close(ch)
+		delete(client.destroyCh, destroyKey(streamName, groupName))
+	}
+	client.mu.Unlock()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for recreateCount.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("recreate handler never fired (BUSYGROUP not treated as success); logs:\n%s", logBuf.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if strings.Contains(logBuf.String(), "failed to recreate consumer group") {
+		t.Errorf("BUSYGROUP was incorrectly treated as failure; logs:\n%s", logBuf.String())
 	}
 }
