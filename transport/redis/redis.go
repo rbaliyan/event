@@ -65,16 +65,18 @@ type Transport struct {
 	onError func(error)
 
 	// Stream configuration
-	streamPrefix  string
-	maxLen        int64         // Max stream length (0 = unlimited)
-	maxAge        time.Duration // Max message age for MINID trimming (0 = unlimited)
-	blockTime     time.Duration
-	sendTimeout   time.Duration // Timeout for sending to subscriber channel (backpressure)
-	claimInterval  time.Duration // Interval for claiming orphaned messages (0 = disabled)
-	claimMinIdle   time.Duration // Minimum idle time before claiming a message
-	claimBatchSize int64         // Max messages to claim per cycle (default 100)
+	streamPrefix   string
+	maxLen         int64         // Max stream length (0 = unlimited)
+	maxAge         time.Duration // Max message age for MINID trimming (0 = unlimited)
+	blockTime      time.Duration
+	sendTimeout    time.Duration             // Timeout for sending to subscriber channel (backpressure)
+	claimInterval  time.Duration             // Interval for claiming orphaned messages (0 = disabled)
+	claimMinIdle   time.Duration             // Minimum idle time before claiming a message
+	claimBatchSize int64                     // Max messages to claim per cycle (default 100)
 	cb             *transport.CircuitBreaker // Publish circuit breaker (nil = disabled)
 
+	autoRecreate RecreateMode                                  // Bitmask: which modes auto-recover from NOGROUP
+	onRecreate   func(stream, group string, mode RecreateMode) // Observability hook for recreate events
 }
 
 // redisEvent tracks event-specific state
@@ -96,7 +98,7 @@ type subscription struct {
 	claimMinIdle       time.Duration // Minimum idle time before claiming
 	claimBatchSize     int64         // Max messages to claim per cycle
 	isBroadcast        bool          // If true, consumer group is deleted on close
-
+	startID            string        // Original start position (used for NOGROUP recovery)
 }
 
 // Default configuration
@@ -349,6 +351,7 @@ func (t *Transport) Subscribe(ctx context.Context, name string, opts ...transpor
 		claimMinIdle:   t.claimMinIdle,
 		claimBatchSize: t.claimBatchSize,
 		isBroadcast:    subOpts.DeliveryMode == transport.Broadcast,
+		startID:        startID,
 	}
 
 	// Start consuming in background with WaitGroup tracking
@@ -537,6 +540,44 @@ func (t *Transport) ConsumerLag(ctx context.Context) ([]transport.ConsumerLag, e
 	return lags, nil
 }
 
+// isNoGroupErr reports whether err is a Redis NOGROUP error (consumer group
+// or its stream missing). go-redis v9 surfaces server replies as untyped
+// proto.Error whose Error() string is the raw "NOGROUP <message>" payload,
+// so prefix matching is the canonical detection — errors.Is is not available
+// for this case. If go-redis exposes a typed sentinel in a future release,
+// switch to it.
+func isNoGroupErr(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "NOGROUP ")
+}
+
+// tryRecreateGroup attempts to recreate the subscription's consumer group at
+// its original start position. Returns true if the caller should retry the
+// read loop without backoff; false to fall through to the existing error log
+// and backoff path (recreate disabled for this mode, or recreate failed).
+func (t *Transport) tryRecreateGroup(ctx context.Context, s *subscription, logger *slog.Logger) bool {
+	mode := RecreateWorkerPool
+	if s.isBroadcast {
+		mode = RecreateBroadcast
+	}
+	if t.autoRecreate&mode == 0 {
+		return false
+	}
+
+	err := t.client.XGroupCreateMkStream(ctx, s.stream, s.group, s.startID).Err()
+	if err != nil && !strings.HasPrefix(err.Error(), "BUSYGROUP") {
+		logger.Warn("failed to recreate consumer group after NOGROUP",
+			"stream", s.stream, "group", s.group, "start_id", s.startID, "error", err)
+		return false
+	}
+
+	logger.Warn("consumer group recreated after NOGROUP",
+		"stream", s.stream, "group", s.group, "start_id", s.startID, "mode", mode)
+	if t.onRecreate != nil {
+		t.onRecreate(s.stream, s.group, mode)
+	}
+	return true
+}
+
 // subscription methods
 
 func (s *subscription) Close(ctx context.Context) error {
@@ -679,6 +720,31 @@ func (s *subscription) consumeLoop(ctx context.Context, blockTime time.Duration,
 			case <-ctx.Done():
 				return
 			default:
+			}
+			// NOGROUP recovery: the consumer group (or its stream) has vanished
+			// outside this process — Redis restart without persistence, FLUSHDB,
+			// failover to an empty replica, manual DEL, eviction. Recreate the
+			// group at the subscription's original start position if the operator
+			// opted in for this delivery mode.
+			//
+			// On successful recreate, apply the current backoff (and escalate it)
+			// before retrying so a flapping group — recreate → NOGROUP → recreate
+			// in a tight loop — falls into exponential backoff rather than hot-
+			// looping at full CPU. A subsequent successful read resets backoff.
+			if isNoGroupErr(err) && s.transport.tryRecreateGroup(ctx, s, logger) {
+				jitteredBackoff := transport.Jitter(readBackoff, 0.3)
+				select {
+				case <-s.ClosedCh():
+					return
+				case <-ctx.Done():
+					return
+				case <-time.After(jitteredBackoff):
+				}
+				readBackoff *= 2
+				if readBackoff > maxReadBackoff {
+					readBackoff = maxReadBackoff
+				}
+				continue
 			}
 			jitteredBackoff := transport.Jitter(readBackoff, 0.3)
 			logger.Error("read error, retrying with backoff", "error", err, "backoff", jitteredBackoff)

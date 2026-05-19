@@ -264,6 +264,31 @@ When open, `Publish` returns `transport.ErrCircuitOpen` immediately instead of b
 
 The `CircuitBreaker` struct in the `transport` package is reusable and can be embedded by any transport implementation.
 
+### Auto-Recreate Consumer Group (Redis)
+
+Recover from `NOGROUP` errors when the consumer group (or its stream) disappears — Redis restart without persistence, `FLUSHDB`, manual `DEL`, failover to an empty replica, eviction under `maxmemory`. Without this option the consume loop spins with exponential backoff and never recovers without a process restart.
+
+```go
+transport, _ := redis.New(rdb,
+    // Enable per-mode. Broadcast is low blast radius (per-Subscribe throwaway
+    // group). WorkerPool is high blast radius (shared cluster-wide PEL is
+    // dropped on recreate) — opt in only when at-least-once gaps across Redis
+    // state loss are acceptable.
+    redis.WithAutoRecreateGroup(redis.RecreateBroadcast | redis.RecreateWorkerPool),
+
+    // Optional: observe recreate events (wire a metric counter or alert here).
+    redis.WithRecreateHandler(func(stream, group string, mode redis.RecreateMode) {
+        recreatesTotal.WithLabelValues(stream, group, mode.String()).Inc()
+    }),
+)
+```
+
+On `NOGROUP`, the group is recreated with `XGroupCreateMkStream` at the subscription's original start position (`$` for broadcast / `StartFromLatest`, `0` for worker-pool / `StartFromBeginning`, or the resolved Redis message ID for `StartFromTimestamp`). A `Warn`-level `consumer group recreated after NOGROUP` log is emitted on each recreate. Repeated recreate→`NOGROUP` cycles fall into exponential backoff so a flapping group does not hot-loop.
+
+The destroyed group's Pending Entries List is unrecoverable — at-least-once delivery is best-effort across Redis state loss. Messages published in the gap between destruction and recreate are not delivered to a broadcast subscription started at `$`.
+
+Disabled by default (`RecreateMode(0)`).
+
 ### Transport Migration
 
 Bridge an old and new transport during a migration with zero message loss:
