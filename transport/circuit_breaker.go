@@ -4,6 +4,8 @@ import (
 	"errors"
 	"sync/atomic"
 	"time"
+
+	"github.com/rbaliyan/event/v3/internal/clock"
 )
 
 // ErrCircuitOpen is returned when the circuit breaker is open and rejecting calls.
@@ -25,9 +27,14 @@ type CircuitBreaker struct {
 	threshold int32
 	cooldown  time.Duration
 
+	// clk supplies the current time. Defaults to clock.Real{} in production;
+	// tests inject clock.Fake via withClock to drive cooldown deterministically
+	// without time.Sleep.
+	clk clock.Clock
+
 	state    atomic.Int32
 	failures atomic.Int32
-	openedAt atomic.Int64 // UnixNano when breaker opened
+	openedAt atomic.Int64 // clock.Now().UnixNano() when breaker opened
 	probing  atomic.Int32 // CAS gate: 1 if a half-open probe is in-flight
 }
 
@@ -42,7 +49,20 @@ func NewCircuitBreaker(threshold int, cooldown time.Duration) *CircuitBreaker {
 		enabled:   true,
 		threshold: int32(threshold), // #nosec G115 -- value is bounded
 		cooldown:  cooldown,
+		clk:       clock.Real{},
 	}
+}
+
+// withClock swaps the clock for tests. Unexported on purpose — callers in
+// other packages should not be able to install a clock and rely on its
+// implementation detail. Used only from circuit_breaker_test.go, which
+// golangci-lint excludes by default (--tests=false in CI); hence the
+// explicit allow-list below.
+//
+//nolint:unused // used from circuit_breaker_test.go
+func (cb *CircuitBreaker) withClock(c clock.Clock) *CircuitBreaker {
+	cb.clk = c
+	return cb
 }
 
 // Allow checks whether a call is permitted. Returns nil if allowed,
@@ -59,7 +79,7 @@ func (cb *CircuitBreaker) Allow() error {
 	case cbOpen:
 		// Check if cooldown has elapsed
 		opened := cb.openedAt.Load()
-		if time.Since(time.Unix(0, opened)) < cb.cooldown {
+		if cb.clk.Now().Sub(time.Unix(0, opened)) < cb.cooldown {
 			return ErrCircuitOpen
 		}
 		// Cooldown elapsed — try to become the probe caller
@@ -98,7 +118,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 
 	// Half-open probe failed — re-open immediately
 	if cb.state.CompareAndSwap(cbHalfOpen, cbOpen) {
-		cb.openedAt.Store(time.Now().UnixNano())
+		cb.openedAt.Store(cb.clk.Now().UnixNano())
 		cb.failures.Store(0)
 		cb.probing.Store(0)
 		return
@@ -107,7 +127,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 	n := cb.failures.Add(1)
 	if n >= cb.threshold {
 		if cb.state.CompareAndSwap(cbClosed, cbOpen) {
-			cb.openedAt.Store(time.Now().UnixNano())
+			cb.openedAt.Store(cb.clk.Now().UnixNano())
 			cb.failures.Store(0)
 		}
 	}
