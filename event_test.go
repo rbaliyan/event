@@ -69,6 +69,35 @@ func wait(ch chan struct{}, timeout int) bool {
 	}
 }
 
+// eventuallyTrue polls predicate until it returns true or the deadline fires.
+// Replaces post-publish / post-cancel time.Sleep + assert patterns. Lives in
+// this file (not internal/testutil) because the root event package cannot
+// import testutil — that would create an import cycle.
+func eventuallyTrue(t testing.TB, timeout time.Duration, predicate func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !predicate() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s (after %s)", msg, timeout)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// consistentlyEqInt32 polls counter for the given window and fails the test
+// if it ever observes a value other than want. Use for negative-stable
+// assertions such as "after a duplicate publish, callCount must stay at N".
+func consistentlyEqInt32(t testing.TB, window time.Duration, counter *atomic.Int32, want int32, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		if got := counter.Load(); got != want {
+			t.Fatalf("%s: got %d, want %d", msg, got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // testDLQStore is a simple DLQStore for testing that signals when Store is called.
 type testDLQStore struct {
 	called chan struct{}
@@ -242,6 +271,7 @@ func TestCancel(t *testing.T) {
 	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
 	}
+	impl := e.(*eventImpl[any])
 	ch1 := make(chan struct{})
 	ch2 := make(chan struct{})
 	ctx1, cancel1 := context.WithCancel(context.Background())
@@ -262,7 +292,8 @@ func TestCancel(t *testing.T) {
 		t.Error("2. Failed")
 	}
 	cancel1()
-	time.Sleep(10 * time.Millisecond) // Allow cancel to propagate
+	eventuallyTrue(t, 2*time.Second, func() bool { return impl.Subscribers() == 1 },
+		"cancel1 did not remove subscription 1")
 	e.Publish(context.TODO(), nil)
 	if wait(ch1, waitChTimeoutMS) {
 		t.Error("1. Failed")
@@ -271,7 +302,8 @@ func TestCancel(t *testing.T) {
 		t.Error("2. Failed")
 	}
 	cancel2()
-	time.Sleep(10 * time.Millisecond) // Allow cancel to propagate
+	eventuallyTrue(t, 2*time.Second, func() bool { return impl.Subscribers() == 0 },
+		"cancel2 did not remove subscription 2")
 	e.Publish(context.TODO(), nil)
 	if wait(ch1, waitChTimeoutMS) {
 		t.Error("1. Failed")
@@ -928,13 +960,15 @@ func TestWorkerPoolBackpressure(t *testing.T) {
 		e.Publish(context.Background(), i)
 	}
 
-	// Wait a bit for events to be processed
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the pipeline to start consuming before releasing handlers.
+	eventuallyTrue(t, 2*time.Second,
+		func() bool { return atomic.LoadInt32(&processed) >= 1 },
+		"worker pool did not begin consuming")
 
-	// All events should eventually be processed
+	// All events should eventually be processed once handlers are released.
 	go func() {
 		for atomic.LoadInt32(&processed) < int32(poolSize)+2 {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(2 * time.Millisecond)
 		}
 		close(doneCh)
 	}()
@@ -1466,8 +1500,18 @@ func TestAsyncHandlerWithPanic(t *testing.T) {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
-	ch := make(chan struct{})
+	reached := make(chan struct{}, 1)
 	handler := func(ctx context.Context, ev Event[any], data any) error {
+		defer func() {
+			// Fires during panic unwinding before AsyncHandler's outer recover.
+			// Receiving on this channel proves the handler ran; AsyncHandler's
+			// deferred recover is guaranteed to execute next during unwind,
+			// so if it failed to recover the test process would crash.
+			select {
+			case reached <- struct{}{}:
+			default:
+			}
+		}()
 		panic("test panic")
 	}
 
@@ -1476,11 +1520,9 @@ func TestAsyncHandlerWithPanic(t *testing.T) {
 
 	e.Publish(context.Background(), nil)
 
-	// Give time for async handler to run and recover
-	time.Sleep(50 * time.Millisecond)
-
-	// Test passes if no panic propagated
-	close(ch)
+	if !wait(reached, waitChTimeoutMS) {
+		t.Fatal("async handler did not run")
+	}
 }
 
 // TestEventString verifies eventImpl.String()
@@ -1522,18 +1564,12 @@ func TestEventSubscribers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.Subscribe(ctx, func(ctx context.Context, ev Event[any], data any) error { return nil })
 
-	time.Sleep(10 * time.Millisecond) // Allow subscription to register
-
-	if impl.Subscribers() != 1 {
-		t.Errorf("expected 1 subscriber, got %d", impl.Subscribers())
-	}
+	eventuallyTrue(t, 2*time.Second, func() bool { return impl.Subscribers() == 1 },
+		"subscription did not register")
 
 	cancel()
-	time.Sleep(20 * time.Millisecond) // Allow unsubscribe
-
-	if impl.Subscribers() != 0 {
-		t.Errorf("expected 0 subscribers after cancel, got %d", impl.Subscribers())
-	}
+	eventuallyTrue(t, 2*time.Second, func() bool { return impl.Subscribers() == 0 },
+		"cancel did not unsubscribe")
 }
 
 // TestNilEventPublish verifies nil event doesn't panic on Publish
@@ -2652,21 +2688,13 @@ func TestBusLevelIdempotency(t *testing.T) {
 		return nil
 	})
 
-	// Wait for subscription to be ready
-	time.Sleep(10 * time.Millisecond)
-
 	// Publish same message twice (same event ID via context)
 	msgCtx := ContextWithEventID(ctx, "msg-123")
 	ev.Publish(msgCtx, "hello")
-	time.Sleep(20 * time.Millisecond)
+	eventuallyEqInt32(t, 2*time.Second, &callCount, 1, "first publish should be processed")
 
 	ev.Publish(msgCtx, "hello again")
-	time.Sleep(20 * time.Millisecond)
-
-	// Should only be called once (second is duplicate)
-	if count := callCount.Load(); count != 1 {
-		t.Errorf("expected handler called 1 time, got %d", count)
-	}
+	consistentlyEqInt32(t, 100*time.Millisecond, &callCount, 1, "duplicate publish must not be processed")
 }
 
 // TestBusLevelPoisonDetection verifies that bus-level poison detection skips quarantined messages
@@ -2691,24 +2719,16 @@ func TestBusLevelPoisonDetection(t *testing.T) {
 		return errors.New("always fails")
 	})
 
-	// Wait for subscription to be ready
-	time.Sleep(10 * time.Millisecond)
-
 	// Publish message 3 times with same ID
 	msgCtx := ContextWithEventID(ctx, "poison-msg-456")
 	ev.Publish(msgCtx, "first")
-	time.Sleep(20 * time.Millisecond)
+	eventuallyEqInt32(t, 2*time.Second, &callCount, 1, "first publish should be processed")
 
 	ev.Publish(msgCtx, "second")
-	time.Sleep(20 * time.Millisecond)
+	eventuallyEqInt32(t, 2*time.Second, &callCount, 2, "second publish should trip the quarantine threshold")
 
 	ev.Publish(msgCtx, "third") // should be skipped (quarantined)
-	time.Sleep(20 * time.Millisecond)
-
-	// Should be called twice (third is quarantined)
-	if count := callCount.Load(); count != 2 {
-		t.Errorf("expected handler called 2 times, got %d", count)
-	}
+	consistentlyEqInt32(t, 100*time.Millisecond, &callCount, 2, "quarantined message must not be processed")
 
 	// Verify message is quarantined
 	poisonDetector.mu.Lock()
@@ -2743,24 +2763,16 @@ func TestBusLevelMiddlewareCombined(t *testing.T) {
 		return nil // success
 	})
 
-	// Wait for subscription to be ready
-	time.Sleep(10 * time.Millisecond)
-
 	// Publish two different messages
 	ev.Publish(ContextWithEventID(ctx, "msg-1"), "first")
-	time.Sleep(20 * time.Millisecond)
+	eventuallyEqInt32(t, 2*time.Second, &callCount, 1, "first publish should be processed")
 
 	ev.Publish(ContextWithEventID(ctx, "msg-2"), "second")
-	time.Sleep(20 * time.Millisecond)
+	eventuallyEqInt32(t, 2*time.Second, &callCount, 2, "second publish should be processed")
 
 	// Publish duplicate of first message
 	ev.Publish(ContextWithEventID(ctx, "msg-1"), "duplicate")
-	time.Sleep(20 * time.Millisecond)
-
-	// Should be called twice (third is duplicate)
-	if count := callCount.Load(); count != 2 {
-		t.Errorf("expected handler called 2 times, got %d", count)
-	}
+	consistentlyEqInt32(t, 100*time.Millisecond, &callCount, 2, "duplicate publish must not be processed")
 }
 
 // mockMonitorStore implements MonitorStore for testing
@@ -2965,20 +2977,13 @@ func TestSchemaControlsMiddleware(t *testing.T) {
 			return nil
 		})
 
-		time.Sleep(10 * time.Millisecond)
-
 		msgID := "test-msg-" + randomString(5)
 		ev.Publish(ContextWithEventID(ctx, msgID), "hello")
-		time.Sleep(30 * time.Millisecond)
-
-		if !received.Load() {
-			t.Error("handler should have been called")
-		}
+		eventuallyTrue(t, 2*time.Second, received.Load, "handler should have been called")
 
 		// Monitor should have recorded (enabled in schema)
-		if !monitorStore.wasRecorded(msgID) {
-			t.Error("monitor should have recorded the event")
-		}
+		eventuallyTrue(t, 2*time.Second, func() bool { return monitorStore.wasRecorded(msgID) },
+			"monitor should have recorded the event")
 
 		// Idempotency store should NOT have been called (disabled in schema)
 		idempStore.mu.Lock()
@@ -3021,19 +3026,12 @@ func TestSchemaControlsMiddleware(t *testing.T) {
 			return nil
 		})
 
-		time.Sleep(10 * time.Millisecond)
-
 		msgID := "test-msg-" + randomString(5)
 		// Publish same message twice
 		ev.Publish(ContextWithEventID(ctx, msgID), "hello")
-		time.Sleep(20 * time.Millisecond)
+		eventuallyEqInt32(t, 2*time.Second, &callCount, 1, "first publish should be processed")
 		ev.Publish(ContextWithEventID(ctx, msgID), "hello again")
-		time.Sleep(20 * time.Millisecond)
-
-		// Should only be called once (idempotency enabled)
-		if count := callCount.Load(); count != 1 {
-			t.Errorf("expected 1 call, got %d (idempotency should skip duplicate)", count)
-		}
+		consistentlyEqInt32(t, 100*time.Millisecond, &callCount, 1, "duplicate must be skipped by idempotency")
 
 		// Monitor should NOT have recorded (disabled in schema)
 		if monitorStore.wasRecorded(msgID) {
@@ -3070,24 +3068,16 @@ func TestNoSchemaFallbackToBusMiddleware(t *testing.T) {
 		return nil
 	})
 
-	time.Sleep(10 * time.Millisecond)
-
 	msgID := "test-msg-" + randomString(5)
 	// Publish same message twice
 	ev.Publish(ContextWithEventID(ctx, msgID), "hello")
-	time.Sleep(20 * time.Millisecond)
+	eventuallyEqInt32(t, 2*time.Second, &callCount, 1, "first publish should be processed")
 	ev.Publish(ContextWithEventID(ctx, msgID), "hello again")
-	time.Sleep(20 * time.Millisecond)
-
-	// Should only be called once - idempotency is applied as fallback
-	if count := callCount.Load(); count != 1 {
-		t.Errorf("expected 1 call, got %d (fallback idempotency should skip duplicate)", count)
-	}
+	consistentlyEqInt32(t, 100*time.Millisecond, &callCount, 1, "fallback idempotency must skip duplicate")
 
 	// Monitor should have recorded (fallback behavior)
-	if !monitorStore.wasRecorded(msgID) {
-		t.Error("monitor should have recorded (fallback behavior)")
-	}
+	eventuallyTrue(t, 2*time.Second, func() bool { return monitorStore.wasRecorded(msgID) },
+		"monitor should have recorded (fallback behavior)")
 }
 
 // TestSchemaDisablesAllMiddleware verifies that schema can disable all middleware
@@ -3126,19 +3116,12 @@ func TestSchemaDisablesAllMiddleware(t *testing.T) {
 		return nil
 	})
 
-	time.Sleep(10 * time.Millisecond)
-
 	msgID := "test-msg-" + randomString(5)
 	// Publish same message twice
 	ev.Publish(ContextWithEventID(ctx, msgID), "hello")
-	time.Sleep(20 * time.Millisecond)
+	eventuallyEqInt32(t, 2*time.Second, &callCount, 1, "first publish should be processed")
 	ev.Publish(ContextWithEventID(ctx, msgID), "hello again")
-	time.Sleep(20 * time.Millisecond)
-
-	// Should be called twice - no idempotency
-	if count := callCount.Load(); count != 2 {
-		t.Errorf("expected 2 calls, got %d (no middleware should be applied)", count)
-	}
+	eventuallyEqInt32(t, 2*time.Second, &callCount, 2, "duplicate must be processed when all middleware disabled")
 
 	// Monitor should NOT have recorded
 	if monitorStore.wasRecorded(msgID) {
@@ -3517,13 +3500,12 @@ func TestDecodeErrorHandler_AckSkipsDLQ(t *testing.T) {
 		t.Fatal("expected decode error handler to be called")
 	}
 
-	// Give time for any async DLQ call
-	time.Sleep(20 * time.Millisecond)
-
+	// DLQ must NOT be called when the decode error handler returns nil.
+	// Wait a window long enough to catch a stray async DLQ enqueue.
 	select {
 	case <-dlqStore.called:
 		t.Error("expected DLQ store NOT to be called when decode error handler returns nil")
-	default:
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
