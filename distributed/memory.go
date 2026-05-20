@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/rbaliyan/event/v3/internal/clock"
 )
 
 // stateValue represents the state of a message.
@@ -64,6 +66,9 @@ type MemoryStateManager struct {
 	completionTTL time.Duration
 	stopCleanup   chan struct{}
 	cleanupDone   chan struct{}
+	// clk supplies the current time for TTL and stale-timeout checks.
+	// Defaults to clock.Real{}; tests inject clock.Fake via withClock.
+	clk clock.Clock
 }
 
 // NewMemoryStateManager creates a new in-memory state manager.
@@ -97,6 +102,7 @@ func NewMemoryStateManager(opts ...Option) *MemoryStateManager {
 		completionTTL: o.completionTTL,
 		stopCleanup:   make(chan struct{}),
 		cleanupDone:   make(chan struct{}),
+		clk:           o.clock,
 	}
 
 	if o.cleanupEnabled {
@@ -125,7 +131,7 @@ func (s *MemoryStateManager) Acquire(_ context.Context, messageID string, ttl ti
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
+	now := s.clk.Now()
 
 	// Check existing state
 	if entry, exists := s.states[messageID]; exists {
@@ -161,7 +167,7 @@ func (s *MemoryStateManager) MarkProcessed(_ context.Context, messageID string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
+	now := s.clk.Now()
 	if entry, exists := s.states[messageID]; exists {
 		entry.state = stateCompleted
 		entry.expiresAt = now.Add(s.completionTTL)
@@ -201,7 +207,7 @@ func (s *MemoryStateManager) ListStale(_ context.Context, staleTimeout time.Dura
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	cutoff := time.Now().Add(-staleTimeout)
+	cutoff := s.clk.Now().Add(-staleTimeout)
 	var stale []string
 
 	for id, entry := range s.states {
@@ -232,7 +238,7 @@ func (s *MemoryStateManager) LoadStalePayloads(_ context.Context, staleTimeout t
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	cutoff := time.Now().Add(-staleTimeout)
+	cutoff := s.clk.Now().Add(-staleTimeout)
 	var result []*StaleMessage
 
 	for id, entry := range s.states {
@@ -277,7 +283,7 @@ func (s *MemoryStateManager) ResetStale(_ context.Context, staleTimeout time.Dur
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cutoff := time.Now().Add(-staleTimeout)
+	cutoff := s.clk.Now().Add(-staleTimeout)
 	var reset int64
 
 	for id, entry := range s.states {
@@ -330,7 +336,7 @@ func (s *MemoryStateManager) cleanupExpired() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
+	now := s.clk.Now()
 	for id, entry := range s.states {
 		if now.After(entry.expiresAt) {
 			delete(s.states, id)
