@@ -7,12 +7,25 @@ import (
 	"time"
 
 	"github.com/rbaliyan/event/v3"
+	"github.com/rbaliyan/event/v3/internal/clock"
 	"github.com/rbaliyan/event/v3/transport/channel"
 )
 
+// newSMWithFakeClock constructs a MemoryStateManager wired to a Fake clock
+// pinned at the Unix epoch. Test bodies call clk.Advance to deterministically
+// cross TTL / stale-timeout boundaries instead of time.Sleep.
+//
+// Cleanup is disabled (WithCleanup(false, 0)) so the background goroutine
+// doesn't race with the test's clock manipulation.
+func newSMWithFakeClock(opts ...Option) (*MemoryStateManager, *clock.Fake) {
+	clk := clock.NewFake(time.Time{})
+	all := append([]Option{WithCleanup(false, 0), withClock(clk)}, opts...)
+	return NewMemoryStateManager(all...), clk
+}
+
 func TestMemoryCoordinator_AcquireAndStorePayload(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, _ := newSMWithFakeClock()
 	defer sm.Close()
 
 	// Acquire state
@@ -55,7 +68,7 @@ func TestMemoryCoordinator_AcquireAndStorePayload(t *testing.T) {
 
 func TestMemoryCoordinator_Acquire_Expiry(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	// Acquire with very short TTL
@@ -64,8 +77,8 @@ func TestMemoryCoordinator_Acquire_Expiry(t *testing.T) {
 		t.Fatal("expected acquisition to succeed")
 	}
 
-	// Wait for expiry
-	time.Sleep(20 * time.Millisecond)
+	// Cross the TTL boundary via the fake clock — instant, deterministic.
+	clk.Advance(20 * time.Millisecond)
 
 	// Should be acquirable again
 	acquired, _ = sm.Acquire(ctx, "msg-1", time.Minute)
@@ -76,7 +89,7 @@ func TestMemoryCoordinator_Acquire_Expiry(t *testing.T) {
 
 func TestMemoryPayloadStore_LoadStalePayloads(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	// Acquire with payload
@@ -94,11 +107,13 @@ func TestMemoryPayloadStore_LoadStalePayloads(t *testing.T) {
 	sm.StorePayload(ctx, "msg-3", &MessageData{Payload: []byte(`completed`)})
 	sm.MarkProcessed(ctx, "msg-3")
 
-	// Make processing entries stale
+	// Make processing entries stale by backdating updatedAt relative to the
+	// FAKE clock — not real wall-clock — since LoadStalePayloads compares
+	// against clk.Now() under the injected fake.
 	sm.mu.Lock()
 	for id, entry := range sm.states {
 		if id != "msg-3" {
-			entry.updatedAt = time.Now().Add(-5 * time.Minute)
+			entry.updatedAt = clk.Now().Add(-5 * time.Minute)
 		}
 	}
 	sm.mu.Unlock()
@@ -128,7 +143,7 @@ func TestMemoryPayloadStore_LoadStalePayloads(t *testing.T) {
 	sm.Acquire(ctx, "msg-4", time.Hour)
 	sm.StorePayload(ctx, "msg-4", &MessageData{Payload: []byte(`another`)})
 	sm.mu.Lock()
-	sm.states["msg-4"].updatedAt = time.Now().Add(-5 * time.Minute)
+	sm.states["msg-4"].updatedAt = clk.Now().Add(-5 * time.Minute)
 	sm.mu.Unlock()
 
 	stale, err = sm.LoadStalePayloads(ctx, time.Minute, 1)
@@ -142,7 +157,7 @@ func TestMemoryPayloadStore_LoadStalePayloads(t *testing.T) {
 
 func TestMemoryPayloadStore_ClearPayload(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, _ := newSMWithFakeClock()
 	defer sm.Close()
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
@@ -235,7 +250,7 @@ func (m *mockPublisher) Send(_ context.Context, eventName, eventID string, paylo
 
 func TestRecoveryRunner_BasicReset(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	// No Publisher → basic reset mode
@@ -249,7 +264,7 @@ func TestRecoveryRunner_BasicReset(t *testing.T) {
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
 	sm.Acquire(ctx, "msg-2", time.Hour)
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	recovered, err := runner.RecoverOnce(ctx)
 	if err != nil {
@@ -272,7 +287,7 @@ func TestRecoveryRunner_BasicReset(t *testing.T) {
 
 func TestRecoveryRunner_Phase1And2Exclusion(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	pub := &mockPublisher{}
@@ -302,7 +317,7 @@ func TestRecoveryRunner_Phase1And2Exclusion(t *testing.T) {
 	// msg-3: no payload (Phase 2 resets)
 	sm.Acquire(ctx, "msg-3", time.Hour)
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	recovered, err := runner.RecoverOnce(ctx)
 	if err != nil {
@@ -326,7 +341,7 @@ func TestRecoveryRunner_Phase1And2Exclusion(t *testing.T) {
 
 func TestRecoveryRunner_BatchLimitZero(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	runner, err := NewRecoveryRunner(sm,
@@ -341,7 +356,7 @@ func TestRecoveryRunner_BatchLimitZero(t *testing.T) {
 	sm.Acquire(ctx, "msg-2", time.Hour)
 	sm.Acquire(ctx, "msg-3", time.Hour)
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	recovered, err := runner.RecoverOnce(ctx)
 	if err != nil {
@@ -355,7 +370,7 @@ func TestRecoveryRunner_BatchLimitZero(t *testing.T) {
 
 func TestRecoveryRunner_PayloadRepublish(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	pub := &mockPublisher{}
@@ -380,7 +395,7 @@ func TestRecoveryRunner_PayloadRepublish(t *testing.T) {
 	// Acquire without payload (should be reset, not re-published)
 	sm.Acquire(ctx, "msg-2", time.Hour)
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	recovered, err := runner.RecoverOnce(ctx)
 	if err != nil {
@@ -422,7 +437,7 @@ func TestRecoveryRunner_PayloadRepublish(t *testing.T) {
 
 func TestRecoveryRunner_PublishFailure_SkipsEntry(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	// Publisher that always fails
@@ -442,7 +457,7 @@ func TestRecoveryRunner_PublishFailure_SkipsEntry(t *testing.T) {
 		EventName: "order.created",
 	})
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	// Phase 1 should skip the entry (publish failed), Phase 2 should NOT
 	// reset it because it was handled by Phase 1 (in the exclusion set)
@@ -480,7 +495,7 @@ func TestRecoveryRunner_WithRealBus(t *testing.T) {
 		t.Fatalf("failed to register event: %v", err)
 	}
 
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	// Bus satisfies Publisher interface
@@ -500,7 +515,7 @@ func TestRecoveryRunner_WithRealBus(t *testing.T) {
 		EventName: "order.created",
 	})
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	recovered, err := runner.RecoverOnce(ctx)
 	if err != nil {
@@ -647,7 +662,7 @@ func TestRecoveryOption_WithBackoff(t *testing.T) {
 
 func TestRecoveryRunner_RecoverOnce_NoStaleEntries(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, _ := newSMWithFakeClock()
 	defer sm.Close()
 
 	runner, err := NewRecoveryRunner(sm,
@@ -668,14 +683,14 @@ func TestRecoveryRunner_RecoverOnce_NoStaleEntries(t *testing.T) {
 }
 
 func TestMemoryStateManager_CleanupExpired(t *testing.T) {
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	ctx := context.Background()
 	sm.Acquire(ctx, "msg-1", 10*time.Millisecond)
 	sm.Acquire(ctx, "msg-2", time.Hour)
 
-	time.Sleep(20 * time.Millisecond)
+	clk.Advance(20 * time.Millisecond)
 	sm.cleanupExpired()
 
 	sm.mu.RLock()
@@ -689,7 +704,7 @@ func TestMemoryStateManager_CleanupExpired(t *testing.T) {
 
 func TestRecoveryRunner_WithMetrics(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(WithCleanup(false, 0))
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	metrics, err := NewRecoveryMetrics()
@@ -706,7 +721,7 @@ func TestRecoveryRunner_WithMetrics(t *testing.T) {
 	}
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	recovered, err := runner.RecoverOnce(ctx)
 	if err != nil {

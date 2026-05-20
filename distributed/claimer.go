@@ -89,6 +89,7 @@ import (
 	"time"
 
 	event "github.com/rbaliyan/event/v3"
+	"github.com/rbaliyan/event/v3/internal/clock"
 )
 
 // Coordinator handles atomic state transitions for WorkerPool emulation.
@@ -182,6 +183,20 @@ func (s *StaleMessage) HasPayload() bool {
 // Option configures a state manager implementation.
 type Option func(*stateOptions)
 
+// withClock is an unexported test hook that swaps the clock used by
+// MemoryStateManager for TTL and stale-timeout checks. Tests use it together
+// with clock.Fake to drive expiry deterministically instead of time.Sleep.
+//
+// Not exported because production users have no reason to override the clock,
+// and locking the door at the package boundary keeps the contract clear.
+func withClock(c clock.Clock) Option { //nolint:unused // used by *_test.go
+	return func(o *stateOptions) {
+		if c != nil {
+			o.clock = c
+		}
+	}
+}
+
 // StaleResetter is an optional interface that Coordinator implementations
 // can provide for efficient batch stale state reset.
 type StaleResetter interface {
@@ -202,6 +217,10 @@ type stateOptions struct {
 	capped         bool
 	cappedSize     int64
 	cappedMaxDocs  int64
+	// clock supplies the current time for TTL and stale-timeout checks.
+	// Defaults to clock.Real{}; tests override via the unexported withClock
+	// option to drive expiry deterministically.
+	clock clock.Clock
 }
 
 // defaultStateOptions returns sensible defaults for state manager configuration.
@@ -211,6 +230,7 @@ func defaultStateOptions() *stateOptions {
 		completionTTL:  24 * time.Hour,
 		cleanupEnabled: true,
 		cleanupPeriod:  time.Hour,
+		clock:          clock.Real{},
 	}
 }
 
