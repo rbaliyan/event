@@ -212,15 +212,17 @@ func TestWithCoalesceByKey_SupersedesPendingMessages(t *testing.T) {
 	var mu sync.Mutex
 	delivered := make(map[string]int) // id -> latest value delivered
 	coalescedCounts := make(map[string]int)
-	handlerReady := make(chan struct{})
+	// handlerStarted is an idempotent signal that the handler has begun
+	// processing. atomic.Bool — NOT a channel — because the retry loop
+	// below may not yet be in a select when the handler signals, and a
+	// dropped channel signal would cause the loop to keep republishing
+	// Value=1 indefinitely. With atomic.Bool the polling loop sees the
+	// signal regardless of when it was set.
+	var handlerStarted atomic.Bool
 	handlerDone := make(chan struct{}, 10)
 
 	err := ev.Subscribe(ctx, func(ctx context.Context, e Event[Order], data Order) error {
-		// Signal that handler is processing.
-		select {
-		case handlerReady <- struct{}{}:
-		default:
-		}
+		handlerStarted.Store(true)
 		// Slow handler to allow coalescing
 		time.Sleep(100 * time.Millisecond)
 
@@ -245,27 +247,22 @@ func TestWithCoalesceByKey_SupersedesPendingMessages(t *testing.T) {
 	// Subscribe; that goroutine's `select { case <-incoming: ... }` is set
 	// up asynchronously, so a Publish that races it can land in the
 	// coalescer's buffered incoming channel before the run loop is reading
-	// from it. The buffer absorbs the message but the handler has nothing
-	// to react to until the run loop catches up.
+	// from it.
 	//
-	// Retry the initial publish until handlerReady fires. All retries land
-	// under the same key and coalesce harmlessly into a single delivery —
-	// the coalescer's supersede logic preserves the latest value. This
-	// pattern is deterministic on both fast machines and loaded CI runners,
-	// replacing a fixed 50ms pre-Publish sleep that CI proved was not
-	// always sufficient.
+	// Retry the initial publish until handlerStarted flips. All retries
+	// land under the same key and coalesce harmlessly into a single pending
+	// delivery — the coalescer's supersede logic preserves the latest
+	// value, and since all retries publish the same Value=1, the pending
+	// entry stays at Value=1 until the subsequent for-loop bumps it up.
 	const initial = 1
 	if err := ev.Publish(ctx, Order{ID: "A", Value: initial}); err != nil {
 		t.Fatal(err)
 	}
 
-	handlerStarted := false
 	deadline := time.Now().Add(2 * time.Second)
-	for !handlerStarted && time.Now().Before(deadline) {
-		select {
-		case <-handlerReady:
-			handlerStarted = true
-		case <-time.After(50 * time.Millisecond):
+	for !handlerStarted.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		if !handlerStarted.Load() {
 			// Republish — coalescer may have missed the first send if its
 			// run loop was not yet ready when we published.
 			if err := ev.Publish(ctx, Order{ID: "A", Value: initial}); err != nil {
@@ -273,7 +270,7 @@ func TestWithCoalesceByKey_SupersedesPendingMessages(t *testing.T) {
 			}
 		}
 	}
-	if !handlerStarted {
+	if !handlerStarted.Load() {
 		t.Fatal("handler didn't start after retries")
 	}
 
