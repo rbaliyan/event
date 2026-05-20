@@ -9,8 +9,21 @@ import (
 	"time"
 
 	"github.com/rbaliyan/event/v3/health"
+	"github.com/rbaliyan/event/v3/internal/testutil"
 	"github.com/rbaliyan/event/v3/monitor"
 )
+
+// waitForCache polls until the handler's background refresh goroutine has
+// populated the systemView cache, then returns. This replaces the previous
+// fixed time.Sleep waits that were sized as "100-150ms should be enough"
+// against a 50ms refresh interval — worst-case bounds that wasted time on
+// the happy path and could still flake on a loaded CI runner.
+func waitForCache(t *testing.T, h *Handler) {
+	t.Helper()
+	testutil.Eventually(t, 2*time.Second, func() bool {
+		return h.systemView.Load() != nil
+	}, "background refresh did not populate systemView cache")
+}
 
 // mockDLQProvider implements DLQProvider for testing.
 type mockDLQProvider struct {
@@ -42,7 +55,7 @@ func TestHandleSystemView(t *testing.T) {
 	t.Run("basic system view without providers", func(t *testing.T) {
 		h := New(store, WithSystemRefreshInterval(50*time.Millisecond))
 		defer h.Close()
-		time.Sleep(100 * time.Millisecond)
+		waitForCache(t, h)
 		req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
 		w := httptest.NewRecorder()
 
@@ -84,7 +97,7 @@ func TestHandleSystemView(t *testing.T) {
 
 		h := New(store, WithDLQProvider(dlq), WithSystemRefreshInterval(50*time.Millisecond))
 		defer h.Close()
-		time.Sleep(100 * time.Millisecond)
+		waitForCache(t, h)
 		req := httptest.NewRequest(http.MethodGet, "/v1/system", nil)
 		w := httptest.NewRecorder()
 
@@ -133,7 +146,7 @@ func TestHandleSystemHealth(t *testing.T) {
 	t.Run("healthy when no providers", func(t *testing.T) {
 		h := New(store, WithSystemRefreshInterval(50*time.Millisecond))
 		defer h.Close()
-		time.Sleep(100 * time.Millisecond)
+		waitForCache(t, h)
 		req := httptest.NewRequest(http.MethodGet, "/v1/system/health", nil)
 		w := httptest.NewRecorder()
 
@@ -165,7 +178,7 @@ func TestHandleSystemHealth(t *testing.T) {
 
 		h := New(store, WithDLQProvider(dlq), WithSystemRefreshInterval(50*time.Millisecond))
 		defer h.Close()
-		time.Sleep(100 * time.Millisecond)
+		waitForCache(t, h)
 		req := httptest.NewRequest(http.MethodGet, "/v1/system/health", nil)
 		w := httptest.NewRecorder()
 
@@ -201,7 +214,7 @@ func TestBackgroundRefresh(t *testing.T) {
 	defer h.Close()
 
 	// Wait for first refresh
-	time.Sleep(150 * time.Millisecond)
+	waitForCache(t, h)
 
 	// Verify cache is populated
 	cached := h.systemView.Load()
@@ -241,7 +254,7 @@ func TestBackgroundRefresh_Health(t *testing.T) {
 	defer h.Close()
 
 	// Wait for first refresh
-	time.Sleep(150 * time.Millisecond)
+	waitForCache(t, h)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/system/health", nil)
 	w := httptest.NewRecorder()
@@ -267,7 +280,7 @@ func TestClose(t *testing.T) {
 	h := New(store, WithSystemRefreshInterval(50*time.Millisecond))
 
 	// Wait for at least one refresh
-	time.Sleep(100 * time.Millisecond)
+	waitForCache(t, h)
 
 	// Close should be idempotent
 	h.Close()
@@ -322,7 +335,7 @@ func TestCachedTopology(t *testing.T) {
 	defer h.Close()
 
 	// Wait for refresh
-	time.Sleep(150 * time.Millisecond)
+	waitForCache(t, h)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/topology", nil)
 	w := httptest.NewRecorder()
@@ -361,7 +374,7 @@ func TestHandleSystemView_StuckPending(t *testing.T) {
 		WithStuckPendingProvider(provider),
 	)
 	defer h.Close()
-	time.Sleep(100 * time.Millisecond)
+	waitForCache(t, h)
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/system", nil))
