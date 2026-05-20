@@ -239,16 +239,42 @@ func TestWithCoalesceByKey_SupersedesPendingMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Subscribe is synchronous — publish initial message immediately.
-	if err := ev.Publish(ctx, Order{ID: "A", Value: 1}); err != nil {
+	// Publish the initial message and wait for the handler to start. Unlike
+	// the other ack_policy tests, WithCoalesceByKey wraps the subscription
+	// in a coalescer that runs on a separate goroutine started during
+	// Subscribe; that goroutine's `select { case <-incoming: ... }` is set
+	// up asynchronously, so a Publish that races it can land in the
+	// coalescer's buffered incoming channel before the run loop is reading
+	// from it. The buffer absorbs the message but the handler has nothing
+	// to react to until the run loop catches up.
+	//
+	// Retry the initial publish until handlerReady fires. All retries land
+	// under the same key and coalesce harmlessly into a single delivery —
+	// the coalescer's supersede logic preserves the latest value. This
+	// pattern is deterministic on both fast machines and loaded CI runners,
+	// replacing a fixed 50ms pre-Publish sleep that CI proved was not
+	// always sufficient.
+	const initial = 1
+	if err := ev.Publish(ctx, Order{ID: "A", Value: initial}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Wait for handler to start processing the first message.
-	select {
-	case <-handlerReady:
-	case <-time.After(time.Second):
-		t.Fatal("handler didn't start")
+	handlerStarted := false
+	deadline := time.Now().Add(2 * time.Second)
+	for !handlerStarted && time.Now().Before(deadline) {
+		select {
+		case <-handlerReady:
+			handlerStarted = true
+		case <-time.After(50 * time.Millisecond):
+			// Republish — coalescer may have missed the first send if its
+			// run loop was not yet ready when we published.
+			if err := ev.Publish(ctx, Order{ID: "A", Value: initial}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !handlerStarted {
+		t.Fatal("handler didn't start after retries")
 	}
 
 	// While handler is busy, send more messages for same key.
