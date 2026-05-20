@@ -38,6 +38,35 @@ func setupMetricsProvider(t *testing.T) *sdkmetric.ManualReader {
 	return reader
 }
 
+// eventuallyMetrics polls collectMetrics until the predicate returns true or
+// the deadline fires. Replaces the time.Sleep + collect + assert pattern:
+// OTel metric recording is asynchronous, so the handler's recordHandlerDuration
+// call may not have updated the reader's view by the time the test reads it.
+// Polling exits the instant the metric arrives, not after a fixed wait.
+//
+// The predicate receives the four metric maps the test would otherwise read
+// inline; tests express their actual contract directly inside the predicate.
+func eventuallyMetrics(
+	t *testing.T,
+	reader *sdkmetric.ManualReader,
+	timeout time.Duration,
+	predicate func(counters map[string]int64, histograms map[string]uint64, int64Gauges map[string]int64, float64Gauges map[string]float64) bool,
+	msg string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		counters, histograms, int64Gauges, float64Gauges := collectMetrics(t, reader)
+		if predicate(counters, histograms, int64Gauges, float64Gauges) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("eventuallyMetrics: %s (after %s)", msg, timeout)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // collectMetrics reads all metrics from the reader and returns maps keyed by metric name.
 func collectMetrics(t *testing.T, reader *sdkmetric.ManualReader) (
 	counters map[string]int64,
@@ -114,20 +143,15 @@ func TestHandlerDurationAndErrorMetrics(t *testing.T) {
 		t.Fatal("timeout waiting for failure handler")
 	}
 
-	// Allow metrics propagation.
-	time.Sleep(10 * time.Millisecond)
-
-	counters, histogramCounts, _, _ := collectMetrics(t, reader)
-
-	// handler_duration should have been recorded for both calls.
-	if histogramCounts["event.handler_duration_seconds"] != 2 {
-		t.Errorf("handler_duration_seconds count: got %d, want 2", histogramCounts["event.handler_duration_seconds"])
-	}
-
-	// handler_errors should have been recorded for the failure.
-	if counters["event.handler_errors_total"] != 1 {
-		t.Errorf("handler_errors_total: got %d, want 1", counters["event.handler_errors_total"])
-	}
+	// Poll until both metrics arrive — OTel recording is async after the
+	// handler returns, but at most ~tens of ms in practice.
+	eventuallyMetrics(t, reader, 2*time.Second,
+		func(counters map[string]int64, histograms map[string]uint64, _ map[string]int64, _ map[string]float64) bool {
+			return histograms["event.handler_duration_seconds"] == 2 &&
+				counters["event.handler_errors_total"] == 1
+		},
+		"expected 2 handler_duration_seconds samples and 1 handler_errors_total",
+	)
 }
 
 func TestPublishAndSubscribeCounterMetrics(t *testing.T) {
@@ -152,19 +176,19 @@ func TestPublishAndSubscribeCounterMetrics(t *testing.T) {
 		t.Fatal("timeout")
 	}
 
-	time.Sleep(10 * time.Millisecond)
-
-	counters, histogramCounts, _, _ := collectMetrics(t, reader)
-
-	if counters["event.published"] < 1 {
-		t.Errorf("event.published: got %d, want >= 1", counters["event.published"])
-	}
-	if counters["event.subscribed"] < 1 {
-		t.Errorf("event.subscribed: got %d, want >= 1", counters["event.subscribed"])
-	}
-	if histogramCounts["event.publish_duration_seconds"] < 1 {
-		t.Errorf("event.publish_duration_seconds: got %d, want >= 1", histogramCounts["event.publish_duration_seconds"])
-	}
+	// Three metrics need to settle: published counter, subscribed counter,
+	// publish_duration histogram. They're recorded in different places in
+	// the bus pipeline so they may arrive at the reader at slightly
+	// different times — the AND predicate ensures all three are present
+	// before the assertions run.
+	eventuallyMetrics(t, reader, 2*time.Second,
+		func(counters map[string]int64, histograms map[string]uint64, _ map[string]int64, _ map[string]float64) bool {
+			return counters["event.published"] >= 1 &&
+				counters["event.subscribed"] >= 1 &&
+				histograms["event.publish_duration_seconds"] >= 1
+		},
+		"expected event.published, event.subscribed counters and publish_duration_seconds histogram",
+	)
 }
 
 // mockLagTransport wraps a channel transport and implements LagMonitor.
@@ -254,8 +278,11 @@ func TestMetricsDisabled(t *testing.T) {
 		t.Fatal("timeout")
 	}
 
-	time.Sleep(10 * time.Millisecond)
-
+	// With metrics disabled the bus skips ALL metric emission — there is
+	// nothing to "propagate", so we read the metrics state immediately.
+	// The previous 10ms sleep was a defensive wait; now redundant because
+	// the contract is "metrics are never emitted when disabled", not
+	// "metrics are emitted but eventually we observe zero".
 	counters, histogramCounts, _, _ := collectMetrics(t, reader)
 
 	if counters["event.published"] != 0 {
@@ -379,16 +406,15 @@ func TestRegisteredEventsAndActiveSubscribersGauges(t *testing.T) {
 	ev1.Subscribe(ctx, noop)
 	ev2.Subscribe(ctx, noop)
 
-	// Allow goroutines to start.
-	time.Sleep(10 * time.Millisecond)
-
-	_, _, int64Gauges, _ = collectMetrics(t, reader)
-
-	// active_subscribers is summed across all events in collectMetrics,
-	// so total should be 3 (2 on ev1 + 1 on ev2).
-	if int64Gauges["event.active_subscribers"] != 3 {
-		t.Errorf("active_subscribers total: got %d, want 3", int64Gauges["event.active_subscribers"])
-	}
+	// Poll for the active_subscribers gauge to reach 3 — Subscribe registers
+	// the gauge contribution asynchronously after spawning the subscriber
+	// goroutine, so a single immediate read may catch it mid-update.
+	eventuallyMetrics(t, reader, 2*time.Second,
+		func(_ map[string]int64, _ map[string]uint64, int64Gauges map[string]int64, _ map[string]float64) bool {
+			return int64Gauges["event.active_subscribers"] == 3
+		},
+		"expected active_subscribers total to reach 3 (2 on ev1 + 1 on ev2)",
+	)
 }
 
 // TestFilterDropCounter verifies that event_messages_filter_dropped_total is
@@ -447,14 +473,16 @@ func TestFilterDropCounter(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for message")
 	}
-	// Give filter drops time to be recorded.
-	time.Sleep(20 * time.Millisecond)
 
-	counters, _, _, _ := collectMetrics(t, reader)
-
-	if got := counters["event_messages_filter_dropped_total"]; got != 2 {
-		t.Errorf("filter_dropped_total = %d, want 2", got)
-	}
+	// Poll until both filter drops have been recorded — the filter
+	// middleware increments the counter asynchronously after the message
+	// is rejected, separate from the receive-side ack path.
+	eventuallyMetrics(t, reader, 2*time.Second,
+		func(counters map[string]int64, _ map[string]uint64, _ map[string]int64, _ map[string]float64) bool {
+			return counters["event_messages_filter_dropped_total"] == 2
+		},
+		"expected event_messages_filter_dropped_total == 2 (insert + delete were filtered)",
+	)
 }
 
 func durationPtr(d time.Duration) *time.Duration { return &d }
