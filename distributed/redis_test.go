@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/rbaliyan/event/v3/internal/clock"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -26,6 +27,24 @@ func setupRedisStateManager(t *testing.T, opts ...Option) (*RedisStateManager, *
 		t.Fatalf("failed to create state manager: %v", err)
 	}
 	return sm, mr
+}
+
+// setupRedisStateManagerWithClock is the Clock-injected variant for tests
+// that need to drive stale-timeout boundaries deterministically. The
+// returned clock.Fake is pinned at the Unix epoch and feeds into the
+// RedisStateManager's clk via #140's withClock option (defined in
+// claimer.go).
+//
+// Note: the Acquire TTL is still interpreted by miniredis itself (a real
+// timer on the Redis side). Tests pass time.Hour so Redis-side expiry
+// doesn't trip — stale-detection is driven purely by the JSON UpdatedAt
+// timestamp which IS controlled by clk.
+func setupRedisStateManagerWithClock(t *testing.T, opts ...Option) (*RedisStateManager, *miniredis.Miniredis, *clock.Fake) {
+	t.Helper()
+	clk := clock.NewFake(time.Time{})
+	allOpts := append([]Option{withClock(clk)}, opts...)
+	sm, mr := setupRedisStateManager(t, allOpts...)
+	return sm, mr, clk
 }
 
 func TestRedisStateManager_Acquire(t *testing.T) {
@@ -147,7 +166,7 @@ func TestRedisStateManager_Reset(t *testing.T) {
 }
 
 func TestRedisStateManager_ListStale(t *testing.T) {
-	sm, _ := setupRedisStateManager(t)
+	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
 	// Acquire some messages
@@ -158,8 +177,8 @@ func TestRedisStateManager_ListStale(t *testing.T) {
 	// Mark one as processed
 	sm.MarkProcessed(ctx, "msg-2")
 
-	// Wait for stale timeout (stale = UpdatedAt older than staleTimeout)
-	time.Sleep(60 * time.Millisecond)
+	// Cross the 50ms stale-timeout boundary via the fake clock.
+	clk.Advance(60 * time.Millisecond)
 
 	// List stale with 50ms timeout
 	stale, err := sm.ListStale(ctx, 50*time.Millisecond, 0)
@@ -183,13 +202,13 @@ func TestRedisStateManager_ListStale(t *testing.T) {
 }
 
 func TestRedisStateManager_ResetStale(t *testing.T) {
-	sm, _ := setupRedisStateManager(t)
+	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
 	sm.Acquire(ctx, "msg-2", time.Hour)
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	reset, err := sm.ResetStale(ctx, 50*time.Millisecond, 0)
 	if err != nil {
@@ -207,14 +226,14 @@ func TestRedisStateManager_ResetStale(t *testing.T) {
 }
 
 func TestRedisStateManager_ResetStale_Limit(t *testing.T) {
-	sm, _ := setupRedisStateManager(t)
+	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
 	sm.Acquire(ctx, "msg-2", time.Hour)
 	sm.Acquire(ctx, "msg-3", time.Hour)
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	// Reset with limit=1
 	reset, err := sm.ResetStale(ctx, 50*time.Millisecond, 1)
@@ -281,7 +300,7 @@ func TestRedisStateManager_StorePayload_NilOrEmpty(t *testing.T) {
 }
 
 func TestRedisStateManager_LoadStalePayloads(t *testing.T) {
-	sm, _ := setupRedisStateManager(t)
+	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
 	// Acquire and store payload for msg-1
@@ -294,7 +313,7 @@ func TestRedisStateManager_LoadStalePayloads(t *testing.T) {
 	// Acquire msg-2 without payload
 	sm.Acquire(ctx, "msg-2", time.Hour)
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	// LoadStalePayloads should only return msg-1 (has payload)
 	stale, err := sm.LoadStalePayloads(ctx, 50*time.Millisecond, 0)
@@ -316,7 +335,7 @@ func TestRedisStateManager_LoadStalePayloads(t *testing.T) {
 }
 
 func TestRedisStateManager_ClearPayload(t *testing.T) {
-	sm, _ := setupRedisStateManager(t)
+	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
 	sm.Acquire(ctx, "msg-1", time.Hour)
@@ -330,7 +349,7 @@ func TestRedisStateManager_ClearPayload(t *testing.T) {
 		t.Fatalf("ClearPayload failed: %v", err)
 	}
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	// LoadStalePayloads should find no entries with payload
 	stale, err := sm.LoadStalePayloads(ctx, 50*time.Millisecond, 0)
@@ -360,7 +379,7 @@ func TestRedisStateManager_Prefix(t *testing.T) {
 }
 
 func TestRedisStateManager_RecoveryRunner(t *testing.T) {
-	sm, _ := setupRedisStateManager(t)
+	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
 	runner, err := NewRecoveryRunner(sm,
@@ -382,8 +401,8 @@ func TestRedisStateManager_RecoveryRunner(t *testing.T) {
 		t.Fatalf("expected 0 reset, got %d", reset)
 	}
 
-	// Wait for stale timeout
-	time.Sleep(60 * time.Millisecond)
+	// Cross the 50ms stale-timeout boundary.
+	clk.Advance(60 * time.Millisecond)
 
 	reset, err = runner.RecoverOnce(ctx)
 	if err != nil {
@@ -455,7 +474,7 @@ func TestRedisStateManager_StorePayload_AtomicTTL(t *testing.T) {
 }
 
 func TestRedisStateManager_PayloadRecovery(t *testing.T) {
-	sm, _ := setupRedisStateManager(t)
+	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
 	pub := &mockPublisher{}
@@ -479,7 +498,7 @@ func TestRedisStateManager_PayloadRecovery(t *testing.T) {
 	// Acquire without payload (should be reset via Phase 2)
 	sm.Acquire(ctx, "msg-recovery-2", time.Hour)
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 
 	// Phase 1: re-publish payload entry, Phase 2: reset no-payload entry
 	recovered, err := runner.RecoverOnce(ctx)

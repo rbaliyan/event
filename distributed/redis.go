@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rbaliyan/event/v3/internal/clock"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -81,6 +82,19 @@ type RedisStateManager struct {
 	client        redis.Cmdable
 	prefix        string
 	completionTTL time.Duration
+	// clk supplies the current time for setting UpdatedAt timestamps and for
+	// the stale-cutoff comparisons in ListStale/LoadStalePayloads. Defaults
+	// to clock.Real{}; tests inject clock.Fake via the unexported withClock
+	// option (defined in claimer.go from PR #140) to drive expiry checks
+	// deterministically without time.Sleep.
+	//
+	// Note: the Redis SETNX TTL passed to Acquire is interpreted by Redis
+	// itself (or miniredis), not by clk. This is fine for stale-detection
+	// tests because they pass very large TTLs (time.Hour) so the Redis key
+	// outlives the test's logical time advance, leaving stale-detection
+	// driven purely by the JSON-encoded UpdatedAt timestamp this clock
+	// emits.
+	clk clock.Clock
 }
 
 // NewRedisStateManager creates a new Redis-based state manager.
@@ -125,6 +139,7 @@ func NewRedisStateManager(client redis.Cmdable, opts ...Option) (*RedisStateMana
 		client:        client,
 		prefix:        o.prefix,
 		completionTTL: o.completionTTL,
+		clk:           o.clock,
 	}, nil
 }
 
@@ -147,7 +162,7 @@ func NewRedisStateManager(client redis.Cmdable, opts ...Option) (*RedisStateMana
 //   - (false, error): Redis error occurred
 func (s *RedisStateManager) Acquire(ctx context.Context, messageID string, ttl time.Duration) (bool, error) {
 	key := s.prefix + messageID
-	now := time.Now()
+	now := s.clk.Now()
 
 	// Create state value with timestamps for stale detection
 	value := redisStateValue{
@@ -216,7 +231,7 @@ return 1
 // Returns nil on success (including no-op when key was deleted).
 func (s *RedisStateManager) MarkProcessed(ctx context.Context, messageID string) error {
 	key := s.prefix + messageID
-	now := time.Now().Format(time.RFC3339Nano)
+	now := s.clk.Now().Format(time.RFC3339Nano)
 	ttlMs := s.completionTTL.Milliseconds()
 
 	err := markProcessedScript.Run(ctx, s.client, []string{key}, redisStatusCompleted, now, ttlMs).Err()
@@ -317,7 +332,7 @@ type staleEntry struct {
 //
 // Returns list of message IDs that are stale.
 func (s *RedisStateManager) ListStale(ctx context.Context, staleTimeout time.Duration, limit int) ([]string, error) {
-	cutoff := time.Now().Add(-staleTimeout)
+	cutoff := s.clk.Now().Add(-staleTimeout)
 	entries, err := s.scanStaleStates(ctx, cutoff, limit)
 	if err != nil {
 		return nil, err
@@ -426,7 +441,7 @@ func (s *RedisStateManager) StorePayload(ctx context.Context, messageID string, 
 // entries processed per cycle, or use a MongoDB-backed state manager from the
 // event-mongodb module (https://github.com/rbaliyan/event-mongodb).
 func (s *RedisStateManager) LoadStalePayloads(ctx context.Context, staleTimeout time.Duration, limit int) ([]*StaleMessage, error) {
-	cutoff := time.Now().Add(-staleTimeout)
+	cutoff := s.clk.Now().Add(-staleTimeout)
 	// Scan without limit since we need to filter by payload existence after
 	entries, err := s.scanStaleStates(ctx, cutoff, 0)
 	if err != nil {
