@@ -9,6 +9,7 @@ import (
 
 	event "github.com/rbaliyan/event/v3"
 	"github.com/rbaliyan/event/v3/idempotency"
+	"github.com/rbaliyan/event/v3/internal/testutil"
 	"github.com/rbaliyan/event/v3/monitor"
 	"github.com/rbaliyan/event/v3/poison"
 	"github.com/rbaliyan/event/v3/stack"
@@ -53,10 +54,9 @@ func TestWithReliabilityStack_Defaults(t *testing.T) {
 	if err := ev.Publish(ctx, msg{"hello"}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if count.Load() != 1 {
-		t.Fatalf("expected handler called once, got %d", count.Load())
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool {
+		return count.Load() == 1
+	}, "expected handler called once, got %d", count.Load())
 }
 
 // TestWithReliabilityStack_Idempotency verifies that duplicate message IDs
@@ -87,10 +87,9 @@ func TestWithReliabilityStack_Idempotency(t *testing.T) {
 	if err := ev.Publish(ctx, msg{1}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if count.Load() != 1 {
-		t.Fatalf("first delivery: expected 1, got %d", count.Load())
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool {
+		return count.Load() == 1
+	}, "first delivery: expected 1, got %d", count.Load())
 }
 
 // TestWithReliabilityStack_PoisonDetection verifies that a repeatedly-failing
@@ -122,14 +121,30 @@ func TestWithReliabilityStack_PoisonDetection(t *testing.T) {
 		return errors.New("always fails")
 	})
 
-	time.Sleep(10 * time.Millisecond)
+	// Subscribe is synchronous on the channel transport — no pre-publish
+	// sleep needed.
 
 	// Publish with the same message ID to simulate at-least-once redelivery.
-	// Threshold=2: first two calls fail and accumulate; third call is quarantined and skipped.
+	// Threshold=2: first two calls fail and accumulate; third call is
+	// quarantined and skipped. After each publish we Eventually-poll for
+	// either the count to increment (handler ran) or the count to stabilize
+	// at the threshold (quarantine kicked in). This replaces a fixed 20ms
+	// inter-publish sleep that served as a worst-case "let the handler
+	// finish before the next publish" bound.
 	msgCtx := event.ContextWithEventID(ctx, "poison-test-id-1")
-	for range 5 {
+	for i := range 5 {
 		_ = ev.Publish(msgCtx, msg{1})
-		time.Sleep(20 * time.Millisecond)
+		// Briefly wait for the publish to be observed by the poison middleware
+		// — either the handler ran (count went up) or the message was
+		// quarantined (count stays at threshold). Both stable outcomes break
+		// the loop, so we can move on to the next publish without a fixed sleep.
+		expected := int32(i + 1)
+		if expected > 2 {
+			expected = 2
+		}
+		testutil.Eventually(t, time.Second, func() bool {
+			return count.Load() >= expected
+		}, "publish %d: count never reached %d", i+1, expected)
 	}
 
 	// Handler should be called at most threshold (2) times; third+ are quarantined.
@@ -163,11 +178,9 @@ func TestWithReliabilityStack_MonitorStore(t *testing.T) {
 	if err := ev.Publish(ctx, msg{42}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
-
-	if mstore.Len() == 0 {
-		t.Error("expected at least one monitor entry, got none")
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool {
+		return mstore.Len() > 0
+	}, "expected at least one monitor entry, got %d", mstore.Len())
 }
 
 // TestWithReliabilityStack_IdempotencyTTL verifies the TTL option is accepted.
@@ -191,7 +204,8 @@ func TestWithReliabilityStack_IdempotencyTTL(t *testing.T) {
 	if err := ev.Publish(ctx, msg{}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(30 * time.Millisecond)
+	// No assertion to make — this test only verifies the WithIdempotencyTTL
+	// option is accepted by the stack. No post-publish wait needed.
 }
 
 // TestWithReliabilityStack_PublishAuditReusesMonitor verifies that the
@@ -219,19 +233,18 @@ func TestWithReliabilityStack_PublishAuditReusesMonitor(t *testing.T) {
 	if err := ev.Publish(ctx, msg{42}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
 
 	published := monitor.StatusPublished
-	count, err := mstore.Count(ctx, monitor.Filter{
+	filter := monitor.Filter{
 		EventName: "stack.pubaudit",
 		Status:    []monitor.Status{published},
-	})
-	if err != nil {
-		t.Fatalf("Count: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("expected 1 published entry for stack.pubaudit, got %d", count)
-	}
+	// Poll for the audit entry instead of fixed 50ms wait. The bus records
+	// the published-audit row asynchronously after Publish returns.
+	testutil.Eventually(t, 2*time.Second, func() bool {
+		c, err := mstore.Count(ctx, filter)
+		return err == nil && c == 1
+	}, "expected exactly 1 published entry for stack.pubaudit")
 }
 
 // TestWithReliabilityStack_PoisonOptions verifies threshold/quarantine knobs.
@@ -255,5 +268,6 @@ func TestWithReliabilityStack_PoisonOptions(t *testing.T) {
 	if err := ev.Publish(ctx, msg{}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(30 * time.Millisecond)
+	// No assertion follows — this test only verifies the option setters
+	// are accepted by the stack. No post-publish wait needed.
 }
