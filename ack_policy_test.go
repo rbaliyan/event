@@ -11,6 +11,23 @@ import (
 	"github.com/rbaliyan/event/v3/transport/channel"
 )
 
+// eventuallyEqInt32 polls until atomic.Int32 reaches want or the deadline
+// fires. Replaces the time.Sleep + assert pattern: the test passes the
+// instant the contract is met, and only burns the timeout when something
+// is actually wrong. Defined here (not in internal/testutil) because the
+// root event package cannot import testutil — it would create an import
+// cycle through internal/testutil/bus.go.
+func eventuallyEqInt32(t testing.TB, timeout time.Duration, counter *atomic.Int32, want int32, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for counter.Load() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: got %d, want %d (after %s)", msg, counter.Load(), want, timeout)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 func TestWithBestEffort_AutoAcksAndSuppressesErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -34,22 +51,17 @@ func TestWithBestEffort_AutoAcksAndSuppressesErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
-	// Publish several messages
+	// Subscribe is synchronous on the channel transport — no pre-publish
+	// sleep needed. Publish several messages.
 	for i := 0; i < 5; i++ {
 		if err := ev.Publish(ctx, "msg"); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	// Wait for processing
-	time.Sleep(200 * time.Millisecond)
-
-	// All messages should be received (errors suppressed, no retries)
-	if got := received.Load(); got != 5 {
-		t.Errorf("expected 5 messages received, got %d", got)
-	}
+	// Wait until all 5 messages have been delivered. Polling exits the
+	// instant the contract is met, not after a fixed 200ms wait.
+	eventuallyEqInt32(t, 2*time.Second, &received, 5, "expected 5 messages received")
 }
 
 func TestWithAckPolicy_ExplicitIsDefault(t *testing.T) {
@@ -73,8 +85,9 @@ func TestWithAckPolicy_ExplicitIsDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
+	// Subscribe is synchronous on the channel transport — publish
+	// immediately. The waitForData channel poll below handles any
+	// residual setup latency.
 	if err := ev.Publish(ctx, "hello"); err != nil {
 		t.Fatal(err)
 	}
@@ -151,19 +164,15 @@ func TestBestEffortMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
+	// Subscribe is synchronous — publish immediately. Poll for completion
+	// instead of fixed 200ms wait.
 	for i := 0; i < 3; i++ {
 		if err := ev.Publish(ctx, "msg"); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	time.Sleep(200 * time.Millisecond)
-
-	if got := received.Load(); got != 3 {
-		t.Errorf("expected 3 messages received with BestEffortMiddleware, got %d", got)
-	}
+	eventuallyEqInt32(t, 2*time.Second, &received, 3, "expected 3 messages received with BestEffortMiddleware")
 }
 
 func TestContextCoalescedCount_DefaultZero(t *testing.T) {
@@ -230,14 +239,12 @@ func TestWithCoalesceByKey_SupersedesPendingMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
-	// Publish initial message to start handler processing.
+	// Subscribe is synchronous — publish initial message immediately.
 	if err := ev.Publish(ctx, Order{ID: "A", Value: 1}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Wait for handler to start processing
+	// Wait for handler to start processing the first message.
 	select {
 	case <-handlerReady:
 	case <-time.After(time.Second):
@@ -246,6 +253,10 @@ func TestWithCoalesceByKey_SupersedesPendingMessages(t *testing.T) {
 
 	// While handler is busy, send more messages for same key.
 	// These should be coalesced — only the last one should be delivered.
+	// The 10ms spread is intentional: it staggers publishes so the
+	// coalescer's run loop has a chance to pull each from the channel
+	// individually rather than all at once. Removing it would defeat the
+	// coalescing-under-load scenario this test exists to verify.
 	for i := 2; i <= 5; i++ {
 		if err := ev.Publish(ctx, Order{ID: "A", Value: i}); err != nil {
 			t.Fatal(err)
@@ -262,8 +273,8 @@ func TestWithCoalesceByKey_SupersedesPendingMessages(t *testing.T) {
 		}
 	}
 
-	// Allow any further processing to settle.
-	time.Sleep(200 * time.Millisecond)
+	// Both handler invocations have signaled handlerDone, which happens
+	// AFTER delivered[data.ID] is written. No further settle wait needed.
 
 	mu.Lock()
 	defer mu.Unlock()
