@@ -5,7 +5,18 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rbaliyan/event/v3/internal/clock"
 )
+
+// newCBWithFakeClock constructs a breaker wired to a FakeClock pinned at the
+// Unix epoch. Test bodies call clk.Advance to deterministically cross the
+// cooldown boundary instead of time.Sleep.
+func newCBWithFakeClock(threshold int, cooldown time.Duration) (*CircuitBreaker, *clock.Fake) {
+	clk := clock.NewFake(time.Time{})
+	cb := NewCircuitBreaker(threshold, cooldown).withClock(clk)
+	return cb, clk
+}
 
 func TestCircuitBreaker_DisabledByDefault(t *testing.T) {
 	// nil circuit breaker should be a no-op
@@ -88,7 +99,7 @@ func TestCircuitBreaker_SuccessResetsFailureCount(t *testing.T) {
 }
 
 func TestCircuitBreaker_HalfOpenAfterCooldown(t *testing.T) {
-	cb := NewCircuitBreaker(1, 20*time.Millisecond)
+	cb, clk := newCBWithFakeClock(1, 20*time.Millisecond)
 
 	// Trip the breaker
 	cb.Allow()
@@ -97,14 +108,16 @@ func TestCircuitBreaker_HalfOpenAfterCooldown(t *testing.T) {
 		t.Fatalf("State() = %q, want %q", s, "open")
 	}
 
-	// Before cooldown — rejected
+	// Before cooldown — rejected. Advance just shy of the cooldown to
+	// pin that the boundary is checked, not the wall clock.
+	clk.Advance(19 * time.Millisecond)
 	err := cb.Allow()
 	if !errors.Is(err, ErrCircuitOpen) {
 		t.Fatalf("Allow() before cooldown = %v, want ErrCircuitOpen", err)
 	}
 
-	// Wait for cooldown
-	time.Sleep(30 * time.Millisecond)
+	// Cross the cooldown boundary.
+	clk.Advance(2 * time.Millisecond)
 
 	// First call should be allowed (probe)
 	if err := cb.Allow(); err != nil {
@@ -122,12 +135,12 @@ func TestCircuitBreaker_HalfOpenAfterCooldown(t *testing.T) {
 }
 
 func TestCircuitBreaker_ProbeSuccessCloses(t *testing.T) {
-	cb := NewCircuitBreaker(1, 10*time.Millisecond)
+	cb, clk := newCBWithFakeClock(1, 10*time.Millisecond)
 
-	// Trip and wait for cooldown
+	// Trip and cross the cooldown boundary via the fake clock.
 	cb.Allow()
 	cb.RecordFailure()
-	time.Sleep(15 * time.Millisecond)
+	clk.Advance(15 * time.Millisecond)
 
 	// Probe
 	if err := cb.Allow(); err != nil {
@@ -146,12 +159,12 @@ func TestCircuitBreaker_ProbeSuccessCloses(t *testing.T) {
 }
 
 func TestCircuitBreaker_ProbeFailureReopens(t *testing.T) {
-	cb := NewCircuitBreaker(1, 10*time.Millisecond)
+	cb, clk := newCBWithFakeClock(1, 10*time.Millisecond)
 
-	// Trip and wait for cooldown
+	// Trip and cross the cooldown boundary via the fake clock.
 	cb.Allow()
 	cb.RecordFailure()
-	time.Sleep(15 * time.Millisecond)
+	clk.Advance(15 * time.Millisecond)
 
 	// Probe
 	if err := cb.Allow(); err != nil {
@@ -163,10 +176,18 @@ func TestCircuitBreaker_ProbeFailureReopens(t *testing.T) {
 		t.Fatalf("State() after probe failure = %q, want %q", s, "open")
 	}
 
-	// Should be rejected again (cooldown restarted)
+	// Should be rejected again (cooldown restarted). The probe failure
+	// re-records openedAt at the current fake-clock time, so a fresh
+	// cooldown window starts here — verify by NOT advancing.
 	err := cb.Allow()
 	if !errors.Is(err, ErrCircuitOpen) {
 		t.Fatalf("Allow() after reopen = %v, want ErrCircuitOpen", err)
+	}
+
+	// And after advancing past the new cooldown, the probe path opens again.
+	clk.Advance(15 * time.Millisecond)
+	if err := cb.Allow(); err != nil {
+		t.Errorf("Allow() after second cooldown = %v, want nil", err)
 	}
 }
 
