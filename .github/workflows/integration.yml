@@ -8,15 +8,14 @@ on:
 
 permissions: read-all
 
-# Integration runs against real Redis and Postgres service containers. The
-# suite is non-blocking (continue-on-error) while the test set stabilizes;
-# remove that flag once a 2-week green streak demonstrates the suite is
-# reliable enough to gate merges.
+# Integration runs against real Redis and Postgres service containers and
+# is a required check on the main branch. The original stabilization flag
+# (continue-on-error: true) was removed once the suite proved reliable
+# through Phase 1 and Phase 2 of the test-quality lift.
 jobs:
   integration:
     name: Integration (Redis + Postgres)
     runs-on: ubuntu-latest
-    continue-on-error: true
     services:
       redis:
         image: redis:7-alpine
