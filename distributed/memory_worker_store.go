@@ -11,11 +11,16 @@ func (s *MemoryStateManager) ListWorkers(_ context.Context, filter WorkerFilter)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Take a single now-reading from the clock so all stale-filter comparisons
+	// in this listing use a consistent cutoff. Routing through s.clk also
+	// keeps the stale filter testable via clock.Fake.
+	now := s.clk.Now()
+
 	// Collect matching entries
 	var all []*WorkerEntry
 	for id, entry := range s.states {
 		we := memoryEntryToWorkerEntry(id, entry)
-		if !matchesWorkerFilter(we, filter) {
+		if !matchesWorkerFilter(we, filter, now) {
 			continue
 		}
 		all = append(all, we)
@@ -99,10 +104,11 @@ func (s *MemoryStateManager) CountWorkers(_ context.Context, filter WorkerFilter
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	now := s.clk.Now()
 	var count int64
 	for id, entry := range s.states {
 		we := memoryEntryToWorkerEntry(id, entry)
-		if matchesWorkerFilter(we, filter) {
+		if matchesWorkerFilter(we, filter, now) {
 			count++
 		}
 	}
@@ -145,7 +151,13 @@ func memoryEntryToWorkerEntry(id string, entry *stateEntry) *WorkerEntry {
 	}
 }
 
-func matchesWorkerFilter(entry *WorkerEntry, filter WorkerFilter) bool {
+// matchesWorkerFilter returns true if entry passes all conditions in filter.
+// The `now` parameter is the reference time used for the StaleTimeout check —
+// callers pass s.clk.Now() so tests using clock.Fake can drive the stale
+// boundary deterministically. Taking `now` once at the caller (instead of
+// reading time.Now() inside the loop) also gives a consistent cutoff across
+// all entries in a single ListWorkers call.
+func matchesWorkerFilter(entry *WorkerEntry, filter WorkerFilter, now time.Time) bool {
 	if len(filter.Status) > 0 {
 		matched := false
 		for _, s := range filter.Status {
@@ -165,7 +177,7 @@ func matchesWorkerFilter(entry *WorkerEntry, filter WorkerFilter) bool {
 		return false
 	}
 	if filter.StaleTimeout > 0 {
-		cutoff := time.Now().Add(-filter.StaleTimeout)
+		cutoff := now.Add(-filter.StaleTimeout)
 		if entry.Status != WorkerStateProcessing || !entry.UpdatedAt.Before(cutoff) {
 			return false
 		}

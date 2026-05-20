@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/rbaliyan/event/v3/internal/clock"
 )
 
 func newTestMemoryWorkerStore(t *testing.T) *MemoryStateManager {
@@ -11,6 +13,19 @@ func newTestMemoryWorkerStore(t *testing.T) *MemoryStateManager {
 	sm := NewMemoryStateManager(WithCleanup(false, 0))
 	t.Cleanup(sm.Close)
 	return sm
+}
+
+// newTestMemoryWorkerStoreWithClock returns a state manager wired to a
+// clock.Fake pinned at the Unix epoch. Tests that need to establish a
+// time-ordering between Acquire calls (e.g., to assert "msg-stale was
+// created before msg-fresh") use clk.Advance to bump the fake clock
+// deterministically instead of time.Sleep.
+func newTestMemoryWorkerStoreWithClock(t *testing.T) (*MemoryStateManager, *clock.Fake) {
+	t.Helper()
+	clk := clock.NewFake(time.Time{})
+	sm := NewMemoryStateManager(WithCleanup(false, 0), withClock(clk))
+	t.Cleanup(sm.Close)
+	return sm, clk
 }
 
 func TestMemoryListWorkers(t *testing.T) {
@@ -71,10 +86,10 @@ func TestMemoryListWorkersFilterStatus(t *testing.T) {
 
 func TestMemoryListWorkersStaleTimeout(t *testing.T) {
 	ctx := context.Background()
-	sm := newTestMemoryWorkerStore(t)
+	sm, clk := newTestMemoryWorkerStoreWithClock(t)
 
 	sm.Acquire(ctx, "msg-stale", 5*time.Minute)
-	time.Sleep(15 * time.Millisecond)
+	clk.Advance(15 * time.Millisecond) // msg-stale ages past the 10ms threshold
 	sm.Acquire(ctx, "msg-fresh", 5*time.Minute)
 
 	page, err := sm.ListWorkers(ctx, WorkerFilter{
@@ -93,12 +108,12 @@ func TestMemoryListWorkersStaleTimeout(t *testing.T) {
 
 func TestMemoryListWorkersCreatedRange(t *testing.T) {
 	ctx := context.Background()
-	sm := newTestMemoryWorkerStore(t)
+	sm, clk := newTestMemoryWorkerStoreWithClock(t)
 
 	sm.Acquire(ctx, "msg-1", 5*time.Minute)
-	time.Sleep(5 * time.Millisecond)
-	midpoint := time.Now()
-	time.Sleep(5 * time.Millisecond)
+	clk.Advance(5 * time.Millisecond)
+	midpoint := clk.Now() // capture from the fake clock so filter comparisons use the same timeline
+	clk.Advance(5 * time.Millisecond)
 	sm.Acquire(ctx, "msg-2", 5*time.Minute)
 
 	t.Run("created after midpoint", func(t *testing.T) {
@@ -128,12 +143,12 @@ func TestMemoryListWorkersCreatedRange(t *testing.T) {
 
 func TestMemoryListWorkersOrderDesc(t *testing.T) {
 	ctx := context.Background()
-	sm := newTestMemoryWorkerStore(t)
+	sm, clk := newTestMemoryWorkerStoreWithClock(t)
 
 	sm.Acquire(ctx, "msg-a", 5*time.Minute)
-	time.Sleep(2 * time.Millisecond)
+	clk.Advance(2 * time.Millisecond)
 	sm.Acquire(ctx, "msg-b", 5*time.Minute)
-	time.Sleep(2 * time.Millisecond)
+	clk.Advance(2 * time.Millisecond)
 	sm.Acquire(ctx, "msg-c", 5*time.Minute)
 
 	page, err := sm.ListWorkers(ctx, WorkerFilter{OrderDesc: true})
@@ -154,11 +169,11 @@ func TestMemoryListWorkersOrderDesc(t *testing.T) {
 
 func TestMemoryListWorkersPagination(t *testing.T) {
 	ctx := context.Background()
-	sm := newTestMemoryWorkerStore(t)
+	sm, clk := newTestMemoryWorkerStoreWithClock(t)
 
 	for i := 0; i < 5; i++ {
 		sm.Acquire(ctx, "msg-"+string(rune('a'+i)), 5*time.Minute)
-		time.Sleep(2 * time.Millisecond)
+		clk.Advance(2 * time.Millisecond)
 	}
 
 	// First page
