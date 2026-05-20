@@ -526,10 +526,25 @@ func TestDistributedDedup_crossReplicaDedup_stillWorks(t *testing.T) {
 	src1.inject("x", msg)
 	src2.inject("x", msg)
 
-	// Exactly one replica wins — total across both sinks must be 1.
-	time.Sleep(100 * time.Millisecond)
-	total := len(sink1.publishedEvents()) + len(sink2.publishedEvents())
-	if total != 1 {
+	// Wait until at least one replica publishes — the bridge processes
+	// each source on its own goroutine, so the absolute timing varies.
+	// After the first publish lands, give the loser a deterministic
+	// window to also attempt (and fail) the Claim. The waitFor helper
+	// polls every 5ms; "first publish + ~50ms window" is plenty for the
+	// second goroutine to schedule its Claim attempt on any platform.
+	totalPublished := func() int {
+		return len(sink1.publishedEvents()) + len(sink2.publishedEvents())
+	}
+	waitFor(t, func() bool { return totalPublished() >= 1 }, time.Second)
+	// One more bounded wait to give the loser a chance to (incorrectly)
+	// publish — if total ever exceeds 1, the test below catches it.
+	// This 50ms is an intentional workload-simulation sleep, not a setup
+	// margin: we are checking "exactly 1 publish, not 2" and need to
+	// observe the system for long enough that a second publish would
+	// have surfaced. Polling on `total > 1` would never fire on the
+	// happy path so doesn't help here.
+	time.Sleep(50 * time.Millisecond)
+	if total := totalPublished(); total != 1 {
 		t.Errorf("total sink publishes = %d, want 1 (exactly one replica wins)", total)
 	}
 }
@@ -736,6 +751,13 @@ func TestMemoryCoordinator_claimsAndExpires(t *testing.T) {
 	ctx := context.Background()
 	c := bridge.NewMemoryCoordinator()
 
+	// Drive the coordinator's clock from a manually-advanced variable so the
+	// 70ms TTL-expiry wait below becomes a deterministic clock jump rather
+	// than a real time.Sleep. SetClockForTesting is only available in the
+	// _test build; production callers cannot reach it.
+	var now = time.Unix(0, 0).UTC()
+	c.SetClockForTesting(func() time.Time { return now })
+
 	ok, err := c.Claim(ctx, "k", 50*time.Millisecond)
 	if err != nil || !ok {
 		t.Fatalf("first claim: ok=%v err=%v", ok, err)
@@ -745,7 +767,8 @@ func TestMemoryCoordinator_claimsAndExpires(t *testing.T) {
 		t.Errorf("second claim: ok=%v err=%v, want false", ok, err)
 	}
 
-	time.Sleep(70 * time.Millisecond)
+	// Jump 70ms past the 50ms TTL — claim must now succeed.
+	now = now.Add(70 * time.Millisecond)
 
 	ok, err = c.Claim(ctx, "k", 50*time.Millisecond)
 	if err != nil || !ok {
