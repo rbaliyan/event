@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	github.com/AdamKorcz/go-118-fuzz-build v0.0.0-20250520111509-a70c2aa677fa
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/IBM/sarama v1.48.2
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/go-faker/faker/v4 v4.7.0
