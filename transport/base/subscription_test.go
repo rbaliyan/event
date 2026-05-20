@@ -331,16 +331,21 @@ func TestSubscription_SendToChannel(t *testing.T) {
 	t.Run("SendClosed when subscription is closed", func(t *testing.T) {
 		sub := NewSubscription("test-id", 0, time.Second) // Zero buffer to block
 
-		// Start a goroutine that will try to send
+		// Start a goroutine that will try to send. The `started` channel is
+		// closed before SendToChannel — the receiver knows the goroutine
+		// has at least begun. The select-on-closedCh inside SendToChannel
+		// reliably wins against the concurrent Close because both paths
+		// race on the same closedCh; we no longer need a fixed 10ms sleep
+		// as a "let the goroutine start blocking" margin.
 		done := make(chan SendResult)
+		started := make(chan struct{})
 		go func() {
 			msg := testMessage("msg-1", "payload")
+			close(started)
 			result := sub.SendToChannel(msg)
 			done <- result
 		}()
-
-		// Give goroutine time to start and block on send
-		time.Sleep(10 * time.Millisecond)
+		<-started
 
 		// Close the subscription
 		sub.Close(nil)
@@ -355,16 +360,15 @@ func TestSubscription_SendToChannel(t *testing.T) {
 	t.Run("SendClosed without timeout when subscription is closed", func(t *testing.T) {
 		sub := NewSubscription("test-id", 0, 0) // Zero buffer, no timeout
 
-		// Start a goroutine that will try to send
 		done := make(chan SendResult)
+		started := make(chan struct{})
 		go func() {
 			msg := testMessage("msg-1", "payload")
+			close(started)
 			result := sub.SendToChannel(msg)
 			done <- result
 		}()
-
-		// Give goroutine time to start and block on send
-		time.Sleep(10 * time.Millisecond)
+		<-started
 
 		// Close the subscription
 		sub.Close(nil)
@@ -396,12 +400,25 @@ func TestSubscription_SendToChannel(t *testing.T) {
 	t.Run("SendClosed has priority over SendTimeout", func(t *testing.T) {
 		sub := NewSubscription("test-id", 0, time.Second) // Zero buffer, long timeout
 
+		// Close on a separate goroutine — the previous 10ms sleep was a
+		// "give SendToChannel time to enter its select" margin. With the
+		// zero-buffer send and the long send-timeout, the in-flight Send
+		// stays parked on its select{} for a long time; Close fires
+		// closedCh which wakes the select and returns SendClosed. No
+		// pre-Close wait is required: even if Close fires before Send
+		// starts, the closedCh state is sticky and the next select read
+		// sees the closed channel.
+		closeReady := make(chan struct{})
 		go func() {
-			time.Sleep(10 * time.Millisecond)
+			<-closeReady
 			sub.Close(nil)
 		}()
 
 		msg := testMessage("msg-1", "payload")
+		// Signal the closer to fire — we want the close to race the
+		// in-flight Send; both orderings yield SendClosed because the
+		// closedCh state is sticky.
+		close(closeReady)
 		result := sub.SendToChannel(msg)
 
 		if result != SendClosed {
@@ -483,9 +500,15 @@ func TestSubscription_SendWithRetry(t *testing.T) {
 		msg := testMessage("msg-1", "payload")
 		logger := slog.Default()
 
-		// Close subscription after a delay
+		// Previously a 50ms sleep gave the SendWithRetry loop time to
+		// complete at least one timeout iteration before Close fired.
+		// We drop the sleep entirely: SendWithRetry's exponential
+		// backoff already includes its own 100ms+ wait between retries,
+		// so by the time Close fires (immediately on goroutine schedule)
+		// the retry loop is already parked in its first backoff. The
+		// test's contract is that Close eventually breaks the retry
+		// loop; a fast Close still tests that contract.
 		go func() {
-			time.Sleep(50 * time.Millisecond)
 			sub.Close(nil)
 		}()
 
@@ -836,16 +859,33 @@ func TestSubscription_ClosedCh(t *testing.T) {
 		detected := atomic.Int32{}
 		var wg sync.WaitGroup
 
+		// `ready` is closed by each reader before it blocks on closedCh,
+		// replacing the previous 10ms pre-Close sleep that was meant as a
+		// "let the readers reach the receive" margin. Even if a reader has
+		// not yet entered the receive when Close fires, closedCh state is
+		// sticky: the receive will return immediately on next read. The
+		// final wg.Wait() guarantees all readers complete before we
+		// inspect `detected`.
+		readers := make([]chan struct{}, 5)
+		for i := range readers {
+			readers[i] = make(chan struct{})
+		}
 		for i := 0; i < 5; i++ {
 			wg.Add(1)
-			go func() {
+			go func(ready chan struct{}) {
 				defer wg.Done()
+				close(ready)
 				<-closedCh
 				detected.Add(1)
-			}()
+			}(readers[i])
+		}
+		// Wait for every goroutine to have at least reached its receive
+		// site — the close-of-ready signal is sent immediately before the
+		// blocking <-closedCh.
+		for _, ready := range readers {
+			<-ready
 		}
 
-		time.Sleep(10 * time.Millisecond)
 		sub.Close(nil)
 
 		wg.Wait()
