@@ -3,6 +3,7 @@ package event
 import (
 	"container/list"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/rbaliyan/event/v3/transport/message"
 )
@@ -34,6 +35,11 @@ type baseCoalescer[In, Out, T any] struct {
 	stopped  chan struct{}
 	maxKeys  int
 	logger   *slog.Logger
+
+	// inputsHandled counts handleInput invocations. Used only by tests as a
+	// deterministic sync point: after sending to incoming, tests can wait for
+	// this counter to advance to know the goroutine has drained the queue.
+	inputsHandled atomic.Int64
 
 	// extractKey returns the coalesce key from an input.
 	extractKey func(In) string
@@ -150,6 +156,7 @@ func (c *baseCoalescer[In, Out, T]) handleInput(
 	inflight map[string]bool,
 	in In,
 ) {
+	defer c.inputsHandled.Add(1)
 	key := c.extractKey(in)
 
 	// Handle empty key: bypass coalescing, deliver directly.
