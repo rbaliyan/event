@@ -3,6 +3,7 @@ package event
 import (
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,23 @@ func testLogger() *slog.Logger {
 
 func newTestMsg(id string) message.Message {
 	return message.New(id, "test", []byte("{}"), nil)
+}
+
+// waitInputsHandled blocks until counter reaches at least want, or the
+// deadline fires. Replaces the time.Sleep gaps that were used between
+// sequential sends on coal.incoming: those sleeps existed because the
+// coalescer's run() goroutine selects between incoming and done, and a
+// queued done could be picked up before its preceding incoming messages
+// without an explicit sync barrier.
+func waitInputsHandled(t testing.TB, counter *atomic.Int64, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for counter.Load() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("inputsHandled did not reach %d (got %d)", want, counter.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func TestCoalescer_BasicDelivery(t *testing.T) {
@@ -57,12 +75,15 @@ func TestCoalescer_SupersedesOldMessage(t *testing.T) {
 		// Don't signal done yet — key "a" is inflight.
 
 		// Now send two more messages for the same key while inflight.
+		// Wait for both to be absorbed before signalling done, otherwise
+		// run()'s select may pick up done before the second incoming and
+		// deliver "second" instead of the superseded "third".
+		before := coal.inputsHandled.Load()
 		msg2 := newTestMsg("2")
 		msg3 := newTestMsg("3")
 		coal.incoming <- coalesceInput[string]{key: "a", msg: msg2, value: "second"}
-		time.Sleep(10 * time.Millisecond)
 		coal.incoming <- coalesceInput[string]{key: "a", msg: msg3, value: "third"}
-		time.Sleep(10 * time.Millisecond)
+		waitInputsHandled(t, &coal.inputsHandled, before+2)
 
 		// Signal done for the first message.
 		coal.done <- out.key
@@ -136,8 +157,11 @@ func TestCoalescer_ShutdownDrainsPending(t *testing.T) {
 	select {
 	case out := <-coal.output:
 		// "a" is in flight. Send another for "b" that will be pending.
+		// Wait for b to land in pending before signalling done, so the
+		// drain path on Close has a stable state to act on.
+		before := coal.inputsHandled.Load()
 		coal.incoming <- coalesceInput[string]{key: "b", msg: newTestMsg("2"), value: "also-pending"}
-		time.Sleep(20 * time.Millisecond)
+		waitInputsHandled(t, &coal.inputsHandled, before+1)
 		coal.done <- out.key
 	case <-time.After(time.Second):
 		t.Fatal("timed out")
@@ -186,13 +210,15 @@ func TestRawCoalescer_SupersedesByMetadataKey(t *testing.T) {
 	// Consume first
 	select {
 	case out := <-coal.output:
-		// Key "x" is inflight. Send two more.
+		// Key "x" is inflight. Send two more and wait for both to be
+		// absorbed before signalling done; otherwise run() may select
+		// done first and deliver the intermediate message.
 		msg2 := message.New("2", "test", []byte("mid"), map[string]string{"doc_key": "x"})
 		msg3 := message.New("3", "test", []byte("new"), map[string]string{"doc_key": "x"})
+		before := coal.inputsHandled.Load()
 		coal.incoming <- rawCoalesceInput{msg: msg2}
-		time.Sleep(10 * time.Millisecond)
 		coal.incoming <- rawCoalesceInput{msg: msg3}
-		time.Sleep(10 * time.Millisecond)
+		waitInputsHandled(t, &coal.inputsHandled, before+2)
 		coal.done <- out.key
 	case <-time.After(time.Second):
 		t.Fatal("timed out")
@@ -246,12 +272,13 @@ func TestCoalescer_MaxKeysEviction(t *testing.T) {
 			t.Fatalf("expected key 'a', got %q", out.key)
 		}
 		// "a" is in flight. Now add 3 pending keys — exceeding max of 2.
+		// Wait for all 3 to be absorbed (including any eviction work)
+		// before signalling done.
+		before := coal.inputsHandled.Load()
 		coal.incoming <- coalesceInput[string]{key: "b", msg: newTestMsg("2"), value: "B"}
-		time.Sleep(10 * time.Millisecond)
 		coal.incoming <- coalesceInput[string]{key: "c", msg: newTestMsg("3"), value: "C"}
-		time.Sleep(10 * time.Millisecond)
 		coal.incoming <- coalesceInput[string]{key: "d", msg: newTestMsg("4"), value: "D"}
-		time.Sleep(10 * time.Millisecond)
+		waitInputsHandled(t, &coal.inputsHandled, before+3)
 
 		coal.done <- out.key
 	case <-time.After(time.Second):
@@ -293,13 +320,13 @@ func TestCoalescer_EvictionSkipsInflightKeys(t *testing.T) {
 	}
 
 	// While "a" is inflight, send a new message for "a" (pending update)
-	// plus two more keys to exceed max.
+	// plus two more keys to exceed max. Wait for all 3 to be absorbed
+	// before signalling done so eviction has run deterministically.
+	before := coal.inputsHandled.Load()
 	coal.incoming <- coalesceInput[string]{key: "a", msg: newTestMsg("2"), value: "A2"}
-	time.Sleep(10 * time.Millisecond)
 	coal.incoming <- coalesceInput[string]{key: "b", msg: newTestMsg("3"), value: "B"}
-	time.Sleep(10 * time.Millisecond)
 	coal.incoming <- coalesceInput[string]{key: "c", msg: newTestMsg("4"), value: "C"}
-	time.Sleep(10 * time.Millisecond)
+	waitInputsHandled(t, &coal.inputsHandled, before+3)
 
 	// Now signal done for "a" — the pending update (A2) should be delivered.
 	coal.done <- firstOut.key
