@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rbaliyan/event/v3/internal/testutil"
 )
 
 func TestMemoryStateManager_Acquire(t *testing.T) {
@@ -89,9 +91,7 @@ func TestMemoryStateManager_Reset(t *testing.T) {
 
 func TestMemoryStateManager_Expiry(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(
-		WithCleanup(false, 0), // Disable cleanup for this test
-	)
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	// Acquire with very short TTL
@@ -100,8 +100,8 @@ func TestMemoryStateManager_Expiry(t *testing.T) {
 		t.Fatal("expected acquisition to succeed")
 	}
 
-	// Wait for expiry
-	time.Sleep(20 * time.Millisecond)
+	// Cross the TTL boundary deterministically rather than sleeping.
+	clk.Advance(20 * time.Millisecond)
 
 	// Should be acquirable again after expiry
 	acquired, _ = sm.Acquire(ctx, "msg-1", time.Minute)
@@ -231,9 +231,7 @@ func TestMemoryStateManager_ResetStale(t *testing.T) {
 
 func TestRecoveryRunner_RecoverOnce(t *testing.T) {
 	ctx := context.Background()
-	sm := NewMemoryStateManager(
-		WithCleanup(false, 0),
-	)
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	runner, err := NewRecoveryRunner(sm,
@@ -256,8 +254,8 @@ func TestRecoveryRunner_RecoverOnce(t *testing.T) {
 		t.Fatalf("expected 0 reset (not stale yet), got %d", reset)
 	}
 
-	// Wait for it to become stale
-	time.Sleep(60 * time.Millisecond)
+	// Cross the stale-timeout boundary deterministically.
+	clk.Advance(60 * time.Millisecond)
 
 	// Now should be reset
 	reset, err = runner.RecoverOnce(ctx)
@@ -279,9 +277,7 @@ func TestRecoveryRunner_Run(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sm := NewMemoryStateManager(
-		WithCleanup(false, 0),
-	)
+	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
 	runner, err := NewRecoveryRunner(sm,
@@ -304,14 +300,15 @@ func TestRecoveryRunner_Run(t *testing.T) {
 		t.Fatal("expected acquisition to fail (already acquired)")
 	}
 
-	// Wait for stale timeout + check interval
-	time.Sleep(100 * time.Millisecond)
+	// Cross the stale-timeout boundary in the state manager's clock.
+	// The runner's check-interval ticker still runs on the real clock,
+	// so poll for the reset to land instead of sleeping for it.
+	clk.Advance(50 * time.Millisecond)
 
-	// Should be acquirable now (runner reset it)
-	acquired, _ = sm.Acquire(ctx, "msg-1", time.Hour)
-	if !acquired {
-		t.Fatal("expected acquisition to succeed after runner reset stale state")
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool {
+		acquired, _ = sm.Acquire(ctx, "msg-1", time.Hour)
+		return acquired
+	}, "runner did not reset stale state")
 }
 
 // faultyCoord wraps MemoryStateManager: MarkProcessed can be made to fail,
@@ -354,7 +351,7 @@ func (s *countingSender) Send(_ context.Context, eventName, _ string, payload []
 func TestRecovery_ClearPayloadAfterMarkProcessed(t *testing.T) {
 	ctx := context.Background()
 
-	inner := NewMemoryStateManager(WithCleanup(false, 0))
+	inner, clk := newSMWithFakeClock()
 	defer inner.Close()
 
 	coord := &faultyCoord{MemoryStateManager: inner, failMark: true}
@@ -376,7 +373,8 @@ func TestRecovery_ClearPayloadAfterMarkProcessed(t *testing.T) {
 		t.Fatalf("NewRecoveryRunner: %v", err)
 	}
 
-	time.Sleep(20 * time.Millisecond)
+	// Cross the stale-timeout boundary deterministically.
+	clk.Advance(20 * time.Millisecond)
 
 	// First pass: MarkProcessed fails → payload must NOT be cleared.
 	if _, err := runner.RecoverOnce(ctx); err != nil {
