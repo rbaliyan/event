@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rbaliyan/event/v3/internal/testutil"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/codec"
 	"github.com/rbaliyan/event/v3/transport/message"
@@ -906,13 +907,9 @@ func TestBroadcastCloseDoesNotRaceWithConsumeLoop(t *testing.T) {
 	}
 
 	// Wait until the consume goroutine is parked inside the blocking XREADGROUP.
-	deadline := time.Now().Add(2 * time.Second)
-	for atomic.LoadInt32(&client.xreadgroupActive) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("consume goroutine never entered blocking XReadGroup")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testutil.Eventually(t, 2*time.Second,
+		func() bool { return atomic.LoadInt32(&client.xreadgroupActive) != 0 },
+		"consume goroutine never entered blocking XReadGroup")
 
 	if err := sub.Close(context.Background()); err != nil {
 		t.Fatalf("sub.Close: %v", err)
@@ -953,13 +950,9 @@ func (b *safeBuffer) String() string {
 // XReadGroup, or fails the test on timeout.
 func waitForActiveReader(t *testing.T, m *mockRedisClient) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for atomic.LoadInt32(&m.xreadgroupActive) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("consume goroutine never entered blocking XReadGroup")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testutil.Eventually(t, 2*time.Second,
+		func() bool { return atomic.LoadInt32(&m.xreadgroupActive) != 0 },
+		"consume goroutine never entered blocking XReadGroup")
 }
 
 // pickBlockedGroup returns the group name that currently has a blocked
@@ -1021,12 +1014,8 @@ func TestAutoRecreateGroup_BroadcastRecoversFromNoGroup(t *testing.T) {
 	client.XGroupDestroy(context.Background(), streamName, groupName)
 
 	// Wait for the recreate callback to fire.
-	deadline := time.Now().Add(2 * time.Second)
-	for recreateCount.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("recreate handler never fired; logs:\n%s", logBuf.String())
-		}
-		time.Sleep(time.Millisecond)
+	if !testutil.EventuallyOK(2*time.Second, func() bool { return recreateCount.Load() != 0 }) {
+		t.Fatalf("recreate handler never fired; logs:\n%s", logBuf.String())
 	}
 
 	if got := RecreateMode(recreateMode.Load()); got != RecreateBroadcast {
@@ -1091,12 +1080,8 @@ func TestAutoRecreateGroup_WorkerPoolRecoversFromNoGroup(t *testing.T) {
 
 	client.XGroupDestroy(context.Background(), streamName, groupName)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for recreateCount.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("recreate handler never fired; logs:\n%s", logBuf.String())
-		}
-		time.Sleep(time.Millisecond)
+	if !testutil.EventuallyOK(2*time.Second, func() bool { return recreateCount.Load() != 0 }) {
+		t.Fatalf("recreate handler never fired; logs:\n%s", logBuf.String())
 	}
 
 	if got := RecreateMode(recreateMode.Load()); got != RecreateWorkerPool {
@@ -1149,12 +1134,10 @@ func TestAutoRecreateGroup_DisabledLeavesErrorLog(t *testing.T) {
 	client.XGroupDestroy(context.Background(), streamName, groupName)
 
 	// Wait for the existing error-log + backoff path to log.
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logBuf.String(), "read error, retrying with backoff") {
-		if time.Now().After(deadline) {
-			t.Fatalf("expected error log never appeared; logs:\n%s", logBuf.String())
-		}
-		time.Sleep(time.Millisecond)
+	if !testutil.EventuallyOK(2*time.Second, func() bool {
+		return strings.Contains(logBuf.String(), "read error, retrying with backoff")
+	}) {
+		t.Fatalf("expected error log never appeared; logs:\n%s", logBuf.String())
 	}
 
 	if recreateCount.Load() != 0 {
@@ -1211,12 +1194,10 @@ func TestAutoRecreateGroup_WrongModeLeavesErrorLog(t *testing.T) {
 
 	client.XGroupDestroy(context.Background(), streamName, groupName)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logBuf.String(), "read error, retrying with backoff") {
-		if time.Now().After(deadline) {
-			t.Fatalf("expected error log never appeared; logs:\n%s", logBuf.String())
-		}
-		time.Sleep(time.Millisecond)
+	if !testutil.EventuallyOK(2*time.Second, func() bool {
+		return strings.Contains(logBuf.String(), "read error, retrying with backoff")
+	}) {
+		t.Fatalf("expected error log never appeared; logs:\n%s", logBuf.String())
 	}
 
 	if recreateCount.Load() != 0 {
@@ -1289,17 +1270,12 @@ func TestAutoRecreateGroup_RecreateFailsFallsBack(t *testing.T) {
 	client.XGroupDestroy(context.Background(), streamName, groupName)
 
 	// Wait for both the recreate-failure Warn and the fall-through ERROR log.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	if !testutil.EventuallyOK(2*time.Second, func() bool {
 		s := logBuf.String()
-		if strings.Contains(s, "failed to recreate consumer group after NOGROUP") &&
-			strings.Contains(s, "read error, retrying with backoff") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("expected failure + fall-through logs never both appeared; logs:\n%s", s)
-		}
-		time.Sleep(time.Millisecond)
+		return strings.Contains(s, "failed to recreate consumer group after NOGROUP") &&
+			strings.Contains(s, "read error, retrying with backoff")
+	}) {
+		t.Fatalf("expected failure + fall-through logs never both appeared; logs:\n%s", logBuf.String())
 	}
 
 	if recreateCount.Load() != 0 {
@@ -1360,12 +1336,8 @@ func TestAutoRecreateGroup_BusyGroupTreatedAsSuccess(t *testing.T) {
 	}
 	client.mu.Unlock()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for recreateCount.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("recreate handler never fired (BUSYGROUP not treated as success); logs:\n%s", logBuf.String())
-		}
-		time.Sleep(time.Millisecond)
+	if !testutil.EventuallyOK(2*time.Second, func() bool { return recreateCount.Load() != 0 }) {
+		t.Fatalf("recreate handler never fired (BUSYGROUP not treated as success); logs:\n%s", logBuf.String())
 	}
 
 	if strings.Contains(logBuf.String(), "failed to recreate consumer group") {
