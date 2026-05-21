@@ -5,13 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"strings"
 	"time"
 
 	event "github.com/rbaliyan/event/v3"
+	"github.com/rbaliyan/event/v3/internal/testutil"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/channel"
 )
@@ -313,8 +314,7 @@ func TestRelayStartStop(t *testing.T) {
 		done <- relay.Start(ctx)
 	}()
 
-	// Let it run briefly
-	time.Sleep(50 * time.Millisecond)
+	// Start blocks on ctx; cancel interrupts it. No warm-up sleep needed.
 	cancel()
 
 	select {
@@ -538,9 +538,14 @@ func TestRelayMaxRetries(t *testing.T) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go relay.Start(ctx)
-	time.Sleep(300 * time.Millisecond)
-	cancel()
+
+	testutil.Eventually(t, 2*time.Second, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return store.messages[0].Status == StatusFailed && store.messages[0].RetryCount >= 3
+	}, "message never reached StatusFailed with retryCount >= 3")
 
 	store.mu.Lock()
 	status := store.messages[0].Status
@@ -573,13 +578,11 @@ func TestRelayAdaptiveBackpressure(t *testing.T) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go relay.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
-	cancel()
 
-	if !called.Load() {
-		t.Fatal("expected backoff strategy to be called on failures")
-	}
+	testutil.Eventually(t, 2*time.Second, called.Load,
+		"backoff strategy never called on failures")
 }
 
 type testBackoff struct {
