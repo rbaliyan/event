@@ -147,10 +147,14 @@ func TestPublishAudit_NotCalledOnClosedBus(t *testing.T) {
 		t.Error("expected publish on closed bus to fail")
 	}
 
-	// Allow any in-flight goroutines to settle
-	time.Sleep(20 * time.Millisecond)
-
-	if audit.Len() != 0 {
-		t.Errorf("expected 0 audit entries after closed-bus publish, got %d", audit.Len())
+	// Any stray audit Add fired by an in-flight goroutine would break the
+	// invariant. Watch for a brief window: a regression appears as Len() > 0
+	// almost immediately, so 50ms is more than enough headroom.
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := audit.Len(); got != 0 {
+			t.Fatalf("expected 0 audit entries after closed-bus publish, got %d", got)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

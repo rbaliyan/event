@@ -228,7 +228,8 @@ func TestBroadcaster_StartStop(t *testing.T) {
 	// Double start should be idempotent
 	b.Start(ctx)
 
-	time.Sleep(100 * time.Millisecond)
+	// Stop blocks on the internal wait group until the poll goroutine exits,
+	// so no warm-up sleep is needed for start/stop to be observably ordered.
 	b.Stop()
 }
 
