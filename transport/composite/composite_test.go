@@ -57,6 +57,7 @@ func publishAndWait(t *testing.T, ctx context.Context, ct *Transport, eventName 
 }
 
 func TestNew_Validation(t *testing.T) {
+	t.Parallel()
 	store := persistent.NewMemoryStore()
 	signal := channel.New()
 
@@ -87,6 +88,7 @@ func TestNew_Validation(t *testing.T) {
 }
 
 func TestNew_Options(t *testing.T) {
+	t.Parallel()
 	store := persistent.NewMemoryStore()
 	signal := channel.New()
 
@@ -112,6 +114,7 @@ func TestNew_Options(t *testing.T) {
 }
 
 func TestRegisterEvent(t *testing.T) {
+	t.Parallel()
 	ct, _, _ := newTestTransport(t)
 	ctx := context.Background()
 	defer ct.Close(ctx)
@@ -127,6 +130,7 @@ func TestRegisterEvent(t *testing.T) {
 }
 
 func TestUnregisterEvent(t *testing.T) {
+	t.Parallel()
 	ct, _, _ := newTestTransport(t)
 	ctx := context.Background()
 	defer ct.Close(ctx)
@@ -144,6 +148,7 @@ func TestUnregisterEvent(t *testing.T) {
 }
 
 func TestPublish_Success(t *testing.T) {
+	t.Parallel()
 	ct, store, _ := newTestTransport(t)
 	ctx := context.Background()
 	defer ct.Close(ctx)
@@ -171,6 +176,7 @@ func TestPublish_Success(t *testing.T) {
 }
 
 func TestPublish_DurableFailure(t *testing.T) {
+	t.Parallel()
 	ct, _, _ := newTestTransport(t)
 	ctx := context.Background()
 	defer ct.Close(ctx)
@@ -188,6 +194,7 @@ func TestPublish_DurableFailure(t *testing.T) {
 }
 
 func TestPublish_SignalFailure(t *testing.T) {
+	t.Parallel()
 	store := persistent.NewMemoryStore()
 	signal := channel.New()
 	ctx := context.Background()
@@ -227,6 +234,7 @@ func TestPublish_SignalFailure(t *testing.T) {
 }
 
 func TestSubscribe_SignalDriven(t *testing.T) {
+	t.Parallel()
 	ct, _, _ := newTestTransport(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -258,6 +266,7 @@ func TestSubscribe_SignalDriven(t *testing.T) {
 }
 
 func TestSubscribe_PollFallback(t *testing.T) {
+	t.Parallel()
 	store := persistent.NewMemoryStore()
 	signal := channel.New()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -306,6 +315,7 @@ func TestSubscribe_PollFallback(t *testing.T) {
 }
 
 func TestSubscribe_MultipleMessages(t *testing.T) {
+	t.Parallel()
 	ct, _, _ := newTestTransport(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -340,6 +350,7 @@ func TestSubscribe_MultipleMessages(t *testing.T) {
 }
 
 func TestSubscribe_Checkpoint(t *testing.T) {
+	t.Parallel()
 	store := persistent.NewMemoryStore()
 	cpStore := persistent.NewMemoryCheckpointStore()
 	signal := channel.New(channel.WithBufferSize(100))
@@ -430,6 +441,7 @@ func TestSubscribe_Checkpoint(t *testing.T) {
 }
 
 func TestClose_Graceful(t *testing.T) {
+	t.Parallel()
 	ct, _, _ := newTestTransport(t)
 	ctx := context.Background()
 
@@ -462,6 +474,7 @@ func TestClose_Graceful(t *testing.T) {
 }
 
 func TestHealth(t *testing.T) {
+	t.Parallel()
 	ct, _, _ := newTestTransport(t)
 	ctx := context.Background()
 	defer ct.Close(ctx)
@@ -476,6 +489,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestHealth_Closed(t *testing.T) {
+	t.Parallel()
 	ct, _, _ := newTestTransport(t)
 	ctx := context.Background()
 
@@ -488,6 +502,7 @@ func TestHealth_Closed(t *testing.T) {
 }
 
 func TestSubscribe_ConcurrentPublish(t *testing.T) {
+	t.Parallel()
 	ct, _, _ := newTestTransport(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -537,6 +552,7 @@ func TestSubscribe_ConcurrentPublish(t *testing.T) {
 }
 
 func TestSubscribe_NackRedelivery(t *testing.T) {
+	t.Parallel()
 	ct, _, _ := newTestTransport(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -579,6 +595,7 @@ func TestSubscribe_NackRedelivery(t *testing.T) {
 }
 
 func TestSubscribe_ConsumerID(t *testing.T) {
+	t.Parallel()
 	store := persistent.NewMemoryStore()
 	cpStore := persistent.NewMemoryCheckpointStore()
 	signal := channel.New(channel.WithBufferSize(100))
