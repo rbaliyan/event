@@ -9,12 +9,14 @@ import (
 )
 
 func TestEntryToProto_Nil(t *testing.T) {
+	t.Parallel()
 	if got := EntryToProto(nil); got != nil {
 		t.Errorf("EntryToProto(nil) = %v, want nil", got)
 	}
 }
 
 func TestEntryToProto_RoundTrip(t *testing.T) {
+	t.Parallel()
 	now := time.Now().Truncate(time.Second)
 	completed := now.Add(5 * time.Second)
 	entry := &monitor.Entry{
@@ -67,12 +69,14 @@ func TestEntryToProto_RoundTrip(t *testing.T) {
 }
 
 func TestProtoToEntry_Nil(t *testing.T) {
+	t.Parallel()
 	if got := ProtoToEntry(nil); got != nil {
 		t.Errorf("ProtoToEntry(nil) = %v, want nil", got)
 	}
 }
 
 func TestFilterRoundTrip(t *testing.T) {
+	t.Parallel()
 	dm := monitor.WorkerPool
 	hasErr := true
 	f := monitor.Filter{
@@ -118,6 +122,7 @@ func TestFilterRoundTrip(t *testing.T) {
 }
 
 func TestProtoToFilter_Nil(t *testing.T) {
+	t.Parallel()
 	f := ProtoToFilter(nil)
 	if f.EventID != "" {
 		t.Errorf("expected empty filter, got EventID=%q", f.EventID)
@@ -125,6 +130,7 @@ func TestProtoToFilter_Nil(t *testing.T) {
 }
 
 func TestPageToListResponse_Nil(t *testing.T) {
+	t.Parallel()
 	resp := PageToListResponse(nil)
 	if resp == nil {
 		t.Fatal("expected non-nil response")
@@ -135,6 +141,7 @@ func TestPageToListResponse_Nil(t *testing.T) {
 }
 
 func TestPageToListResponse(t *testing.T) {
+	t.Parallel()
 	page := &monitor.Page{
 		Entries: []*monitor.Entry{
 			{EventID: "e1", EventName: "test"},
@@ -157,12 +164,14 @@ func TestPageToListResponse(t *testing.T) {
 }
 
 func TestEntriesToProto_Nil(t *testing.T) {
+	t.Parallel()
 	if got := EntriesToProto(nil); got != nil {
 		t.Errorf("EntriesToProto(nil) = %v, want nil", got)
 	}
 }
 
 func TestDurationConversions(t *testing.T) {
+	t.Parallel()
 	d := 5 * time.Second
 	pb := DurationToProto(d)
 	got := ProtoToDuration(pb)
@@ -176,6 +185,7 @@ func TestDurationConversions(t *testing.T) {
 }
 
 func TestStatusConversions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		status monitor.Status
 		proto  Status
@@ -199,6 +209,7 @@ func TestStatusConversions(t *testing.T) {
 }
 
 func TestDeliveryModeConversions(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		dm    monitor.DeliveryMode
 		proto DeliveryMode
@@ -220,6 +231,7 @@ func TestDeliveryModeConversions(t *testing.T) {
 }
 
 func TestDurationToProto_WithDuration(t *testing.T) {
+	t.Parallel()
 	pb := DurationToProto(0)
 	if pb == nil {
 		t.Fatal("expected non-nil")
@@ -235,6 +247,7 @@ func TestDurationToProto_WithDuration(t *testing.T) {
 }
 
 func TestProtoToDuration_NilInput(t *testing.T) {
+	t.Parallel()
 	got := ProtoToDuration(nil)
 	if got != 0 {
 		t.Errorf("expected 0, got %v", got)
@@ -242,6 +255,7 @@ func TestProtoToDuration_NilInput(t *testing.T) {
 }
 
 func TestProtoToDuration_ValidInput(t *testing.T) {
+	t.Parallel()
 	pb := &durationpb.Duration{Seconds: 10, Nanos: 500000000}
 	got := ProtoToDuration(pb)
 	expected := 10*time.Second + 500*time.Millisecond
