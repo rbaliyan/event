@@ -25,6 +25,7 @@ type Item struct {
 }
 
 func TestNewJSONSchemaValidator(t *testing.T) {
+	t.Parallel()
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -110,6 +111,7 @@ func TestNewJSONSchemaValidator(t *testing.T) {
 }
 
 func TestJSONSchemaValidator_Validate(t *testing.T) {
+	t.Parallel()
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -211,6 +213,7 @@ func TestJSONSchemaValidator_Validate(t *testing.T) {
 }
 
 func TestJSONSchemaValidator_ComplexSchema(t *testing.T) {
+	t.Parallel()
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -279,6 +282,7 @@ func TestJSONSchemaValidator_ComplexSchema(t *testing.T) {
 }
 
 func TestValidateMiddleware(t *testing.T) {
+	t.Parallel()
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -362,6 +366,7 @@ func TestValidateMiddleware(t *testing.T) {
 }
 
 func TestCompositeValidator(t *testing.T) {
+	t.Parallel()
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -426,6 +431,7 @@ func TestCompositeValidator(t *testing.T) {
 }
 
 func TestFuncValidator(t *testing.T) {
+	t.Parallel()
 	t.Run("function is called", func(t *testing.T) {
 		called := false
 		v := FuncValidator(func(payload any) error {
@@ -453,6 +459,7 @@ func TestFuncValidator(t *testing.T) {
 }
 
 func TestValidationError(t *testing.T) {
+	t.Parallel()
 	t.Run("error string with path", func(t *testing.T) {
 		err := &ValidationError{
 			Message: "invalid value",
@@ -487,6 +494,7 @@ func TestValidationError(t *testing.T) {
 }
 
 func TestJSONSchemaValidator_BytesReader(t *testing.T) {
+	t.Parallel()
 	schema := `{"type": "object", "properties": {"name": {"type": "string"}}}`
 
 	// Test with bytes.Buffer
@@ -503,6 +511,7 @@ func TestJSONSchemaValidator_BytesReader(t *testing.T) {
 }
 
 func TestJSONSchemaValidator_EnumValidation(t *testing.T) {
+	t.Parallel()
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -535,6 +544,7 @@ func TestJSONSchemaValidator_EnumValidation(t *testing.T) {
 }
 
 func TestJSONSchemaValidator_PatternValidation(t *testing.T) {
+	t.Parallel()
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -567,6 +577,7 @@ func TestJSONSchemaValidator_PatternValidation(t *testing.T) {
 }
 
 func TestJSONSchemaValidator_NestedObjects(t *testing.T) {
+	t.Parallel()
 	schema := `{
 		"type": "object",
 		"properties": {
