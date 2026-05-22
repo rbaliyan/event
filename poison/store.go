@@ -74,6 +74,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/rbaliyan/event/v3/internal/clock"
 )
 
 // Store tracks failure counts and quarantine status for messages.
@@ -133,6 +135,23 @@ type MemoryStore struct {
 	mu          sync.RWMutex
 	failures    map[string]int
 	quarantined map[string]time.Time // messageID -> expiry time
+
+	// clk supplies the current time for quarantine expiry checks. Defaults
+	// to clock.Real{}; tests inject clock.Fake via the unexported withClock
+	// option to drive expiry deterministically instead of time.Sleep.
+	clk clock.Clock
+}
+
+// MemoryStoreOption configures a MemoryStore at construction time.
+type MemoryStoreOption func(*MemoryStore)
+
+// withClock swaps the clock used by MemoryStore for quarantine expiry checks.
+// Unexported on purpose — it is only meant to be reachable from tests in this
+// package via clock.Fake.
+//
+//nolint:unused
+func withClock(c clock.Clock) MemoryStoreOption {
+	return func(s *MemoryStore) { s.clk = c }
 }
 
 // NewMemoryStore creates a new in-memory poison store.
@@ -141,11 +160,16 @@ type MemoryStore struct {
 //
 //	store := poison.NewMemoryStore()
 //	detector := poison.NewDetector(store)
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
+func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
+	s := &MemoryStore{
 		failures:    make(map[string]int),
 		quarantined: make(map[string]time.Time),
+		clk:         clock.Real{},
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // IncrementFailure increments and returns the failure count for a message.
@@ -171,7 +195,7 @@ func (s *MemoryStore) MarkPoison(ctx context.Context, messageID string, ttl time
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.quarantined[messageID] = time.Now().Add(ttl)
+	s.quarantined[messageID] = s.clk.Now().Add(ttl)
 	return nil
 }
 
@@ -187,7 +211,7 @@ func (s *MemoryStore) IsPoison(ctx context.Context, messageID string) (bool, err
 	}
 
 	// Check if quarantine has expired
-	if time.Now().After(expiry) {
+	if s.clk.Now().After(expiry) {
 		return false, nil
 	}
 
@@ -231,7 +255,7 @@ func (s *MemoryStore) Cleanup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
+	now := s.clk.Now()
 	for id, expiry := range s.quarantined {
 		if now.After(expiry) {
 			delete(s.quarantined, id)
