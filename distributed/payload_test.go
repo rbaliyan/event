@@ -24,6 +24,7 @@ func newSMWithFakeClock(opts ...Option) (*MemoryStateManager, *clock.Fake) {
 }
 
 func TestMemoryCoordinator_AcquireAndStorePayload(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, _ := newSMWithFakeClock()
 	defer sm.Close()
@@ -67,6 +68,7 @@ func TestMemoryCoordinator_AcquireAndStorePayload(t *testing.T) {
 }
 
 func TestMemoryCoordinator_Acquire_Expiry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
@@ -88,6 +90,7 @@ func TestMemoryCoordinator_Acquire_Expiry(t *testing.T) {
 }
 
 func TestMemoryPayloadStore_LoadStalePayloads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
@@ -156,6 +159,7 @@ func TestMemoryPayloadStore_LoadStalePayloads(t *testing.T) {
 }
 
 func TestMemoryPayloadStore_ClearPayload(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, _ := newSMWithFakeClock()
 	defer sm.Close()
@@ -189,6 +193,7 @@ func TestMemoryPayloadStore_ClearPayload(t *testing.T) {
 }
 
 func TestStaleMessage_HasPayload(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		msg      StaleMessage
@@ -221,6 +226,7 @@ func TestStaleMessage_HasPayload(t *testing.T) {
 }
 
 func TestCompileTimeChecks(t *testing.T) {
+	t.Parallel()
 	// Verify interface implementations
 	var _ Coordinator = (*MemoryStateManager)(nil)
 	var _ PayloadStore = (*MemoryStateManager)(nil)
@@ -249,6 +255,7 @@ func (m *mockPublisher) Send(_ context.Context, eventName, eventID string, paylo
 }
 
 func TestRecoveryRunner_BasicReset(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
@@ -286,6 +293,7 @@ func TestRecoveryRunner_BasicReset(t *testing.T) {
 }
 
 func TestRecoveryRunner_Phase1And2Exclusion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
@@ -340,6 +348,7 @@ func TestRecoveryRunner_Phase1And2Exclusion(t *testing.T) {
 }
 
 func TestRecoveryRunner_BatchLimitZero(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
@@ -369,6 +378,7 @@ func TestRecoveryRunner_BatchLimitZero(t *testing.T) {
 }
 
 func TestRecoveryRunner_PayloadRepublish(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
@@ -436,6 +446,7 @@ func TestRecoveryRunner_PayloadRepublish(t *testing.T) {
 }
 
 func TestRecoveryRunner_PublishFailure_SkipsEntry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
@@ -481,6 +492,7 @@ func (p *failingPublisher) Send(_ context.Context, _, _ string, _ []byte, _ map[
 }
 
 func TestRecoveryRunner_WithRealBus(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Create a real bus with channel transport
@@ -537,6 +549,7 @@ func TestRecoveryRunner_WithRealBus(t *testing.T) {
 }
 
 func TestBus_SupportsRedelivery(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	ch := channel.New()
@@ -552,6 +565,7 @@ func TestBus_SupportsRedelivery(t *testing.T) {
 }
 
 func TestPoolOption_WithPayloadRecovery(t *testing.T) {
+	t.Parallel()
 	o := &poolOptions{}
 
 	if o.storePayload != nil {
@@ -565,6 +579,7 @@ func TestPoolOption_WithPayloadRecovery(t *testing.T) {
 }
 
 func TestPoolOption_WithMaxPayloadSize(t *testing.T) {
+	t.Parallel()
 	o := &poolOptions{}
 
 	if o.maxPayloadSize != 0 {
@@ -587,6 +602,7 @@ func TestPoolOption_WithMaxPayloadSize(t *testing.T) {
 }
 
 func TestRecoveryMetrics_NilSafe(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var m *RecoveryMetrics
 	m.recordRecovered(ctx)
@@ -600,6 +616,7 @@ func TestRecoveryMetrics_NilSafe(t *testing.T) {
 }
 
 func TestRecoveryMetrics_BatchNilSafe(t *testing.T) {
+	t.Parallel()
 	var m *RecoveryMetrics
 	ctx := context.Background()
 	// Batch methods with n <= 0 should be no-ops
@@ -610,6 +627,7 @@ func TestRecoveryMetrics_BatchNilSafe(t *testing.T) {
 }
 
 func TestNewRecoveryRunner_NilCoordinator_ReturnsError(t *testing.T) {
+	t.Parallel()
 	_, err := NewRecoveryRunner(nil)
 	if err == nil {
 		t.Fatal("expected error for nil coordinator")
@@ -617,6 +635,7 @@ func TestNewRecoveryRunner_NilCoordinator_ReturnsError(t *testing.T) {
 }
 
 func TestRecoveryMetrics_Creation(t *testing.T) {
+	t.Parallel()
 	m, err := NewRecoveryMetrics()
 	if err != nil {
 		t.Fatalf("unexpected error creating metrics: %v", err)
@@ -635,6 +654,7 @@ func TestRecoveryMetrics_Creation(t *testing.T) {
 }
 
 func TestRecoveryMetrics_WithNamespace(t *testing.T) {
+	t.Parallel()
 	m, err := NewRecoveryMetrics(WithRecoveryMetricsNamespace("myapp"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -645,6 +665,7 @@ func TestRecoveryMetrics_WithNamespace(t *testing.T) {
 }
 
 func TestRecoveryOption_WithRecoveryLogger(t *testing.T) {
+	t.Parallel()
 	o := &recoveryOptions{}
 	WithRecoveryLogger(nil)(o)
 	if o.logger != nil {
@@ -653,6 +674,7 @@ func TestRecoveryOption_WithRecoveryLogger(t *testing.T) {
 }
 
 func TestRecoveryOption_WithBackoff(t *testing.T) {
+	t.Parallel()
 	o := &recoveryOptions{}
 	WithBackoff(nil)(o)
 	if o.backoff != nil {
@@ -661,6 +683,7 @@ func TestRecoveryOption_WithBackoff(t *testing.T) {
 }
 
 func TestRecoveryRunner_RecoverOnce_NoStaleEntries(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, _ := newSMWithFakeClock()
 	defer sm.Close()
@@ -683,6 +706,7 @@ func TestRecoveryRunner_RecoverOnce_NoStaleEntries(t *testing.T) {
 }
 
 func TestMemoryStateManager_CleanupExpired(t *testing.T) {
+	t.Parallel()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
 
@@ -703,6 +727,7 @@ func TestMemoryStateManager_CleanupExpired(t *testing.T) {
 }
 
 func TestRecoveryRunner_WithMetrics(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()

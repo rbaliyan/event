@@ -29,6 +29,7 @@ func newTestMemoryWorkerStoreWithClock(t *testing.T) (*MemoryStateManager, *cloc
 }
 
 func TestMemoryListWorkers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := newTestMemoryWorkerStore(t)
 
@@ -46,6 +47,7 @@ func TestMemoryListWorkers(t *testing.T) {
 }
 
 func TestMemoryListWorkersFilterStatus(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := newTestMemoryWorkerStore(t)
 
@@ -85,6 +87,7 @@ func TestMemoryListWorkersFilterStatus(t *testing.T) {
 }
 
 func TestMemoryListWorkersStaleTimeout(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newTestMemoryWorkerStoreWithClock(t)
 
@@ -107,6 +110,7 @@ func TestMemoryListWorkersStaleTimeout(t *testing.T) {
 }
 
 func TestMemoryListWorkersCreatedRange(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newTestMemoryWorkerStoreWithClock(t)
 
@@ -142,6 +146,7 @@ func TestMemoryListWorkersCreatedRange(t *testing.T) {
 }
 
 func TestMemoryListWorkersOrderDesc(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newTestMemoryWorkerStoreWithClock(t)
 
@@ -168,6 +173,7 @@ func TestMemoryListWorkersOrderDesc(t *testing.T) {
 }
 
 func TestMemoryListWorkersPagination(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newTestMemoryWorkerStoreWithClock(t)
 
@@ -234,6 +240,7 @@ func TestMemoryListWorkersPagination(t *testing.T) {
 }
 
 func TestMemoryListWorkersCursorPastEnd(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := newTestMemoryWorkerStore(t)
 
@@ -267,6 +274,7 @@ func TestMemoryListWorkersCursorPastEnd(t *testing.T) {
 }
 
 func TestMemoryListWorkersInvalidCursor(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := newTestMemoryWorkerStore(t)
 
@@ -277,6 +285,7 @@ func TestMemoryListWorkersInvalidCursor(t *testing.T) {
 }
 
 func TestMemoryCountWorkers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := newTestMemoryWorkerStore(t)
 
@@ -321,6 +330,7 @@ func TestMemoryCountWorkers(t *testing.T) {
 }
 
 func TestMemoryGetWorker(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := newTestMemoryWorkerStore(t)
 
@@ -342,6 +352,7 @@ func TestMemoryGetWorker(t *testing.T) {
 }
 
 func TestMemoryGetWorkerNotFound(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := newTestMemoryWorkerStore(t)
 

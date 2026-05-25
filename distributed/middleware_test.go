@@ -79,6 +79,7 @@ func mustMW[T any](mw event.Middleware[T], err error) event.Middleware[T] {
 }
 
 func TestMiddleware_NoEventID_PassesThrough(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordinator{acquireResult: true}
 	handler := &testHandler[string]{}
 
@@ -100,6 +101,7 @@ func TestMiddleware_NoEventID_PassesThrough(t *testing.T) {
 }
 
 func TestMiddleware_AcquireFails_FailOpen(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordinator{acquireErr: errors.New("redis down")}
 	handler := &testHandler[string]{}
 
@@ -117,6 +119,7 @@ func TestMiddleware_AcquireFails_FailOpen(t *testing.T) {
 }
 
 func TestMiddleware_NotAcquired_Skips(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordinator{acquireResult: false}
 	handler := &testHandler[string]{}
 
@@ -134,6 +137,7 @@ func TestMiddleware_NotAcquired_Skips(t *testing.T) {
 }
 
 func TestMiddleware_Acquired_CallsHandlerAndMarksProcessed(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordinator{acquireResult: true}
 	handler := &testHandler[string]{}
 
@@ -157,6 +161,7 @@ func TestMiddleware_Acquired_CallsHandlerAndMarksProcessed(t *testing.T) {
 }
 
 func TestMiddleware_HandlerError_ResetsState(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordinator{acquireResult: true}
 	handlerErr := errors.New("processing failed")
 	handler := &testHandler[string]{err: handlerErr}
@@ -178,6 +183,7 @@ func TestMiddleware_HandlerError_ResetsState(t *testing.T) {
 }
 
 func TestMiddleware_NoPayloadInContext_NoStore(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordWithPayload{
 		mockCoordinator: mockCoordinator{acquireResult: true},
 	}
@@ -206,6 +212,7 @@ func TestMiddleware_NoPayloadInContext_NoStore(t *testing.T) {
 }
 
 func TestMiddleware_PayloadStored_ClearedOnSuccess(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordWithPayload{
 		mockCoordinator: mockCoordinator{acquireResult: true},
 	}
@@ -238,6 +245,7 @@ func TestMiddleware_PayloadStored_ClearedOnSuccess(t *testing.T) {
 }
 
 func TestMiddleware_PayloadStored_NotClearedOnHandlerError(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordWithPayload{
 		mockCoordinator: mockCoordinator{acquireResult: true},
 	}
@@ -270,6 +278,7 @@ func TestMiddleware_PayloadStored_NotClearedOnHandlerError(t *testing.T) {
 }
 
 func TestMiddleware_StorePayloadFails_NoClearOnSuccess(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordWithPayload{
 		mockCoordinator: mockCoordinator{acquireResult: true},
 		storeErr:        errors.New("store failed"),
@@ -297,6 +306,7 @@ func TestMiddleware_StorePayloadFails_NoClearOnSuccess(t *testing.T) {
 }
 
 func TestMiddleware_MaxPayloadSize(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordWithPayload{
 		mockCoordinator: mockCoordinator{acquireResult: true},
 	}
@@ -328,6 +338,7 @@ func TestMiddleware_MaxPayloadSize(t *testing.T) {
 }
 
 func TestWorkerPoolMiddleware_NilCoord_ReturnsError(t *testing.T) {
+	t.Parallel()
 	_, err := WorkerPoolMiddleware[string](nil, time.Minute)
 	if err == nil {
 		t.Fatal("expected error for nil coordinator")
@@ -335,6 +346,7 @@ func TestWorkerPoolMiddleware_NilCoord_ReturnsError(t *testing.T) {
 }
 
 func TestWorkerPoolMiddleware_WithBusNil_ReturnsError(t *testing.T) {
+	t.Parallel()
 	coord := &mockCoordinator{acquireResult: true}
 	_, err := WorkerPoolMiddleware[string](coord, time.Minute, WithBus(nil))
 	if err == nil {
@@ -343,6 +355,7 @@ func TestWorkerPoolMiddleware_WithBusNil_ReturnsError(t *testing.T) {
 }
 
 func TestMiddleware_CoordWithoutPayloadStore(t *testing.T) {
+	t.Parallel()
 	// Plain coordinator without PayloadStore
 	coord := &mockCoordinator{acquireResult: true}
 	handler := &testHandler[string]{}
