@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/rbaliyan/event/v3/internal/clock"
 )
 
 // MemoryStore implements Store using in-memory storage with TTL support.
@@ -46,6 +48,26 @@ type MemoryStore struct {
 	entries map[string]time.Time // messageID -> expiry time
 	ttl     time.Duration
 	stopCh  chan struct{}
+
+	// clk supplies the current time for expiry computations. Defaults to
+	// clock.Real{}; tests inject clock.Fake via the unexported withClock
+	// option to drive expiry deterministically instead of time.Sleep.
+	clk clock.Clock
+}
+
+// MemoryStoreOption configures a MemoryStore at construction time. The only
+// currently exposed configuration is internal to the test build (withClock);
+// the public surface is the existing ttl positional argument.
+type MemoryStoreOption func(*MemoryStore)
+
+// withClock swaps the clock used by MemoryStore for expiry checks. Unexported
+// on purpose — it is only meant to be reachable from tests within this
+// package via clock.Fake. Annotated unused because production code never
+// instantiates it.
+//
+//nolint:unused
+func withClock(c clock.Clock) MemoryStoreOption {
+	return func(s *MemoryStore) { s.clk = c }
 }
 
 // NewMemoryStore creates a new in-memory idempotency store.
@@ -68,11 +90,15 @@ type MemoryStore struct {
 //
 //	// For testing, use shorter TTL
 //	testStore := idempotency.NewMemoryStore(time.Second)
-func NewMemoryStore(ttl time.Duration) *MemoryStore {
+func NewMemoryStore(ttl time.Duration, opts ...MemoryStoreOption) *MemoryStore {
 	s := &MemoryStore{
 		entries: make(map[string]time.Time),
 		ttl:     ttl,
 		stopCh:  make(chan struct{}),
+		clk:     clock.Real{},
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 
 	// Start cleanup goroutine
@@ -109,7 +135,7 @@ func (s *MemoryStore) IsDuplicate(ctx context.Context, messageID string) (bool, 
 	}
 
 	// Check if expired
-	if time.Now().After(expiry) {
+	if s.clk.Now().After(expiry) {
 		return false, nil
 	}
 
@@ -154,7 +180,7 @@ func (s *MemoryStore) MarkProcessedWithTTL(ctx context.Context, messageID string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.entries[messageID] = time.Now().Add(ttl)
+	s.entries[messageID] = s.clk.Now().Add(ttl)
 	return nil
 }
 
@@ -234,7 +260,7 @@ func (s *MemoryStore) cleanup() {
 			return
 		case <-ticker.C:
 			s.mu.Lock()
-			now := time.Now()
+			now := s.clk.Now()
 			for id, expiry := range s.entries {
 				if now.After(expiry) {
 					delete(s.entries, id)

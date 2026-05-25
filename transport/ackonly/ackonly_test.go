@@ -88,6 +88,7 @@ func (m *mockAckBackend) getAcked(eventName string) []string {
 }
 
 func TestNew_Defaults(t *testing.T) {
+	t.Parallel()
 	tr := New()
 
 	if tr == nil {
@@ -116,6 +117,7 @@ func TestNew_Defaults(t *testing.T) {
 }
 
 func TestNew_WithBufferSize(t *testing.T) {
+	t.Parallel()
 	tr := New(WithBufferSize(200))
 
 	if tr.bufferSize != 200 {
@@ -124,6 +126,7 @@ func TestNew_WithBufferSize(t *testing.T) {
 }
 
 func TestNew_WithBufferSize_Negative(t *testing.T) {
+	t.Parallel()
 	tr := New(WithBufferSize(-10))
 
 	if tr.bufferSize != 100 {
@@ -132,6 +135,7 @@ func TestNew_WithBufferSize_Negative(t *testing.T) {
 }
 
 func TestNew_WithLogger(t *testing.T) {
+	t.Parallel()
 	logger := slog.Default()
 	tr := New(WithLogger(logger))
 
@@ -141,6 +145,7 @@ func TestNew_WithLogger(t *testing.T) {
 }
 
 func TestNew_WithLogger_Nil(t *testing.T) {
+	t.Parallel()
 	tr := New(WithLogger(nil))
 
 	if tr.logger == nil {
@@ -149,6 +154,7 @@ func TestNew_WithLogger_Nil(t *testing.T) {
 }
 
 func TestNew_WithAckBackend(t *testing.T) {
+	t.Parallel()
 	backend := newMockAckBackend()
 	tr := New(WithAckBackend(backend))
 
@@ -158,6 +164,7 @@ func TestNew_WithAckBackend(t *testing.T) {
 }
 
 func TestNew_WithErrorHandler(t *testing.T) {
+	t.Parallel()
 	var called bool
 	handler := func(err error) {
 		called = true
@@ -173,6 +180,7 @@ func TestNew_WithErrorHandler(t *testing.T) {
 }
 
 func TestNew_WithErrorHandler_Nil(t *testing.T) {
+	t.Parallel()
 	tr := New(WithErrorHandler(nil))
 
 	if tr.onError == nil {
@@ -181,6 +189,7 @@ func TestNew_WithErrorHandler_Nil(t *testing.T) {
 }
 
 func TestRegisterEvent_Success(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -197,6 +206,7 @@ func TestRegisterEvent_Success(t *testing.T) {
 }
 
 func TestRegisterEvent_Duplicate(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -212,6 +222,7 @@ func TestRegisterEvent_Duplicate(t *testing.T) {
 }
 
 func TestRegisterEvent_TransportClosed(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -224,6 +235,7 @@ func TestRegisterEvent_TransportClosed(t *testing.T) {
 }
 
 func TestUnregisterEvent_Success(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -242,6 +254,7 @@ func TestUnregisterEvent_Success(t *testing.T) {
 }
 
 func TestUnregisterEvent_NotRegistered(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -252,6 +265,7 @@ func TestUnregisterEvent_NotRegistered(t *testing.T) {
 }
 
 func TestUnregisterEvent_TransportClosed(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -265,6 +279,7 @@ func TestUnregisterEvent_TransportClosed(t *testing.T) {
 }
 
 func TestUnregisterEvent_ClosesSubscriptions(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -285,6 +300,7 @@ func TestUnregisterEvent_ClosesSubscriptions(t *testing.T) {
 }
 
 func TestPublish_NotSupported(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -299,6 +315,7 @@ func TestPublish_NotSupported(t *testing.T) {
 }
 
 func TestSubscribe_Success(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -323,6 +340,7 @@ func TestSubscribe_Success(t *testing.T) {
 }
 
 func TestSubscribe_EventNotRegistered(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -333,6 +351,7 @@ func TestSubscribe_EventNotRegistered(t *testing.T) {
 }
 
 func TestSubscribe_TransportClosed(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -346,6 +365,7 @@ func TestSubscribe_TransportClosed(t *testing.T) {
 }
 
 func TestSubscribe_CustomBufferSize(t *testing.T) {
+	t.Parallel()
 	tr := New(WithBufferSize(100))
 	ctx := context.Background()
 
@@ -363,6 +383,7 @@ func TestSubscribe_CustomBufferSize(t *testing.T) {
 }
 
 func TestDeliver_ToSubscribers(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -398,6 +419,7 @@ func TestDeliver_ToSubscribers(t *testing.T) {
 }
 
 func TestDeliver_EventNotRegistered(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -410,6 +432,7 @@ func TestDeliver_EventNotRegistered(t *testing.T) {
 }
 
 func TestDeliver_TransportClosed(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -425,6 +448,7 @@ func TestDeliver_TransportClosed(t *testing.T) {
 }
 
 func TestDeliver_WithAckBackend(t *testing.T) {
+	t.Parallel()
 	backend := newMockAckBackend()
 	tr := New(WithAckBackend(backend))
 	ctx := context.Background()
@@ -463,6 +487,7 @@ func TestDeliver_WithAckBackend(t *testing.T) {
 }
 
 func TestDeliver_AckBackend_StoreError(t *testing.T) {
+	t.Parallel()
 	backend := newMockAckBackend()
 	backend.storeErr = errors.New("store failed")
 
@@ -498,6 +523,7 @@ func TestDeliver_AckBackend_StoreError(t *testing.T) {
 }
 
 func TestDeliver_NoSubscribers(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -513,6 +539,7 @@ func TestDeliver_NoSubscribers(t *testing.T) {
 }
 
 func TestDeliver_ClosedSubscriber(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -530,6 +557,7 @@ func TestDeliver_ClosedSubscriber(t *testing.T) {
 }
 
 func TestClose_Success(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -557,6 +585,7 @@ func TestClose_Success(t *testing.T) {
 }
 
 func TestClose_Idempotent(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -573,6 +602,7 @@ func TestClose_Idempotent(t *testing.T) {
 }
 
 func TestClose_MultipleSubscriptions(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -603,6 +633,7 @@ func TestClose_MultipleSubscriptions(t *testing.T) {
 }
 
 func TestHealth_Healthy(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -648,6 +679,7 @@ func TestHealth_Healthy(t *testing.T) {
 }
 
 func TestHealth_WithAckBackend(t *testing.T) {
+	t.Parallel()
 	backend := newMockAckBackend()
 	tr := New(WithAckBackend(backend))
 	ctx := context.Background()
@@ -660,6 +692,7 @@ func TestHealth_WithAckBackend(t *testing.T) {
 }
 
 func TestHealth_Unhealthy(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -677,6 +710,7 @@ func TestHealth_Unhealthy(t *testing.T) {
 }
 
 func TestSubscription_Close(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -700,6 +734,7 @@ func TestSubscription_Close(t *testing.T) {
 }
 
 func TestDeliver_ConcurrentSubscribers(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 

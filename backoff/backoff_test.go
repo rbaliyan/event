@@ -6,6 +6,7 @@ import (
 )
 
 func TestConstant(t *testing.T) {
+	t.Parallel()
 	strategy := &Constant{Delay: 100 * time.Millisecond}
 
 	for i := 0; i < 10; i++ {
@@ -17,6 +18,7 @@ func TestConstant(t *testing.T) {
 }
 
 func TestLinear(t *testing.T) {
+	t.Parallel()
 	strategy := &Linear{
 		Initial: 100 * time.Millisecond,
 		Step:    50 * time.Millisecond,
@@ -45,6 +47,7 @@ func TestLinear(t *testing.T) {
 }
 
 func TestLinear_NoMax(t *testing.T) {
+	t.Parallel()
 	strategy := &Linear{
 		Initial: 100 * time.Millisecond,
 		Step:    100 * time.Millisecond,
@@ -59,6 +62,7 @@ func TestLinear_NoMax(t *testing.T) {
 }
 
 func TestExponential(t *testing.T) {
+	t.Parallel()
 	strategy := &Exponential{
 		Initial:    100 * time.Millisecond,
 		Multiplier: 2.0,
@@ -87,6 +91,7 @@ func TestExponential(t *testing.T) {
 }
 
 func TestExponential_DefaultMultiplier(t *testing.T) {
+	t.Parallel()
 	strategy := &Exponential{
 		Initial:    100 * time.Millisecond,
 		Multiplier: 0, // Should default to 2.0
@@ -101,6 +106,7 @@ func TestExponential_DefaultMultiplier(t *testing.T) {
 }
 
 func TestExponential_NoMax(t *testing.T) {
+	t.Parallel()
 	strategy := &Exponential{
 		Initial:    100 * time.Millisecond,
 		Multiplier: 2.0,
@@ -116,6 +122,7 @@ func TestExponential_NoMax(t *testing.T) {
 }
 
 func TestExponential_WithJitter(t *testing.T) {
+	t.Parallel()
 	strategy := &Exponential{
 		Initial:    100 * time.Millisecond,
 		Multiplier: 2.0,
@@ -139,6 +146,7 @@ func TestExponential_WithJitter(t *testing.T) {
 }
 
 func TestDefault(t *testing.T) {
+	t.Parallel()
 	strategy := Default()
 
 	// Verify it's an Exponential strategy
@@ -162,6 +170,7 @@ func TestDefault(t *testing.T) {
 }
 
 func TestNone(t *testing.T) {
+	t.Parallel()
 	strategy := None()
 
 	for i := 0; i < 10; i++ {
@@ -173,6 +182,7 @@ func TestNone(t *testing.T) {
 }
 
 func TestFixed(t *testing.T) {
+	t.Parallel()
 	strategy := Fixed(500 * time.Millisecond)
 
 	for i := 0; i < 10; i++ {
@@ -184,6 +194,7 @@ func TestFixed(t *testing.T) {
 }
 
 func TestExponential_CustomMultiplier(t *testing.T) {
+	t.Parallel()
 	strategy := &Exponential{
 		Initial:    100 * time.Millisecond,
 		Multiplier: 3.0,
