@@ -143,7 +143,9 @@ func main() {
 }
 ```
 
-## Bus Options Reference
+## Options Reference
+
+### Bus Options
 
 `event.NewBus(name, opts ...BusOption)` accepts the following options (godoc in `bus_options.go`):
 
@@ -151,7 +153,6 @@ func main() {
 |--------|---------|--------------|
 | `WithTransport(t)` | required | The underlying transport (channel, redis, nats, kafka, …). |
 | `WithLogger(l *slog.Logger)` | `slog.Default()` | Structured logger; component label is `bus>{name}`. |
-| `WithSubscriberTimeout(d)` | 0 (no timeout) | Per-message handler deadline applied to subscriber contexts. |
 | `WithRecovery(bool)` | `true` | Wrap handlers in panic recovery; on panic the message is treated as `Defer`. |
 | `WithTracing(bool)` | `true` | OpenTelemetry span creation around handler invocation. |
 | `WithMetrics(bool)` | `true` | OpenTelemetry counters / histograms for publish + handler. |
@@ -161,10 +162,32 @@ func main() {
 | `WithMonitor(store)` | nil | Records per-message processing state. See [Event Monitoring](#event-monitoring). |
 | `WithSchemaProvider(p)` | nil | Subscribers auto-load `EventSchema` config on register. |
 | `WithStrictSchema(bool)` | `false` | When true, schema provider errors fail `Register` instead of being logged. |
-| `WithDLQ(store)` | nil | Bus-level Dead Letter Queue. Rejected / max-retry / decode-error messages route here automatically. |
-| `WithPublishAudit(store)` | nil | Producer-side audit log of every successful `transport.Publish`. Closes the gap between "published" and "processed" when monitoring. |
+| `WithDLQ(store)` | nil | Bus-level Dead Letter Queue. Rejected / max-retry / decode-error messages route here automatically. Wrap an existing event-dlq store with `dlq.NewStoreAdapter(store, "service-name")`. |
+| `WithPublishAudit(store)` | nil | Producer-side audit log of every successful `transport.Publish`. Closes the gap between "published" and "processed". Any monitor store (e.g. `monitor.NewMemoryStore()`) doubles as a `PublishAuditStore`. |
 | `WithDrainTimeout(d)` | 0 (no wait) | Maximum time `Bus.Close()` blocks waiting for in-flight handlers to finish. |
 | `WithAll(opts ...)` | — | Combiner for composing `BusOption`s from sub-packages (`stack.WithReliabilityStack(...)`, etc.). |
+
+### Event Options
+
+Options passed to `event.New[T](name, opts ...Option)` (godoc in `option.go`):
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| `WithSubscriberTimeout(d)` | 0 (no timeout) | Per-message handler deadline applied to subscriber contexts for this event. |
+| `WithErrorHandler(fn)` | nil | Custom error sink called when a panic is recovered in a handler for this event. |
+| `WithMaxRetries(n)` | transport default | Cap on retry attempts before the message is rejected to the DLQ. |
+| `WithPayloadCodec(c)` | JSON | Override the codec used to encode/decode this event's payload. |
+| `WithMessageFilter(f)` | nil | Predicate over metadata. Subscribers skip messages where `f(metadata) == false`. |
+| `WithDecodeErrorHandler(fn)` | nil | Per-event hook to decide what to do with a decode failure (`nil` → ack and drop; `ErrReject` → route to DLQ). |
+
+### Subscribe Options
+
+Passed to `Event.Subscribe(ctx, handler, opts ...SubscribeOption[T])`. The full set is documented in `option.go`; commonly-used:
+
+- `AsBroadcast[T]()` / `AsWorker[T]()` / `WithWorkerGroup[T](name)` — see [Delivery Modes](#delivery-modes).
+- `WithMiddleware(...)`, `WithMiddlewareChain[T](chain)` — chain user middleware. Schema-controlled middleware runs outside this chain (see [COMPATIBILITY.md](COMPATIBILITY.md#middleware-chain-order)).
+- `WithSubscriberName[T](name)`, `WithSubscriberDescription[T](desc)` — labels surfaced in topology, monitoring, and traces.
+- `WithLatestOnly[T]()`, `WithMaxAge[T](d)`, `WithBufferSize[T](size)` — backpressure / freshness tuning.
 
 For transport-specific options (`redis.WithAutoRecreateGroup`, `nats.WithJetStream`, etc.) see the transport sections below.
 
@@ -332,12 +355,10 @@ Recover from `NOGROUP` errors when the consumer group (or its stream) disappears
 transport, _ := redis.New(rdb,
     // Enable per-mode. Broadcast is low blast radius (per-Subscribe throwaway
     // group). WorkerPool is high blast radius (shared cluster-wide PEL is
-    // Enable per-mode. Broadcast is low blast radius (per-Subscribe throwaway
-    // group). WorkerPool is high blast radius (shared cluster-wide PEL is
     // dropped on recreate) — opt in only when at-least-once gaps across Redis
-    // state loss are acceptable. `redis.RecreateAll` is the
-    // shorthand for `RecreateBroadcast | RecreateWorkerPool`.
-    redis.WithAutoRecreateGroup(redis.RecreateBroadcast | redis.RecreateWorkerPool),
+    // state loss are acceptable. Use redis.RecreateAll as a shorthand for
+    // RecreateBroadcast | RecreateWorkerPool.
+    redis.WithAutoRecreateGroup(redis.RecreateAll),
 
     // Optional: observe recreate events (wire a metric counter or alert here).
     // mode.String() yields one of "none" / "broadcast" / "worker_pool" / "all"
@@ -960,10 +981,16 @@ func TestOrderHandler(t *testing.T) {
 
 The repo's own tests use an internal `clock.Clock` interface so they
 can cross TTL and stale-timeout boundaries deterministically instead of
-sleeping. Several stores
-(`distributed.MemoryStateManager`, `idempotency.MemoryStore`,
-`poison.MemoryStore`, `transport/bridge.MemoryCoordinator`) accept the
-fake clock through an unexported `withClock` test hook.
+sleeping. The hook is on:
+
+- `distributed.MemoryStateManager` / `distributed.RedisStateManager`
+- `idempotency.MemoryStore`
+- `poison.MemoryStore`
+- `transport.CircuitBreaker`
+- `transport/bridge.MemoryCoordinator` (via `SetClockForTesting` from `export_test.go`)
+
+The other stores use `withClock` — an unexported option that production
+code never sees.
 
 This pattern is **internal to this repository**. The `internal/clock`
 package and the `withClock` options are not part of the public API and

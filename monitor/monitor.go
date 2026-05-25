@@ -17,7 +17,10 @@
 // Example usage:
 //
 //	// Create a PostgreSQL monitor store
-//	store := monitor.NewPostgresStore(db)
+//	store, err := monitor.NewPostgresStore(db)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //	defer store.Close()
 //
 //	// Add monitor middleware to subscription

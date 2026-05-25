@@ -61,10 +61,15 @@ gained internal Clock injection hooks (described below) for testability.
   `testutil.Clock` etc. so callers in this repo can share fake-clock
   semantics across packages without an import cycle.
 - Unexported `withClock` test hooks on `distributed.MemoryStateManager`,
-  `idempotency.MemoryStore`, `poison.MemoryStore`,
-  `transport/bridge.MemoryCoordinator`, and the coalescer. Production
+  `distributed.RedisStateManager`, `idempotency.MemoryStore`,
+  `poison.MemoryStore`, and `transport.CircuitBreaker`. The
+  `transport/bridge.MemoryCoordinator` uses an analogous
+  `SetClockForTesting` hook exposed via `export_test.go`. Production
   callers always get `clock.Real{}`; tests inject `clock.Fake` to cross
-  TTL/stale-timeout boundaries deterministically.
+  TTL/stale-timeout boundaries deterministically. The coalescer takes
+  the related-but-distinct `inputsHandled` counter approach (#149)
+  rather than a clock hook, since it needs goroutine-handoff ordering
+  rather than time travel.
 - `coalesce.baseCoalescer.inputsHandled` atomic counter (one deferred
   `Add(1)` per processed message — negligible hot-path cost). Tests use it
   as a barrier between sequential sends and the subsequent `done` signal.

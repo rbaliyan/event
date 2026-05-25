@@ -214,7 +214,9 @@ Bus-level outbox support for atomic database writes with event publishing:
 
 **Configuration:**
 ```go
-store, _ := outbox.NewMongoStore(db)
+// PostgreSQL (in-module). For MongoDB, import the equivalent constructor
+// from the event-mongodb module.
+store, _ := outbox.NewPostgresStore(db)
 bus, _ := event.NewBus("mybus",
     event.WithTransport(transport),
     event.WithOutbox(store),  // Enables outbox routing
@@ -245,7 +247,7 @@ if err := tx.Commit(); err != nil {
 
 For MongoDB the `event-mongodb` module wires the same `WithOutboxTx`
 pattern through `mongo.Session.WithTransaction` so the session value
-is available to `MongoOutboxStore.Store`.
+is available to the MongoDB outbox store's `Store` method.
 
 **How it works:**
 1. `event.WithOutboxTx(ctx, session)` stores the session/tx on the context.

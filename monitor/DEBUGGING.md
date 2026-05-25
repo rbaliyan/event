@@ -688,6 +688,11 @@ failover to an empty replica, eviction under maxmemory). Configure with
   flapping group does not hot-loop. Treat sustained increase in the
   counter as a backing-store alert, not a missing-message alert.
 
+**What's not recovered:**
+The destroyed group's Pending Entries List is unrecoverable. Messages
+published in the gap between destruction and recreate are not delivered
+to a broadcast subscription that started at `$`.
+
 ### `WithPublishAudit` — closing the publish → process gap
 
 When monitor entries are missing for events you know were published, the
@@ -704,25 +709,26 @@ it published" and "consumer recorded a monitor entry" is observable:
 | No | No | Producer side: the bus never published. Check the publisher's error return, outbox routing (`InOutboxTx`), and DLQ for rejected publish attempts. |
 | No | Yes | (Rare.) Monitor recorded an event the audit didn't — usually means an event was injected via `bus.Send` rather than `Event.Publish`. |
 
-Wire it once on the bus:
+Wire it once on the bus. `event.PublishAuditStore` is satisfied by any
+monitor store, so the simplest setup reuses the monitor store you
+already have:
 
 ```go
-audit, _ := outbox.NewPostgresAuditStore(db) // or your store
+monitorStore := monitor.NewMemoryStore()             // or monitor.NewPostgresStore(db)
 bus, _ := event.NewBus("orders",
     event.WithTransport(transport),
-    event.WithPublishAudit(audit),
     event.WithMonitor(monitorStore),
+    event.WithPublishAudit(monitorStore),            // same store; doubles as audit store
 )
 ```
+
+`stack.WithReliabilityStack(...)` auto-promotes the configured monitor
+store to also serve as the publish-audit store, so applications using
+the reliability stack get this wiring for free.
 
 Outbox-routed publishes (inside `event.WithOutboxTx`) are *not* recorded
 in the audit — the publish doesn't reach the transport until the relay
 runs. The relay's own publish is audited normally.
-
-**What's not recovered:**
-The destroyed group's Pending Entries List is unrecoverable. Messages
-published in the gap between destruction and recreate are not delivered
-to a broadcast subscription that started at `$`.
 
 ### Reading Monitor Entry Fields
 

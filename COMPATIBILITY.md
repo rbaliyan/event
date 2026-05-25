@@ -35,6 +35,15 @@ if eventerrors.IsVersionConflict(err) { ... }
 - `ErrClosed` - component closed
 - `ErrTimeout` - operation timed out
 - `ErrInvalidArgument` - validation failed
+- `ErrMaxRetriesExceeded` - retry budget exhausted
+- `ErrStorageUnavailable` - backing store temporarily unreachable
+- `ErrScheduledInPast` - attempted to schedule a message at a past time
+- `ErrTransportUnavailable` - transport connection lost
+
+The root `event` package's sentinel cross-reference block in
+`errors.go` enumerates every error reachable from the v3 module
+including sub-package sentinels — single source of truth for
+`errors.Is` callers.
 
 ### event/v3/health
 
@@ -111,13 +120,17 @@ No breaking changes planned. All v3.x APIs will remain stable.
   consumer group is created on first Subscribe rather than at
   RegisterEvent. Callers that introspected groups between RegisterEvent and
   Subscribe must adjust.
-- **Internal `clock.Clock` injection** (test-only, v3.17.x): four stores
-  (`distributed.MemoryStateManager`, `idempotency.MemoryStore`,
-  `poison.MemoryStore`, `transport/bridge.MemoryCoordinator`) gained an
-  unexported `withClock` test hook backed by `internal/clock`. Not a
-  breaking change for external consumers — `internal/` paths cannot be
-  imported externally — but recorded here so downstream maintainers can
-  correlate the test-quality lift with the diff.
+- **Internal `clock.Clock` injection** (test-only, v3.17.x): the
+  `distributed.MemoryStateManager`, `distributed.RedisStateManager`,
+  `idempotency.MemoryStore`, `poison.MemoryStore`, and
+  `transport.CircuitBreaker` stores gained an unexported `withClock`
+  test hook backed by `internal/clock`. The
+  `transport/bridge.MemoryCoordinator` exposes the same capability via
+  a `SetClockForTesting` method in `export_test.go`. Not a breaking
+  change for external consumers — `internal/` paths cannot be imported
+  externally — but recorded here so downstream maintainers can
+  correlate the test-quality lift with the diff. See CHANGELOG.md for
+  the PR-by-PR breakdown.
 
 ### v2.x to v3.x
 

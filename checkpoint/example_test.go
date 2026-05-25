@@ -181,11 +181,13 @@ func Example_redisStore() {
 	//   })
 	//
 	//   // Basic store
-	//   store := checkpoint.NewRedisStore(client, "myapp:checkpoints")
+	//   store, err := checkpoint.NewRedisStore(client, "myapp:checkpoints")
+	//   if err != nil { log.Fatal(err) }
 	//
 	//   // With TTL - checkpoints expire after 7 days of inactivity
-	//   store := checkpoint.NewRedisStore(client, "myapp:checkpoints",
+	//   store, err = checkpoint.NewRedisStore(client, "myapp:checkpoints",
 	//       checkpoint.WithTTL(7*24*time.Hour))
+	//   if err != nil { log.Fatal(err) }
 	//
 	//   // Usage is identical to MemoryCheckpointStore
 	//   err := store.Save(ctx, "subscriber-id", time.Now())

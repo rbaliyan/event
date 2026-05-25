@@ -36,7 +36,8 @@
 //	// Publish
 //	userEvent.Publish(ctx, User{ID: "123", Name: "John"})
 //
-// Bus Options:
+// Bus Options Reference (see README.md "Options Reference" for the canonical
+// table; bus_options.go for full godoc):
 //   - WithTransport: set transport (required). Use channel.New(), redis.New(), etc.
 //   - WithTracing: enable/disable OpenTelemetry tracing. Default is true.
 //   - WithRecovery: enable/disable panic recovery in handlers. Default is true.
@@ -49,15 +50,30 @@
 //   - WithStrictSchema: fail registration if schema provider returns an error.
 //   - WithOutbox: set outbox store for transactional event publishing.
 //   - WithDLQ: set DLQ store for automatic dead letter routing.
+//   - WithPublishAudit: record every successful transport.Publish for
+//     publish-vs-process gap triage; any monitor store satisfies the
+//     PublishAuditStore interface.
+//   - WithDrainTimeout: maximum time Bus.Close() blocks waiting for
+//     in-flight handlers. Default is 0 (no wait).
+//   - WithAll: combiner that fans a slice of BusOption values into one
+//     option; used by sub-packages such as stack.WithReliabilityStack.
 //
-// Event Options:
+// Event Options (option.go):
 //   - WithSubscriberTimeout: set handler execution timeout. Default is 0 (no timeout).
 //   - WithErrorHandler: set panic recovery error callback.
 //   - WithMaxRetries: set max retry attempts before sending to DLQ. Default is 0 (unlimited).
-// Subscribe Options:
+//   - WithPayloadCodec: override codec for this event's payload.
+//   - WithMessageFilter: predicate over metadata; subscribers skip false-results.
+//   - WithDecodeErrorHandler: decide what to do with a decode failure
+//     (nil → ack and drop; ErrReject → route to DLQ).
+//
+// Subscribe Options (option.go):
 //   - AsWorker: use WorkerPool mode (load balancing - one subscriber receives each message).
 //   - AsBroadcast: use Broadcast mode (fan-out - all subscribers receive each message). Default.
-//   - WithMiddleware: add custom middleware to the handler chain.
+//   - WithWorkerGroup: name a worker group; multiple groups each receive all messages, workers within compete.
+//   - WithMiddleware / WithMiddlewareChain: add custom middleware to the handler chain.
+//   - WithLatestOnly / WithMaxAge / WithBufferSize: freshness / backpressure tuning.
+//   - WithSubscriberName / WithSubscriberDescription: labels surfaced in topology, monitor entries, and traces.
 //
 // Bus Registry:
 // Buses are registered globally by name. Events can be accessed via full name syntax:

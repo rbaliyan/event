@@ -27,7 +27,7 @@ import (
 // Sub-package sentinels (errors.Is-compatible across the v3 module):
 //
 //   - idempotency.ErrAlreadyProcessed
-//   - poison.NewError (typed PoisonError; check via errors.As)
+//   - poison.Error (typed; constructed via poison.NewError, checked via errors.As)
 //   - schema.ErrSchemaNotFound, schema.ErrInvalidPayload,
 //     schema.ErrNoUpcaster
 //   - transport.ErrEventNotRegistered, transport.ErrEventAlreadyExists,
