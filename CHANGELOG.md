@@ -11,26 +11,49 @@ the project uses [Semantic Versioning](https://semver.org/). See
 ## Unreleased
 
 ### Added
-- Documentation: top-level `Sub-packages` table in README; `Deterministic
-  time with internal/clock` testing section; running `CHANGELOG.md`.
+- Documentation: top-level `Sub-packages` table in README;
+  `Deterministic time in tests` section (clarified as internal-only and
+  rewritten with bare identifiers); running `CHANGELOG.md`.
+- README "Bus Options Reference" table covering every `WithX` BusOption,
+  including the previously-undocumented `WithDLQ`, `WithDrainTimeout`,
+  `WithStrictSchema`, `WithPublishAudit`, `WithAll`.
 - `partition/`: package-level godoc.
+- `monitor/`: package doc now lists in-module stores (Memory, Postgres)
+  and points readers to event-mongodb for the MongoDB-backed store.
 - `checkpoint/`: package doc now points readers to the MongoDB store in
   `event-mongodb`.
 - `schema/`: consolidated package doc that covers both `EventSchema`
-  configuration registry and payload-schema evolution.
+  configuration registry and payload-schema evolution; example code
+  uses real `schema.NewMemoryProvider` + `Set` API.
+- `errors.go`: cross-reference block now enumerates every sentinel error
+  reachable from the v3 module (root package + sub-packages +
+  cross-ecosystem `errors/` package).
+- `monitor/DEBUGGING.md`: NOGROUP / `WithAutoRecreateGroup` operational
+  section with per-mode blast-radius matrix.
 
 ### Fixed
 - README: removed the incorrect "fire-and-forget / void Publish/Subscribe"
-  claim; both methods have always returned `error`.
+  claim; both methods have always returned `error`. Quick-start example
+  now checks the returned error.
+- README: MongoDB CDC snippet imports `mongo/options` and uses the
+  v2-driver `mongo.Connect(opts ...)` signature (no `ctx` argument).
+- README: `checkpoint` sub-package row now lists only the backends that
+  exist in-module (memory, Redis), with MongoDB called out as living in
+  `event-mongodb`.
 - `CLAUDE.md`: outbox usage example now uses the actual
   `event.WithOutboxTx(ctx, session)` API instead of a non-existent
   `outbox.Transaction` helper.
+- `COMPATIBILITY.md`: Go-version cells updated from 1.25.x to 1.26.3
+  matching the module's `go.mod`.
 
 ## v3.17.x — Test-quality lift (2026-Q2)
 
 A multi-PR initiative to make the test suite deterministic, parallel-safe,
 and observably faster. No production API changes; production code only
 gained internal Clock injection hooks (described below) for testability.
+
+### Toolchain
+- Go module bumped to `1.26.3` and golangci-lint to `2.11.4` (#115).
 
 ### Added
 - `internal/clock` leaf package exposing `Clock` (`Now`, `Since`, `Sleep`),
@@ -87,6 +110,9 @@ gained internal Clock injection hooks (described below) for testability.
 - `transport/redis`: the base consumer group is created on first
   Subscribe rather than at RegisterEvent, so callers that never Subscribe
   on a registered event no longer trigger an upstream group write (#120).
+  Subscribers gain a tiny one-time cost on first Subscribe in exchange
+  for not creating throwaway groups for register-but-never-subscribe
+  events.
 
 ## v3.15.x and earlier — MongoDB store extraction
 

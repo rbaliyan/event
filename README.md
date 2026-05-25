@@ -63,7 +63,7 @@ Top-level sub-packages of `github.com/rbaliyan/event/v3`. Each has its own godoc
 |------|---------|
 | `backoff` | Exponential / linear / constant retry strategies with jitter |
 | `batch` | Batch publish helpers for high-throughput producers |
-| `checkpoint` | Subscriber checkpoint persistence (memory, file, Redis, PostgreSQL) |
+| `checkpoint` | Subscriber checkpoint persistence (memory, Redis; MongoDB via [event-mongodb](https://github.com/rbaliyan/event-mongodb)) |
 | `distributed` | WorkerPool semantics on broadcast-only transports + recovery runner |
 | `errors` | Shared sentinel errors and `Wrap*` helpers |
 | `health` | `Checker` interface and aggregator for transport / store health |
@@ -135,10 +135,38 @@ func main() {
         return nil
     })
 
-    // Publish (fire-and-forget)
-    orderEvent.Publish(ctx, Order{ID: "ORD-123", Amount: 99.99})
+    // Publish — returns error so the caller can surface transport
+    // failures or unregistered-event mistakes.
+    if err := orderEvent.Publish(ctx, Order{ID: "ORD-123", Amount: 99.99}); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
+
+## Bus Options Reference
+
+`event.NewBus(name, opts ...BusOption)` accepts the following options (godoc in `bus_options.go`):
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| `WithTransport(t)` | required | The underlying transport (channel, redis, nats, kafka, …). |
+| `WithLogger(l *slog.Logger)` | `slog.Default()` | Structured logger; component label is `bus>{name}`. |
+| `WithSubscriberTimeout(d)` | 0 (no timeout) | Per-message handler deadline applied to subscriber contexts. |
+| `WithRecovery(bool)` | `true` | Wrap handlers in panic recovery; on panic the message is treated as `Defer`. |
+| `WithTracing(bool)` | `true` | OpenTelemetry span creation around handler invocation. |
+| `WithMetrics(bool)` | `true` | OpenTelemetry counters / histograms for publish + handler. |
+| `WithOutbox(store)` | nil | When set, publishes inside `WithOutboxTx` route to the outbox instead of the transport. |
+| `WithIdempotency(store)` | nil | Bus-level idempotency middleware. See [Idempotency](#idempotency). |
+| `WithPoisonDetection(detector)` | nil | Bus-level quarantine middleware. See [Poison Message Detection](#poison-message-detection). |
+| `WithMonitor(store)` | nil | Records per-message processing state. See [Event Monitoring](#event-monitoring). |
+| `WithSchemaProvider(p)` | nil | Subscribers auto-load `EventSchema` config on register. |
+| `WithStrictSchema(bool)` | `false` | When true, schema provider errors fail `Register` instead of being logged. |
+| `WithDLQ(store)` | nil | Bus-level Dead Letter Queue. Rejected / max-retry / decode-error messages route here automatically. |
+| `WithPublishAudit(store)` | nil | Producer-side audit log of every successful `transport.Publish`. Closes the gap between "published" and "processed" when monitoring. |
+| `WithDrainTimeout(d)` | 0 (no wait) | Maximum time `Bus.Close()` blocks waiting for in-flight handlers to finish. |
+| `WithAll(opts ...)` | — | Combiner for composing `BusOption`s from sub-packages (`stack.WithReliabilityStack(...)`, etc.). |
+
+For transport-specific options (`redis.WithAutoRecreateGroup`, `nats.WithJetStream`, etc.) see the transport sections below.
 
 ## Transports
 
@@ -234,12 +262,13 @@ import (
     "github.com/rbaliyan/event/v3"
     mongodb "github.com/rbaliyan/event-mongodb"
     "go.mongodb.org/mongo-driver/v2/mongo"
+    "go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 func main() {
     ctx := context.Background()
 
-    client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+    client, _ := mongo.Connect(options.Client().ApplyURI("mongodb://localhost:27017"))
     db := client.Database("myapp")
 
     // Watch a specific collection
@@ -303,11 +332,16 @@ Recover from `NOGROUP` errors when the consumer group (or its stream) disappears
 transport, _ := redis.New(rdb,
     // Enable per-mode. Broadcast is low blast radius (per-Subscribe throwaway
     // group). WorkerPool is high blast radius (shared cluster-wide PEL is
+    // Enable per-mode. Broadcast is low blast radius (per-Subscribe throwaway
+    // group). WorkerPool is high blast radius (shared cluster-wide PEL is
     // dropped on recreate) — opt in only when at-least-once gaps across Redis
-    // state loss are acceptable.
+    // state loss are acceptable. `redis.RecreateAll` is the
+    // shorthand for `RecreateBroadcast | RecreateWorkerPool`.
     redis.WithAutoRecreateGroup(redis.RecreateBroadcast | redis.RecreateWorkerPool),
 
     // Optional: observe recreate events (wire a metric counter or alert here).
+    // mode.String() yields one of "none" / "broadcast" / "worker_pool" / "all"
+    // — safe to use directly as a Prometheus label value.
     redis.WithRecreateHandler(func(stream, group string, mode redis.RecreateMode) {
         recreatesTotal.WithLabelValues(stream, group, mode.String()).Inc()
     }),
@@ -481,7 +515,7 @@ runner, _ := distributed.NewRecoveryRunner(coord,
 go runner.Run(ctx)
 ```
 
-For MongoDB-backed payload recovery, use `distributed.NewMongoStateManager` from the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module.
+For MongoDB-backed payload recovery, use `distributed.NewMongoStateManager(collection, opts ...)` from the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module. The constructor takes a `*mongo.Collection` (not a Redis client) — same `WorkerStore` / `PayloadStore` interface, MongoDB-native locking primitives.
 
 Recovery is two-phase:
 1. **Re-publish**: Stale entries with stored payload are re-published via the bus with a new event ID
@@ -922,39 +956,36 @@ func TestOrderHandler(t *testing.T) {
 }
 ```
 
-### Deterministic time with `internal/clock`
+### Deterministic time in tests (internal pattern)
 
-Several stores (`distributed.MemoryStateManager`, `idempotency.MemoryStore`,
-`poison.MemoryStore`, `transport/bridge.MemoryCoordinator`) accept a
-`clock.Clock` via an unexported `withClock` test hook. Tests construct a
-`clock.NewFake(...)` instance and call `Advance(d)` to cross TTL or
-stale-timeout boundaries deterministically — no `time.Sleep` required.
+The repo's own tests use an internal `clock.Clock` interface so they
+can cross TTL and stale-timeout boundaries deterministically instead of
+sleeping. Several stores
+(`distributed.MemoryStateManager`, `idempotency.MemoryStore`,
+`poison.MemoryStore`, `transport/bridge.MemoryCoordinator`) accept the
+fake clock through an unexported `withClock` test hook.
 
-The `clock.Clock` interface and its `Real` / `Fake` implementations live
-in `internal/clock` (a leaf package, so they're available to both
-production code and `internal/testutil` without cycles). Tests inside
-the same package as the store reach the hook directly; tests in other
-packages within this repo go through `internal/testutil`, which
-re-exports `clock.Clock` as `testutil.Clock` etc.
+This pattern is **internal to this repository**. The `internal/clock`
+package and the `withClock` options are not part of the public API and
+cannot be imported by external consumers (Go enforces the `internal/`
+import-path rule). Production callers always get the real clock,
+installed as the default in each constructor.
 
-This pattern is internal — external consumers should not depend on
-`withClock` or `internal/clock`. Production callers always get the real
-clock, set as the default in each constructor.
+A shape of how tests inside a store's own package use the hook:
 
 ```go
-import "github.com/rbaliyan/event/v3/internal/clock"
-
-// inside the same package as the store under test:
+// distributed/payload_test.go (excerpt)
 clk := clock.NewFake(time.Time{})
-sm := distributed.NewMemoryStateManager(distributed.WithCleanup(false, 0), withClock(clk))
+sm := NewMemoryStateManager(WithCleanup(false, 0), withClock(clk))
 sm.Acquire(ctx, "msg-1", 10*time.Millisecond)
 clk.Advance(20 * time.Millisecond) // cross the TTL boundary
-// now sm.Acquire("msg-1") succeeds again
+// next sm.Acquire("msg-1") succeeds
 ```
 
-For cross-package tests, see `internal/testutil/clock.go` and the
-`Eventually` / `WaitFor` polling helpers in
-`internal/testutil/eventually.go`.
+Tests in other packages within this repo reach `clock.Clock` through
+`internal/testutil/clock.go`, which re-exports the type aliases. See
+`internal/testutil/eventually.go` for the `Eventually` / `WaitFor`
+polling helpers that pair with the fake clock.
 
 ## Message Routing
 

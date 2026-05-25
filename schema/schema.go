@@ -16,8 +16,9 @@
 //     retention. For MongoDB use the event-mongodb module
 //     (https://github.com/rbaliyan/event-mongodb).
 //
-//	// Publisher registers schema
-//	err := schema.Register(ctx, bus, &schema.EventSchema{
+//	// Publisher stores the schema in a provider...
+//	provider := schema.NewMemoryProvider()
+//	_ = provider.Set(ctx, &schema.EventSchema{
 //	    Name:              "order.created",
 //	    Version:           1,
 //	    SubTimeout:        30 * time.Second,
@@ -26,9 +27,16 @@
 //	    EnableIdempotency: true,
 //	})
 //
-//	// Subscriber auto-loads schema on Register()
+//	// ...and wires the provider into the bus.
+//	bus, _ := event.NewBus("orders",
+//	    event.WithTransport(transport),
+//	    event.WithSchemaProvider(provider),
+//	)
+//
+//	// Subscribers auto-load the schema when the event is registered with
+//	// the bus; no extra call is needed.
 //	orderEvent := event.New[Order]("order.created")
-//	event.Register(ctx, bus, orderEvent)
+//	_ = event.Register(ctx, bus, orderEvent)
 //
 // # 2. Payload-schema evolution
 //

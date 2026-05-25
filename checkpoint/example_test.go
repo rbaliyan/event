@@ -240,7 +240,8 @@ func Example_withEventSubscription() {
 	//   // Create checkpoint store (any implementation)
 	//   checkpointStore := checkpoint.NewMemoryCheckpointStore()
 	//   // Or: checkpoint.NewRedisStore(redisClient, "checkpoints")
-	//   // Or: checkpoint.NewMongoStore(mongoCollection)
+	//   // Or for MongoDB: see the event-mongodb module
+	//   //   (github.com/rbaliyan/event-mongodb)
 	//
 	//   // Subscribe with checkpoint support
 	//   orderEvent.Subscribe(ctx, handler,

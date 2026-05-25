@@ -667,20 +667,57 @@ failover to an empty replica, eviction under maxmemory). Configure with
 
 **Operational impact by mode:**
 
-| Mode | Blast radius on recreate | When to enable |
-|------|--------------------------|----------------|
-| `RecreateBroadcast` | Low. Broadcast subscriptions own throwaway per-Subscribe groups; PEL loss only affects messages in flight to one replica. | Almost always; the gap window is small and recovery beats a manual process restart. |
-| `RecreateWorkerPool` | High. Worker-pool groups are shared cluster-wide; recreate drops the entire PEL (every other replica's in-flight messages). | Only when at-least-once gaps across Redis state loss are acceptable. |
-| `RecreateMode(0)` (default) | None. Behavior unchanged: NOGROUP retries with exponential backoff and never recovers without a restart. | Default. Choose explicitly via the option above. |
+| Mode | `mode.String()` | Blast radius on recreate | When to enable |
+|------|-----------------|--------------------------|----------------|
+| `RecreateMode(0)` (default) | `"none"` | None. Behavior unchanged: NOGROUP retries with exponential backoff and never recovers without a restart. | Default. Choose explicitly via the option above. |
+| `RecreateBroadcast` | `"broadcast"` | Low. Broadcast subscriptions own throwaway per-Subscribe groups; PEL loss only affects messages in flight to one replica. | Almost always — gap window is small and recovery beats a manual process restart. |
+| `RecreateWorkerPool` | `"worker_pool"` | High. Worker-pool groups are shared cluster-wide; recreate drops the entire PEL (every other replica's in-flight messages). | Only when at-least-once gaps across Redis state loss are acceptable. |
+| `RecreateAll` (= `RecreateBroadcast \| RecreateWorkerPool`) | `"all"` | Mixed — see broadcast / worker-pool rows above. | Convenient shorthand when enabling both modes. |
 
 **Detection signals:**
 - `consumer group recreated after NOGROUP` (Warn-level log) on each
-  recreate.
-- If wired, the `WithRecreateHandler` callback fires with
-  `(stream, group, mode)` — typically used to increment a Prometheus
-  counter or page an oncall.
+  recreate. Field: `stream`, `group`, `mode`.
+- If wired, the `WithRecreateHandler(func(stream, group string, mode RecreateMode))`
+  callback fires after every successful recreate. Suggested wiring:
+  ```promql
+  event_redis_consumer_group_recreated_total{stream="<stream>",group="<group>",mode="<broadcast|worker_pool>"}
+  ```
+  `mode.String()` is safe to drop directly into a Prometheus label —
+  the possible values are documented above.
 - Repeated recreate→NOGROUP cycles fall into exponential backoff so a
-  flapping group does not hot-loop.
+  flapping group does not hot-loop. Treat sustained increase in the
+  counter as a backing-store alert, not a missing-message alert.
+
+### `WithPublishAudit` — closing the publish → process gap
+
+When monitor entries are missing for events you know were published, the
+fault could be in the producer (call never happened), the transport
+(call returned `error` but caller ignored it), or the subscriber
+(consumer group / handler problem). `WithPublishAudit(store)` records
+every successful `transport.Publish` so the gap between "publisher said
+it published" and "consumer recorded a monitor entry" is observable:
+
+| Event has audit entry | Event has monitor entry | Fault domain |
+|-----------------------|-------------------------|--------------|
+| Yes | Yes | Working as expected. |
+| Yes | No | Transport or subscriber: message reached the broker but no consumer started processing. Inspect consumer group lag, PEL, and topology coverage. |
+| No | No | Producer side: the bus never published. Check the publisher's error return, outbox routing (`InOutboxTx`), and DLQ for rejected publish attempts. |
+| No | Yes | (Rare.) Monitor recorded an event the audit didn't — usually means an event was injected via `bus.Send` rather than `Event.Publish`. |
+
+Wire it once on the bus:
+
+```go
+audit, _ := outbox.NewPostgresAuditStore(db) // or your store
+bus, _ := event.NewBus("orders",
+    event.WithTransport(transport),
+    event.WithPublishAudit(audit),
+    event.WithMonitor(monitorStore),
+)
+```
+
+Outbox-routed publishes (inside `event.WithOutboxTx`) are *not* recorded
+in the audit — the publish doesn't reach the transport until the relay
+runs. The relay's own publish is audited normally.
 
 **What's not recovered:**
 The destroyed group's Pending Entries List is unrecoverable. Messages

@@ -21,18 +21,22 @@ import (
 //
 // Event lifecycle errors live in event.go:
 //
-//   - ErrEventNotBound, ErrInvalidSubscribeOptions
+//   - ErrEventNotBound          — operating on an event before Register
+//   - ErrInvalidSubscribeOptions — incompatible subscribe options
 //
 // Sub-package sentinels (errors.Is-compatible across the v3 module):
 //
 //   - idempotency.ErrAlreadyProcessed
-//   - poison.NewError (typed PoisonError)
+//   - poison.NewError (typed PoisonError; check via errors.As)
 //   - schema.ErrSchemaNotFound, schema.ErrInvalidPayload,
 //     schema.ErrNoUpcaster
 //   - transport.ErrEventNotRegistered, transport.ErrEventAlreadyExists,
-//     transport.ErrTransportClosed, transport.ErrPublishTimeout
+//     transport.ErrTransportClosed, transport.ErrPublishTimeout,
+//     transport.ErrCircuitOpen
 //   - errors.ErrNotFound, errors.ErrVersionConflict, errors.ErrAlreadyExists,
-//     errors.ErrClosed, errors.ErrTimeout, errors.ErrInvalidArgument
+//     errors.ErrClosed, errors.ErrTimeout, errors.ErrInvalidArgument,
+//     errors.ErrMaxRetriesExceeded, errors.ErrStorageUnavailable,
+//     errors.ErrScheduledInPast, errors.ErrTransportUnavailable
 //     (cross-ecosystem shared errors; see COMPATIBILITY.md).
 
 // Bus errors

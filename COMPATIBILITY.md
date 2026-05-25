@@ -6,11 +6,11 @@ This document describes version compatibility between the event library and its 
 
 | Package | Current | Go Version | Dependencies |
 |---------|---------|------------|--------------|
-| event/v3 | 3.x | 1.25.8+ | otel 1.40+ |
-| event-scheduler | 1.x | 1.25+ | event/v3, go-redis/v9 |
-| event-dlq | 1.x | 1.25+ | event/v3, go-redis/v9 |
-| event-extras | 1.x | 1.25+ | event/v3, go-redis/v9 |
-| event-mongodb | 0.x | 1.25+ | event/v3, mongo-driver/v2 |
+| event/v3 | 3.x | 1.26.3+ | otel 1.40+ |
+| event-scheduler | 1.x | 1.26+ | event/v3, go-redis/v9 |
+| event-dlq | 1.x | 1.26+ | event/v3, go-redis/v9 |
+| event-extras | 1.x | 1.26+ | event/v3, go-redis/v9 |
+| event-mongodb | 0.x | 1.26+ | event/v3, mongo-driver/v2 |
 
 ## Shared Packages
 
@@ -107,10 +107,17 @@ No breaking changes planned. All v3.x APIs will remain stable.
 - **transport/redis retained-stream replay** (#116): a Broadcast subscriber
   no longer replays the retained Redis Stream on restart. If you depend on
   the prior behavior, capture and replay externally.
-- **transport/redis deferred group creation** (#119 follow-up): the base
+- **transport/redis deferred group creation** (#120): the base
   consumer group is created on first Subscribe rather than at
   RegisterEvent. Callers that introspected groups between RegisterEvent and
   Subscribe must adjust.
+- **Internal `clock.Clock` injection** (test-only, v3.17.x): four stores
+  (`distributed.MemoryStateManager`, `idempotency.MemoryStore`,
+  `poison.MemoryStore`, `transport/bridge.MemoryCoordinator`) gained an
+  unexported `withClock` test hook backed by `internal/clock`. Not a
+  breaking change for external consumers — `internal/` paths cannot be
+  imported externally — but recorded here so downstream maintainers can
+  correlate the test-quality lift with the diff.
 
 ### v2.x to v3.x
 
