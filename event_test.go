@@ -69,35 +69,6 @@ func wait(ch chan struct{}, timeout int) bool {
 	}
 }
 
-// eventuallyTrue polls predicate until it returns true or the deadline fires.
-// Replaces post-publish / post-cancel time.Sleep + assert patterns. Lives in
-// this file (not internal/testutil) because the root event package cannot
-// import testutil — that would create an import cycle.
-func eventuallyTrue(t testing.TB, timeout time.Duration, predicate func() bool, msg string) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for !predicate() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s (after %s)", msg, timeout)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
-// consistentlyEqInt32 polls counter for the given window and fails the test
-// if it ever observes a value other than want. Use for negative-stable
-// assertions such as "after a duplicate publish, callCount must stay at N".
-func consistentlyEqInt32(t testing.TB, window time.Duration, counter *atomic.Int32, want int32, msg string) {
-	t.Helper()
-	deadline := time.Now().Add(window)
-	for time.Now().Before(deadline) {
-		if got := counter.Load(); got != want {
-			t.Fatalf("%s: got %d, want %d", msg, got, want)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 // testDLQStore is a simple DLQStore for testing that signals when Store is called.
 type testDLQStore struct {
 	called chan struct{}

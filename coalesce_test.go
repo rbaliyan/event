@@ -3,7 +3,6 @@ package event
 import (
 	"log/slog"
 	"os"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,23 +15,6 @@ func testLogger() *slog.Logger {
 
 func newTestMsg(id string) message.Message {
 	return message.New(id, "test", []byte("{}"), nil)
-}
-
-// waitInputsHandled blocks until counter reaches at least want, or the
-// deadline fires. Replaces the time.Sleep gaps that were used between
-// sequential sends on coal.incoming: those sleeps existed because the
-// coalescer's run() goroutine selects between incoming and done, and a
-// queued done could be picked up before its preceding incoming messages
-// without an explicit sync barrier.
-func waitInputsHandled(t testing.TB, counter *atomic.Int64, want int64) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for counter.Load() < want {
-		if time.Now().After(deadline) {
-			t.Fatalf("inputsHandled did not reach %d (got %d)", want, counter.Load())
-		}
-		time.Sleep(time.Millisecond)
-	}
 }
 
 func TestCoalescer_BasicDelivery(t *testing.T) {
