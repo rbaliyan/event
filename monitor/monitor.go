@@ -36,7 +36,8 @@
 //	    Limit:     100,
 //	})
 //
-// For operational debugging, see monitor/DEBUGGING.md alongside this file.
+// For operational debugging, see
+// https://github.com/rbaliyan/event/blob/main/monitor/DEBUGGING.md
 package monitor
 
 import (

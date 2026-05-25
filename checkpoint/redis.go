@@ -7,12 +7,18 @@
 //   - RedisStore: Production-ready Redis-backed store
 //   - For MongoDB checkpoint storage, use the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
 //
-// Usage with event subscriptions:
+// Direct Save/Load usage from a handler:
 //
-//	store := checkpoint.NewRedisStore(redisClient, "myapp:checkpoints")
-//	ev.Subscribe(ctx, handler,
-//	    event.WithCheckpoint[Order](store, "order-processor"),
-//	)
+//	store, _ := checkpoint.NewRedisStore(redisClient, "myapp:checkpoints")
+//	ev.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], o Order) error {
+//	    if err := process(o); err != nil {
+//	        return err
+//	    }
+//	    return store.Save(ctx, "order-processor", time.Now())
+//	})
+//
+// For automatic transport-level resume see
+// transport/persistent.WithCheckpointStore.
 package checkpoint
 
 import (
@@ -36,10 +42,8 @@ type CheckpointInfo struct {
 //
 // Example:
 //
-//	store := checkpoint.NewRedisStore(redisClient, "myapp:checkpoints")
-//	ev.Subscribe(ctx, handler,
-//	    event.WithCheckpoint[Order](store, "order-processor"),
-//	)
+//	store, _ := checkpoint.NewRedisStore(redisClient, "myapp:checkpoints")
+//	// Save / Load from a handler — see the package doc for the full pattern.
 type RedisStore struct {
 	client redis.Cmdable
 	key    string

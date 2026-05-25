@@ -36,8 +36,10 @@
 //	// Publish
 //	userEvent.Publish(ctx, User{ID: "123", Name: "John"})
 //
-// Bus Options Reference (see README.md "Options Reference" for the canonical
-// table; bus_options.go for full godoc):
+// Bus Options Reference. README.md "Options Reference" is the canonical
+// surface (defaults, prose, cross-links); bus_options.go has the per-symbol
+// godoc that pkg.go.dev renders. This list is a brief inventory; keep it
+// in sync with the README table when adding options.
 //   - WithTransport: set transport (required). Use channel.New(), redis.New(), etc.
 //   - WithTracing: enable/disable OpenTelemetry tracing. Default is true.
 //   - WithRecovery: enable/disable panic recovery in handlers. Default is true.

@@ -345,8 +345,11 @@ type RecordPublishParams struct {
 // event was ever published (transport fault) or never fired at all (app bug).
 //
 // Implementations:
-//   - monitor.NewPublishMemoryStore(): In-memory store for development/testing
-//   - For production, implement PublishStore from the monitor package and wrap it
+//   - Any monitor.Store value (monitor.NewMemoryStore(),
+//     monitor.NewPostgresStore(db)) satisfies this interface. The
+//     stack.WithReliabilityStack convenience option promotes the
+//     configured monitor store to also serve as the publish-audit store
+//     automatically.
 type PublishAuditStore interface {
 	RecordPublish(ctx context.Context, params RecordPublishParams) error
 }

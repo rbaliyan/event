@@ -225,49 +225,41 @@ func Example_mongoStore() {
 	// see https://github.com/rbaliyan/event-mongodb for the MongoDB checkpoint store
 }
 
-// Example_withEventSubscription demonstrates integrating checkpoints with event subscriptions.
+// Example_withEventSubscription demonstrates the user-driven checkpoint
+// pattern. The checkpoint package exposes a Save/Load API that handlers
+// call directly; there is no bus-level "checkpoint middleware" hook in
+// this module today.
 //
-// Checkpoints are typically used with event.WithCheckpoint subscribe option
-// to enable resumable subscriptions.
+//   import (
+//       "github.com/rbaliyan/event/v3"
+//       "github.com/rbaliyan/event/v3/checkpoint"
+//   )
+//
+//   cp := checkpoint.NewMemoryCheckpointStore()
+//   // Or: checkpoint.NewRedisStore(client, "myapp:checkpoints")
+//   // Or for MongoDB: see the event-mongodb module
+//
+//   pos, _ := cp.Load(ctx, "order-processor") // resume position
+//   // ... use pos to filter / drop replayed messages ...
+//
+//   orderEvent.Subscribe(ctx, func(ctx context.Context, ev event.Event[Order], o Order) error {
+//       if err := process(o); err != nil {
+//           return err
+//       }
+//       // Persist progress after a successful handler invocation. Pick
+//       // the time field your transport guarantees ordering on (e.g.
+//       // message timestamp or oplog cluster time).
+//       return cp.Save(ctx, "order-processor", time.Now())
+//   })
+//
+// For transports that ship with their own resumable consumer support
+// (transport/persistent, transport/composite) prefer their
+// WithCheckpointStore options, which work with the transport-level
+// CheckpointStore interface in transport/persistent.
 func Example_withEventSubscription() {
-	// Note: This shows the integration pattern with the event package
-	//
-	// In production code:
-	//
-	//   import (
-	//       "github.com/rbaliyan/event/v3"
-	//       "github.com/rbaliyan/event/v3/checkpoint"
-	//   )
-	//
-	//   // Create checkpoint store (any implementation)
-	//   checkpointStore := checkpoint.NewMemoryCheckpointStore()
-	//   // Or: checkpoint.NewRedisStore(redisClient, "checkpoints")
-	//   // Or for MongoDB: see the event-mongodb module
-	//   //   (github.com/rbaliyan/event-mongodb)
-	//
-	//   // Subscribe with checkpoint support
-	//   orderEvent.Subscribe(ctx, handler,
-	//       event.WithCheckpoint[Order](checkpointStore, "order-processor"),
-	//   )
-	//
-	// The event library will:
-	// 1. Load checkpoint on subscription start
-	// 2. Start from latest if no checkpoint exists
-	// 3. Resume from checkpoint if one exists
-	// 4. Save checkpoint after each successful message processing
-
-	fmt.Println("Checkpoint integration with events:")
-	fmt.Println("1. Load checkpoint on subscription start")
-	fmt.Println("2. Start from latest if no checkpoint exists")
-	fmt.Println("3. Resume from checkpoint position if exists")
-	fmt.Println("4. Auto-save after successful processing")
-
+	fmt.Println("see godoc above for the user-driven Save/Load pattern")
 	// Output:
-	// Checkpoint integration with events:
-	// 1. Load checkpoint on subscription start
-	// 2. Start from latest if no checkpoint exists
-	// 3. Resume from checkpoint position if exists
-	// 4. Auto-save after successful processing
+	// see godoc above for the user-driven Save/Load pattern
 }
 
 // Example_partitionedCheckpoints demonstrates using checkpoints with partitioned events.

@@ -129,11 +129,14 @@ func main() {
         log.Fatal(err)
     }
 
-    // Subscribe with type-safe handler
-    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+    // Subscribe with type-safe handler. Subscribe returns error on
+    // transport / registration problems — handle it the same way.
+    if err := orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
         fmt.Printf("Order received: %s, Amount: $%.2f\n", order.ID, order.Amount)
         return nil
-    })
+    }); err != nil {
+        log.Fatal(err)
+    }
 
     // Publish — returns error so the caller can surface transport
     // failures or unregistered-event mistakes.
@@ -163,7 +166,7 @@ func main() {
 | `WithSchemaProvider(p)` | nil | Subscribers auto-load `EventSchema` config on register. |
 | `WithStrictSchema(bool)` | `false` | When true, schema provider errors fail `Register` instead of being logged. |
 | `WithDLQ(store)` | nil | Bus-level Dead Letter Queue. Rejected / max-retry / decode-error messages route here automatically. Wrap an existing event-dlq store with `dlq.NewStoreAdapter(store, "service-name")`. |
-| `WithPublishAudit(store)` | nil | Producer-side audit log of every successful `transport.Publish`. Closes the gap between "published" and "processed". Any monitor store (e.g. `monitor.NewMemoryStore()`) doubles as a `PublishAuditStore`. |
+| `WithPublishAudit(store)` | nil | Producer-side audit log of every successful `transport.Publish`. Closes the gap between "published" and "processed" — see [`monitor/DEBUGGING.md` WithPublishAudit section](monitor/DEBUGGING.md#withpublishaudit--closing-the-publish--process-gap) for the fault-localization table. Any monitor store (e.g. `monitor.NewMemoryStore()`) doubles as a `PublishAuditStore`. |
 | `WithDrainTimeout(d)` | 0 (no wait) | Maximum time `Bus.Close()` blocks waiting for in-flight handlers to finish. |
 | `WithAll(opts ...)` | — | Combiner for composing `BusOption`s from sub-packages (`stack.WithReliabilityStack(...)`, etc.). |
 
@@ -175,7 +178,7 @@ Options passed to `event.New[T](name, opts ...Option)` (godoc in `option.go`):
 |--------|---------|--------------|
 | `WithSubscriberTimeout(d)` | 0 (no timeout) | Per-message handler deadline applied to subscriber contexts for this event. |
 | `WithErrorHandler(fn)` | nil | Custom error sink called when a panic is recovered in a handler for this event. |
-| `WithMaxRetries(n)` | transport default | Cap on retry attempts before the message is rejected to the DLQ. |
+| `WithMaxRetries(n)` | `0` (unlimited) | Cap on retry attempts before the message is rejected to the DLQ. `0` keeps the historical "retry forever" behavior; transports that have their own retry budget still apply it. |
 | `WithPayloadCodec(c)` | JSON | Override the codec used to encode/decode this event's payload. |
 | `WithMessageFilter(f)` | nil | Predicate over metadata. Subscribers skip messages where `f(metadata) == false`. |
 | `WithDecodeErrorHandler(fn)` | nil | Per-event hook to decide what to do with a decode failure (`nil` → ack and drop; `ErrReject` → route to DLQ). |
@@ -188,6 +191,19 @@ Passed to `Event.Subscribe(ctx, handler, opts ...SubscribeOption[T])`. The full 
 - `WithMiddleware(...)`, `WithMiddlewareChain[T](chain)` — chain user middleware. Schema-controlled middleware runs outside this chain (see [COMPATIBILITY.md](COMPATIBILITY.md#middleware-chain-order)).
 - `WithSubscriberName[T](name)`, `WithSubscriberDescription[T](desc)` — labels surfaced in topology, monitoring, and traces.
 - `WithLatestOnly[T]()`, `WithMaxAge[T](d)`, `WithBufferSize[T](size)` — backpressure / freshness tuning.
+- `WithAckPolicy[T](...)` / `WithBestEffort[T]()` — control ack semantics, see [Error Handling](#error-handling).
+- `WithCoalesceByKey[T](keyFn)` / `WithCoalesceByMetadata[T](metaKey)` — drop superseded updates, see [Message Coalescing](#message-coalescing).
+- `WithRouteFilter[T](...)` / `WithRouteMatch[T](...)` — message routing predicates, see [Message Routing](#message-routing).
+- `WithConsumerID[T](name)` — pin a logical consumer for Redis transports, see [Consumer Identity (Redis)](#consumer-identity-redis).
+
+```go
+ev.Subscribe(ctx, processOrder,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("order-processors"),
+    event.WithMiddleware(loggingMW, metricsMW),
+    event.WithSubscriberName[Order]("orders.workflow.v3"),
+)
+```
 
 For transport-specific options (`redis.WithAutoRecreateGroup`, `nats.WithJetStream`, etc.) see the transport sections below.
 

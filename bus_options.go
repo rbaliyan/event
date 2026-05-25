@@ -265,13 +265,18 @@ func WithDLQ(store DLQStore) BusOption {
 // not recorded here; they bypass the transport path and are tracked separately
 // by the outbox store until the relay delivers them.
 //
-// Example:
+// Any monitor store satisfies PublishAuditStore, so the simplest setup
+// reuses the monitor store you already pass to WithMonitor:
 //
-//	ps := monitor.NewPublishMemoryStore()
+//	ms := monitor.NewMemoryStore() // or monitor.NewPostgresStore(db)
 //	bus, _ := event.NewBus("my-app",
 //	    event.WithTransport(transport),
-//	    event.WithPublishAudit(ps),
+//	    event.WithMonitor(ms),
+//	    event.WithPublishAudit(ms),
 //	)
+//
+// See monitor/DEBUGGING.md (#withpublishaudit) for the publish↔process
+// fault-localization table.
 func WithPublishAudit(store PublishAuditStore) BusOption {
 	return func(o *busOptions) {
 		if store != nil {
@@ -283,6 +288,8 @@ func WithPublishAudit(store PublishAuditStore) BusOption {
 // WithDrainTimeout sets the maximum time Bus.Close() will wait for in-flight
 // message handlers to complete before proceeding with shutdown.
 // A value of 0 (the default) means no waiting — current behavior is preserved.
+// Negative values are coerced to the same "no wait" behavior; the option is
+// idempotent for non-positive d.
 func WithDrainTimeout(d time.Duration) BusOption {
 	return func(o *busOptions) {
 		if d > 0 {

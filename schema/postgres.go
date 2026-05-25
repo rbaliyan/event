@@ -60,8 +60,10 @@ func WithTableName(name string) PostgresOption {
 
 // NewPostgresProvider creates a new PostgreSQL-based schema provider.
 //
-// The publisher callback is called when a schema is set, to notify
-// subscribers via the transport. It can be nil if Watch is not needed.
+// The publisher callback is called when a schema is set so subscribers
+// can be notified via the transport. It is required: pass a no-op
+// closure (`func(context.Context, SchemaChangeEvent) error { return nil }`)
+// if you do not need change notifications.
 func NewPostgresProvider(db *sql.DB, publisher func(context.Context, SchemaChangeEvent) error, opts ...PostgresOption) (*PostgresProvider, error) {
 	if db == nil {
 		return nil, errors.New("schema: db is required")

@@ -680,7 +680,7 @@ failover to an empty replica, eviction under maxmemory). Configure with
 - If wired, the `WithRecreateHandler(func(stream, group string, mode RecreateMode))`
   callback fires after every successful recreate. Suggested wiring:
   ```promql
-  event_redis_consumer_group_recreated_total{stream="<stream>",group="<group>",mode="<broadcast|worker_pool>"}
+  event_redis_consumer_group_recreated_total{stream="<stream>",group="<group>",mode="<none|broadcast|worker_pool|all>"}
   ```
   `mode.String()` is safe to drop directly into a Prometheus label —
   the possible values are documented above.
