@@ -46,6 +46,7 @@ func decodeJSON(t *testing.T, w *httptest.ResponseRecorder, v any) {
 
 // TestList_Empty verifies an empty provider returns an empty schemas array.
 func TestList_Empty(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 	w := do(t, h, http.MethodGet, "/v1/schemas", nil)
 
@@ -64,6 +65,7 @@ func TestList_Empty(t *testing.T) {
 
 // TestPutAndGet verifies creating and retrieving a schema.
 func TestPutAndGet(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 
 	body := map[string]any{
@@ -108,6 +110,7 @@ func TestPutAndGet(t *testing.T) {
 
 // TestPut_AutoIncrementVersion verifies version is auto-incremented on update.
 func TestPut_AutoIncrementVersion(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 
 	body := map[string]any{"description": "v1", "enable_monitor": false, "enable_idempotency": false, "enable_poison": false}
@@ -128,6 +131,7 @@ func TestPut_AutoIncrementVersion(t *testing.T) {
 
 // TestList_WithSchemas verifies the list endpoint returns all schemas.
 func TestList_WithSchemas(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 
 	body := map[string]any{"enable_monitor": false, "enable_idempotency": false, "enable_poison": false}
@@ -150,6 +154,7 @@ func TestList_WithSchemas(t *testing.T) {
 
 // TestDelete verifies deletion removes a schema.
 func TestDelete(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 
 	body := map[string]any{"enable_monitor": false, "enable_idempotency": false, "enable_poison": false}
@@ -169,6 +174,7 @@ func TestDelete(t *testing.T) {
 
 // TestGet_NotFound verifies 404 for missing schemas.
 func TestGet_NotFound(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 	w := do(t, h, http.MethodGet, "/v1/schemas/nonexistent", nil)
 	if w.Code != http.StatusNotFound {
@@ -178,6 +184,7 @@ func TestGet_NotFound(t *testing.T) {
 
 // TestPut_InvalidJSON verifies 400 for malformed bodies.
 func TestPut_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 	req := httptest.NewRequest(http.MethodPut, "/v1/schemas/test", bytes.NewBufferString("not json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -190,6 +197,7 @@ func TestPut_InvalidJSON(t *testing.T) {
 
 // TestMethodNotAllowed verifies 405 for wrong HTTP methods.
 func TestMethodNotAllowed(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 	w := do(t, h, http.MethodPost, "/v1/schemas", nil)
 	if w.Code != http.StatusMethodNotAllowed {
@@ -199,6 +207,7 @@ func TestMethodNotAllowed(t *testing.T) {
 
 // TestPut_MissingName verifies 400 for /v1/schemas/ with no name.
 func TestPut_MissingName(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 	w := do(t, h, http.MethodPut, "/v1/schemas/", map[string]any{})
 	if w.Code != http.StatusBadRequest {
@@ -208,6 +217,7 @@ func TestPut_MissingName(t *testing.T) {
 
 // TestPut_MetadataRoundtrip verifies metadata is preserved.
 func TestPut_MetadataRoundtrip(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 
 	body := map[string]any{
@@ -229,6 +239,7 @@ func TestPut_MetadataRoundtrip(t *testing.T) {
 
 // TestPut_ServerFieldsIgnored verifies that version supplied in the PUT body is ignored.
 func TestPut_ServerFieldsIgnored(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 
 	body := map[string]any{
@@ -251,6 +262,7 @@ func TestPut_ServerFieldsIgnored(t *testing.T) {
 
 // TestPut_ConcurrentVersionIncrement verifies that concurrent PUTs serialize version increments.
 func TestPut_ConcurrentVersionIncrement(t *testing.T) {
+	t.Parallel()
 	h, _ := newHandler(t)
 
 	body := map[string]any{"enable_monitor": false, "enable_idempotency": false, "enable_poison": false}
