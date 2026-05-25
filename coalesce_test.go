@@ -36,6 +36,7 @@ func waitInputsHandled(t testing.TB, counter *atomic.Int64, want int64) {
 }
 
 func TestCoalescer_BasicDelivery(t *testing.T) {
+	t.Parallel()
 	coal := newCoalescer[string](1000, testLogger())
 	defer coal.Close()
 
@@ -60,6 +61,7 @@ func TestCoalescer_BasicDelivery(t *testing.T) {
 }
 
 func TestCoalescer_SupersedesOldMessage(t *testing.T) {
+	t.Parallel()
 	coal := newCoalescer[string](1000, testLogger())
 	defer coal.Close()
 
@@ -107,6 +109,7 @@ func TestCoalescer_SupersedesOldMessage(t *testing.T) {
 }
 
 func TestCoalescer_DifferentKeysDeliverIndependently(t *testing.T) {
+	t.Parallel()
 	coal := newCoalescer[string](1000, testLogger())
 	defer coal.Close()
 
@@ -130,6 +133,7 @@ func TestCoalescer_DifferentKeysDeliverIndependently(t *testing.T) {
 }
 
 func TestCoalescer_EmptyKeyBypassesCoalescing(t *testing.T) {
+	t.Parallel()
 	coal := newCoalescer[string](1000, testLogger())
 	defer coal.Close()
 
@@ -148,6 +152,7 @@ func TestCoalescer_EmptyKeyBypassesCoalescing(t *testing.T) {
 }
 
 func TestCoalescer_ShutdownDrainsPending(t *testing.T) {
+	t.Parallel()
 	coal := newCoalescer[string](1000, testLogger())
 
 	// Send a message but don't consume it.
@@ -183,6 +188,7 @@ func TestCoalescer_ShutdownDrainsPending(t *testing.T) {
 }
 
 func TestRawCoalescer_BasicDelivery(t *testing.T) {
+	t.Parallel()
 	coal := newRawCoalescer("doc_key", 1000, testLogger())
 	defer coal.Close()
 
@@ -201,6 +207,7 @@ func TestRawCoalescer_BasicDelivery(t *testing.T) {
 }
 
 func TestRawCoalescer_SupersedesByMetadataKey(t *testing.T) {
+	t.Parallel()
 	coal := newRawCoalescer("doc_key", 1000, testLogger())
 	defer coal.Close()
 
@@ -240,6 +247,7 @@ func TestRawCoalescer_SupersedesByMetadataKey(t *testing.T) {
 }
 
 func TestRawCoalescer_MissingMetadataKeyBypassesCoalescing(t *testing.T) {
+	t.Parallel()
 	coal := newRawCoalescer("doc_key", 1000, testLogger())
 	defer coal.Close()
 
@@ -260,6 +268,7 @@ func TestRawCoalescer_MissingMetadataKeyBypassesCoalescing(t *testing.T) {
 }
 
 func TestCoalescer_MaxKeysEviction(t *testing.T) {
+	t.Parallel()
 	// Create coalescer with max 2 keys.
 	coal := newCoalescer[string](2, testLogger())
 	defer coal.Close()
@@ -306,6 +315,7 @@ func TestCoalescer_MaxKeysEviction(t *testing.T) {
 }
 
 func TestCoalescer_EvictionSkipsInflightKeys(t *testing.T) {
+	t.Parallel()
 	// Create coalescer with max 2 keys.
 	coal := newCoalescer[string](2, testLogger())
 	defer coal.Close()
