@@ -40,6 +40,7 @@ func (m *mockDLQProvider) Health(ctx context.Context) *health.Result {
 }
 
 func TestHandleSystemView(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -140,6 +141,7 @@ func TestHandleSystemView(t *testing.T) {
 }
 
 func TestHandleSystemHealth(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
@@ -200,6 +202,7 @@ func TestHandleSystemHealth(t *testing.T) {
 }
 
 func TestBackgroundRefresh(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -247,6 +250,7 @@ func TestBackgroundRefresh(t *testing.T) {
 }
 
 func TestBackgroundRefresh_Health(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
@@ -274,6 +278,7 @@ func TestBackgroundRefresh_Health(t *testing.T) {
 }
 
 func TestClose(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
@@ -297,6 +302,7 @@ func TestClose(t *testing.T) {
 }
 
 func TestDisabledRefresh(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
@@ -328,6 +334,7 @@ func TestDisabledRefresh(t *testing.T) {
 }
 
 func TestCachedTopology(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
@@ -357,6 +364,7 @@ func (m *mockStuckPendingProvider) StuckPendingStats(_ context.Context) (*StuckP
 }
 
 func TestHandleSystemView_StuckPending(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 

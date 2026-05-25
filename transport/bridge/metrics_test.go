@@ -80,6 +80,7 @@ func histBridgeCount(m *metricdata.Metrics) uint64 {
 // ---------- MetricsMiddleware ----------
 
 func TestMetricsMiddleware_ForwardedCounter(t *testing.T) {
+	t.Parallel()
 	m, reader := testBridgeMetrics(t)
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
@@ -115,6 +116,7 @@ func TestMetricsMiddleware_ForwardedCounter(t *testing.T) {
 }
 
 func TestMetricsMiddleware_FailedCounter(t *testing.T) {
+	t.Parallel()
 	m, reader := testBridgeMetrics(t)
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
@@ -154,6 +156,7 @@ func TestMetricsMiddleware_FailedCounter(t *testing.T) {
 }
 
 func TestMetricsMiddleware_Duration(t *testing.T) {
+	t.Parallel()
 	m, reader := testBridgeMetrics(t)
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
@@ -192,6 +195,7 @@ func TestMetricsMiddleware_Duration(t *testing.T) {
 }
 
 func TestMetricsMiddleware_NilMetrics(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -210,6 +214,7 @@ func TestMetricsMiddleware_NilMetrics(t *testing.T) {
 // ---------- RecordSkip ----------
 
 func TestRecordSkip(t *testing.T) {
+	t.Parallel()
 	m, reader := testBridgeMetrics(t)
 	ctx := context.Background()
 
@@ -226,6 +231,7 @@ func TestRecordSkip(t *testing.T) {
 }
 
 func TestRecordSkip_NilMetrics(t *testing.T) {
+	t.Parallel()
 	var m *bridge.Metrics
 	// Must not panic.
 	m.RecordSkip(context.Background(), "x", "insert")
@@ -234,6 +240,7 @@ func TestRecordSkip_NilMetrics(t *testing.T) {
 // ---------- Dedup + Metrics composition ----------
 
 func TestDedupWithMetricsSkip(t *testing.T) {
+	t.Parallel()
 	m, reader := testBridgeMetrics(t)
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
@@ -288,6 +295,7 @@ func TestDedupWithMetricsSkip(t *testing.T) {
 // ---------- Namespace ----------
 
 func TestMetrics_WithNamespace(t *testing.T) {
+	t.Parallel()
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
