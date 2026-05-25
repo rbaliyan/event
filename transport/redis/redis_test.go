@@ -305,6 +305,7 @@ func testMessage(source, payload string) message.Message {
 }
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	t.Run("nil client returns error", func(t *testing.T) {
 		_, err := New(nil)
 		if err != ErrClientRequired {
@@ -326,6 +327,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestTransportOptions(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 
 	tr, err := New(client,
@@ -351,6 +353,7 @@ func TestTransportOptions(t *testing.T) {
 }
 
 func TestTransportRegisterEvent(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	tr, _ := New(client)
 	defer tr.Close(context.Background())
@@ -405,6 +408,7 @@ func TestTransportRegisterEvent(t *testing.T) {
 // behind. The stream itself is created by XADD on first publish; consumer
 // groups are created only when Subscribe runs.
 func TestPublishOnlyDoesNotCreateConsumerGroup(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	tr, _ := New(client)
 	defer tr.Close(context.Background())
@@ -435,6 +439,7 @@ func TestPublishOnlyDoesNotCreateConsumerGroup(t *testing.T) {
 // invariant for the default worker pool: the base consumer group is created
 // by the first Subscribe call, not by RegisterEvent.
 func TestDefaultWorkerPoolCreatesBaseGroupOnSubscribe(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	tr, _ := New(client, WithConsumerGroup("bus-a"))
 	defer tr.Close(context.Background())
@@ -472,6 +477,7 @@ func TestDefaultWorkerPoolCreatesBaseGroupOnSubscribe(t *testing.T) {
 }
 
 func TestTransportUnregisterEvent(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	tr, _ := New(client)
 	defer tr.Close(context.Background())
@@ -495,6 +501,7 @@ func TestTransportUnregisterEvent(t *testing.T) {
 }
 
 func TestTransportPublish(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	tr, _ := New(client)
 	defer tr.Close(context.Background())
@@ -537,6 +544,7 @@ func TestTransportPublish(t *testing.T) {
 }
 
 func TestTransportSubscribe(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	tr, _ := New(client)
 	defer tr.Close(context.Background())
@@ -763,6 +771,7 @@ func TestTransportSubscribe(t *testing.T) {
 }
 
 func TestTransportStreamName(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	tr, _ := New(client)
 	defer tr.Close(context.Background())
@@ -774,6 +783,7 @@ func TestTransportStreamName(t *testing.T) {
 }
 
 func TestSubscriptionClose(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	tr, _ := New(client)
 	defer tr.Close(context.Background())
@@ -797,6 +807,7 @@ func TestSubscriptionClose(t *testing.T) {
 }
 
 func TestTransportErrorHandler(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	client.xaddErr = errors.New("xadd failed")
 
@@ -820,6 +831,7 @@ func TestTransportErrorHandler(t *testing.T) {
 }
 
 func TestConsumerLag_OldestPending(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	tr, err := New(client)
 	if err != nil {
@@ -884,6 +896,7 @@ func TestConsumerLag_OldestPending(t *testing.T) {
 // Regression for the shutdown-burst NOGROUP errors seen in event-server with
 // per-Subscribe broadcast consumer groups (call-scheduler-<uuid>).
 func TestBroadcastCloseDoesNotRaceWithConsumeLoop(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	client.blockReadGroup = true
 
@@ -974,6 +987,7 @@ func pickBlockedGroup(t *testing.T, m *mockRedisClient, stream string) string {
 }
 
 func TestAutoRecreateGroup_BroadcastRecoversFromNoGroup(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	client.blockReadGroup = true
 
@@ -1039,6 +1053,7 @@ func TestAutoRecreateGroup_BroadcastRecoversFromNoGroup(t *testing.T) {
 }
 
 func TestAutoRecreateGroup_WorkerPoolRecoversFromNoGroup(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	client.blockReadGroup = true
 
@@ -1097,6 +1112,7 @@ func TestAutoRecreateGroup_WorkerPoolRecoversFromNoGroup(t *testing.T) {
 }
 
 func TestAutoRecreateGroup_DisabledLeavesErrorLog(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	client.blockReadGroup = true
 
@@ -1153,6 +1169,7 @@ func TestAutoRecreateGroup_DisabledLeavesErrorLog(t *testing.T) {
 }
 
 func TestAutoRecreateGroup_WrongModeLeavesErrorLog(t *testing.T) {
+	t.Parallel()
 	// Worker-pool subscription, but only RecreateBroadcast is enabled. Recovery
 	// must NOT fire for the worker subscription.
 	client := newMockRedisClient()
@@ -1206,6 +1223,7 @@ func TestAutoRecreateGroup_WrongModeLeavesErrorLog(t *testing.T) {
 }
 
 func TestRecreateMode_String(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		mode RecreateMode
 		want string
@@ -1228,6 +1246,7 @@ func TestRecreateMode_String(t *testing.T) {
 // unreachable), the consume loop falls through to the existing error log +
 // exponential backoff path and the recreate handler is NOT invoked.
 func TestAutoRecreateGroup_RecreateFailsFallsBack(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	client.blockReadGroup = true
 
@@ -1287,6 +1306,7 @@ func TestAutoRecreateGroup_RecreateFailsFallsBack(t *testing.T) {
 // sibling who already recreated the group (yielding BUSYGROUP on our retry)
 // is treated as success rather than a hard failure.
 func TestAutoRecreateGroup_BusyGroupTreatedAsSuccess(t *testing.T) {
+	t.Parallel()
 	client := newMockRedisClient()
 	client.blockReadGroup = true
 

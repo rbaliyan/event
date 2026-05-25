@@ -25,6 +25,7 @@ func newWorkerTestHandler(t *testing.T) (*Handler, *distributed.MemoryStateManag
 }
 
 func TestWorkerEndpointsDisabledWithoutStore(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
@@ -41,6 +42,7 @@ func TestWorkerEndpointsDisabledWithoutStore(t *testing.T) {
 }
 
 func TestWorkerList(t *testing.T) {
+	t.Parallel()
 	h, sm := newWorkerTestHandler(t)
 	ctx := context.Background()
 
@@ -82,6 +84,7 @@ func TestWorkerList(t *testing.T) {
 }
 
 func TestWorkerListFilterByStatus(t *testing.T) {
+	t.Parallel()
 	h, sm := newWorkerTestHandler(t)
 	ctx := context.Background()
 
@@ -110,6 +113,7 @@ func TestWorkerListFilterByStatus(t *testing.T) {
 }
 
 func TestWorkerListStaleTimeout(t *testing.T) {
+	t.Parallel()
 	h, sm := newWorkerTestHandler(t)
 	ctx := context.Background()
 
@@ -137,6 +141,7 @@ func TestWorkerListStaleTimeout(t *testing.T) {
 }
 
 func TestWorkerGetByID(t *testing.T) {
+	t.Parallel()
 	h, sm := newWorkerTestHandler(t)
 	ctx := context.Background()
 
@@ -175,6 +180,7 @@ func TestWorkerGetByID(t *testing.T) {
 }
 
 func TestWorkerCount(t *testing.T) {
+	t.Parallel()
 	h, sm := newWorkerTestHandler(t)
 	ctx := context.Background()
 
@@ -231,6 +237,7 @@ func TestWorkerCount(t *testing.T) {
 }
 
 func TestWorkerPagination(t *testing.T) {
+	t.Parallel()
 	h, sm := newWorkerTestHandler(t)
 	ctx := context.Background()
 
