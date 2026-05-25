@@ -26,6 +26,7 @@ func testMessage(payload []byte) transport.Message {
 var errProcessingFailed = errors.New("processing failed")
 
 func TestNewTransport(t *testing.T) {
+	t.Parallel()
 	t.Run("requires store", func(t *testing.T) {
 		_, err := New(nil)
 		if err != ErrStoreRequired {
@@ -47,6 +48,7 @@ func TestNewTransport(t *testing.T) {
 }
 
 func TestRegisterEvent(t *testing.T) {
+	t.Parallel()
 	store := NewMemoryStore()
 	tr, _ := New(store)
 	defer tr.Close(context.Background())
@@ -69,6 +71,7 @@ func TestRegisterEvent(t *testing.T) {
 }
 
 func TestPublishSubscribe(t *testing.T) {
+	t.Parallel()
 	store := NewMemoryStore()
 	tr, _ := New(store, WithPollInterval(10*time.Millisecond))
 	defer tr.Close(context.Background())
@@ -111,6 +114,7 @@ func TestPublishSubscribe(t *testing.T) {
 }
 
 func TestMessageRedelivery(t *testing.T) {
+	t.Parallel()
 	store := NewMemoryStore()
 	tr, _ := New(store, WithPollInterval(10*time.Millisecond))
 	defer tr.Close(context.Background())
@@ -166,6 +170,7 @@ func TestMessageRedelivery(t *testing.T) {
 }
 
 func TestCheckpointPersistence(t *testing.T) {
+	t.Parallel()
 	store := NewMemoryStore()
 	checkpointStore := NewMemoryCheckpointStore()
 	tr, _ := New(store,
@@ -218,6 +223,7 @@ func TestCheckpointPersistence(t *testing.T) {
 }
 
 func TestSequentialProcessing(t *testing.T) {
+	t.Parallel()
 	store := NewMemoryStore()
 	tr, _ := New(store, WithPollInterval(10*time.Millisecond))
 	defer tr.Close(context.Background())
@@ -264,6 +270,7 @@ func TestSequentialProcessing(t *testing.T) {
 }
 
 func TestHealthCheck(t *testing.T) {
+	t.Parallel()
 	store := NewMemoryStore()
 	tr, _ := New(store)
 	defer tr.Close(context.Background())
@@ -286,6 +293,7 @@ func TestHealthCheck(t *testing.T) {
 }
 
 func TestClose(t *testing.T) {
+	t.Parallel()
 	store := NewMemoryStore()
 	tr, _ := New(store)
 
@@ -313,6 +321,7 @@ func TestClose(t *testing.T) {
 }
 
 func TestMemoryStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("append and fetch", func(t *testing.T) {
@@ -423,6 +432,7 @@ func TestMemoryStore(t *testing.T) {
 }
 
 func TestMemoryCheckpointStore(t *testing.T) {
+	t.Parallel()
 	store := NewMemoryCheckpointStore()
 	ctx := context.Background()
 

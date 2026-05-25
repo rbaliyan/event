@@ -17,6 +17,7 @@ func testMessage(id, source, payload string) transport.Message {
 }
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	if tr == nil {
 		t.Fatal("expected transport, got nil")
@@ -25,6 +26,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestNewWithOptions(t *testing.T) {
+	t.Parallel()
 	tr := New(
 		WithBufferSize(100),
 		WithTimeout(time.Second),
@@ -40,6 +42,7 @@ func TestNewWithOptions(t *testing.T) {
 }
 
 func TestRegisterEvent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New()
 	defer tr.Close(ctx)
@@ -70,6 +73,7 @@ func TestRegisterEvent(t *testing.T) {
 }
 
 func TestUnregisterEvent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New()
 	defer tr.Close(ctx)
@@ -92,6 +96,7 @@ func TestUnregisterEvent(t *testing.T) {
 }
 
 func TestPublish(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New()
 	defer tr.Close(ctx)
@@ -128,6 +133,7 @@ func TestPublish(t *testing.T) {
 }
 
 func TestSubscribe(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New()
 	defer tr.Close(ctx)
@@ -161,6 +167,7 @@ func TestSubscribe(t *testing.T) {
 }
 
 func TestPublishSubscribeIntegration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New(WithBufferSize(10))
 	defer tr.Close(ctx)
@@ -189,6 +196,7 @@ func TestPublishSubscribeIntegration(t *testing.T) {
 }
 
 func TestBroadcastMode(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New(WithBufferSize(10))
 	defer tr.Close(ctx)
@@ -229,6 +237,7 @@ func TestBroadcastMode(t *testing.T) {
 }
 
 func TestWorkerPoolMode(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New(WithBufferSize(10))
 	defer tr.Close(ctx)
@@ -297,6 +306,7 @@ func TestWorkerPoolMode(t *testing.T) {
 }
 
 func TestWorkerGroups(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New(WithBufferSize(10))
 	defer tr.Close(ctx)
@@ -375,6 +385,7 @@ func TestWorkerGroups(t *testing.T) {
 }
 
 func TestWorkerGroupSingleWorker(t *testing.T) {
+	t.Parallel()
 	// Test a worker group with only one worker
 	ctx := context.Background()
 	tr := New(WithBufferSize(10))
@@ -417,6 +428,7 @@ done:
 }
 
 func TestWorkerGroupMixedWithDefaultPool(t *testing.T) {
+	t.Parallel()
 	// Test mixing named worker groups with default (unnamed) worker pool
 	ctx := context.Background()
 	tr := New(WithBufferSize(10))
@@ -486,6 +498,7 @@ func TestWorkerGroupMixedWithDefaultPool(t *testing.T) {
 }
 
 func TestWorkerGroupEmptyStringIsSameAsDefault(t *testing.T) {
+	t.Parallel()
 	// Empty string worker group should be treated the same as no group (default)
 	ctx := context.Background()
 	tr := New(WithBufferSize(10))
@@ -544,6 +557,7 @@ func TestWorkerGroupEmptyStringIsSameAsDefault(t *testing.T) {
 }
 
 func TestSubscriptionClose(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New()
 	defer tr.Close(ctx)
@@ -566,6 +580,7 @@ func TestSubscriptionClose(t *testing.T) {
 }
 
 func TestTransportClose(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New()
 
@@ -592,6 +607,7 @@ func TestTransportClose(t *testing.T) {
 }
 
 func TestHealth(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New()
 
@@ -612,6 +628,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestWithBufferSizeOption(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tr := New(WithBufferSize(50))
 	defer tr.Close(ctx)

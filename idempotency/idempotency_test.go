@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rbaliyan/event/v3/internal/clock"
 )
 
 func TestMemoryStore(t *testing.T) {
@@ -112,7 +114,8 @@ func TestMemoryStore(t *testing.T) {
 	})
 
 	t.Run("expired entries return false", func(t *testing.T) {
-		store := NewMemoryStore(10 * time.Millisecond)
+		clk := clock.NewFake(time.Time{})
+		store := NewMemoryStore(10*time.Millisecond, withClock(clk))
 		defer store.Close()
 
 		store.MarkProcessed(ctx, "msg-1")
@@ -123,8 +126,8 @@ func TestMemoryStore(t *testing.T) {
 			t.Error("expected duplicate before expiry")
 		}
 
-		// Wait for expiry
-		time.Sleep(20 * time.Millisecond)
+		// Cross the TTL boundary deterministically.
+		clk.Advance(20 * time.Millisecond)
 
 		// Should not be duplicate after expiry
 		isDuplicate, _ = store.IsDuplicate(ctx, "msg-1")
@@ -192,19 +195,21 @@ func TestMemoryStore(t *testing.T) {
 	})
 
 	t.Run("overwrite existing entry updates expiry", func(t *testing.T) {
-		store := NewMemoryStore(50 * time.Millisecond)
+		clk := clock.NewFake(time.Time{})
+		store := NewMemoryStore(50*time.Millisecond, withClock(clk))
 		defer store.Close()
 
 		store.MarkProcessed(ctx, "msg-1")
 
-		// Wait a bit
-		time.Sleep(30 * time.Millisecond)
+		// Advance partway through original TTL.
+		clk.Advance(30 * time.Millisecond)
 
-		// Mark again with longer TTL
+		// Mark again with a longer TTL. Expiry should now be
+		// 30ms (current fake time) + 100ms = 130ms total.
 		store.MarkProcessedWithTTL(ctx, "msg-1", 100*time.Millisecond)
 
-		// Wait past original expiry
-		time.Sleep(30 * time.Millisecond)
+		// Cross what would have been the original 50ms expiry.
+		clk.Advance(30 * time.Millisecond)
 
 		// Should still be duplicate due to updated TTL
 		isDuplicate, _ := store.IsDuplicate(ctx, "msg-1")

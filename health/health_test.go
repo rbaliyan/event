@@ -26,6 +26,7 @@ var _ Checker = (*mockChecker)(nil)
 var _ Checker = (*panicChecker)(nil)
 
 func TestResultStatusMethods(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		status    Status
@@ -56,6 +57,7 @@ func TestResultStatusMethods(t *testing.T) {
 }
 
 func TestResultFields(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r := &Result{
 		Status:    StatusHealthy,
@@ -83,6 +85,7 @@ func TestResultFields(t *testing.T) {
 }
 
 func TestAggregate_AllHealthy(t *testing.T) {
+	t.Parallel()
 	components := map[string]*Result{
 		"db":    {Status: StatusHealthy},
 		"cache": {Status: StatusHealthy},
@@ -102,6 +105,7 @@ func TestAggregate_AllHealthy(t *testing.T) {
 }
 
 func TestAggregate_DegradedWins(t *testing.T) {
+	t.Parallel()
 	components := map[string]*Result{
 		"db":    {Status: StatusHealthy},
 		"cache": {Status: StatusDegraded},
@@ -115,6 +119,7 @@ func TestAggregate_DegradedWins(t *testing.T) {
 }
 
 func TestAggregate_UnhealthyWins(t *testing.T) {
+	t.Parallel()
 	components := map[string]*Result{
 		"db":    {Status: StatusUnhealthy},
 		"cache": {Status: StatusDegraded},
@@ -129,6 +134,7 @@ func TestAggregate_UnhealthyWins(t *testing.T) {
 }
 
 func TestAggregate_NilComponent(t *testing.T) {
+	t.Parallel()
 	components := map[string]*Result{
 		"db":    {Status: StatusHealthy},
 		"cache": nil,
@@ -142,6 +148,7 @@ func TestAggregate_NilComponent(t *testing.T) {
 }
 
 func TestAggregate_EmptyComponents(t *testing.T) {
+	t.Parallel()
 	agg := Aggregate(map[string]*Result{})
 
 	if agg.Status != StatusHealthy {
@@ -150,6 +157,7 @@ func TestAggregate_EmptyComponents(t *testing.T) {
 }
 
 func TestCheckAll_BasicCheckers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	checkers := map[string]Checker{
 		"healthy": &mockChecker{result: &Result{
@@ -180,6 +188,7 @@ func TestCheckAll_BasicCheckers(t *testing.T) {
 }
 
 func TestCheckAll_PanicRecovery(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	checkers := map[string]Checker{
 		"healthy": &mockChecker{result: &Result{
@@ -207,6 +216,7 @@ func TestCheckAll_PanicRecovery(t *testing.T) {
 }
 
 func TestCheckAll_NilChecker(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	checkers := map[string]Checker{
 		"healthy": &mockChecker{result: &Result{
@@ -228,6 +238,7 @@ func TestCheckAll_NilChecker(t *testing.T) {
 }
 
 func TestCheckAll_EmptyCheckers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	agg := CheckAll(ctx, map[string]Checker{})
 
@@ -240,6 +251,7 @@ func TestCheckAll_EmptyCheckers(t *testing.T) {
 }
 
 func TestStatusConstants(t *testing.T) {
+	t.Parallel()
 	if StatusHealthy != "healthy" {
 		t.Errorf("StatusHealthy = %q, want %q", StatusHealthy, "healthy")
 	}

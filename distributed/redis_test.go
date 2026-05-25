@@ -48,6 +48,7 @@ func setupRedisStateManagerWithClock(t *testing.T, opts ...Option) (*RedisStateM
 }
 
 func TestRedisStateManager_Acquire(t *testing.T) {
+	t.Parallel()
 	sm, _ := setupRedisStateManager(t)
 	ctx := context.Background()
 
@@ -83,6 +84,7 @@ func TestRedisStateManager_Acquire(t *testing.T) {
 }
 
 func TestRedisStateManager_Acquire_Expiry(t *testing.T) {
+	t.Parallel()
 	sm, mr := setupRedisStateManager(t)
 	ctx := context.Background()
 
@@ -102,6 +104,7 @@ func TestRedisStateManager_Acquire_Expiry(t *testing.T) {
 }
 
 func TestRedisStateManager_MarkProcessed(t *testing.T) {
+	t.Parallel()
 	sm, _ := setupRedisStateManager(t)
 	ctx := context.Background()
 
@@ -124,6 +127,7 @@ func TestRedisStateManager_MarkProcessed(t *testing.T) {
 }
 
 func TestRedisStateManager_MarkProcessed_AtomicNoRecreate(t *testing.T) {
+	t.Parallel()
 	sm, _ := setupRedisStateManager(t)
 	ctx := context.Background()
 
@@ -144,6 +148,7 @@ func TestRedisStateManager_MarkProcessed_AtomicNoRecreate(t *testing.T) {
 }
 
 func TestRedisStateManager_Reset(t *testing.T) {
+	t.Parallel()
 	sm, _ := setupRedisStateManager(t)
 	ctx := context.Background()
 
@@ -166,6 +171,7 @@ func TestRedisStateManager_Reset(t *testing.T) {
 }
 
 func TestRedisStateManager_ListStale(t *testing.T) {
+	t.Parallel()
 	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
@@ -202,6 +208,7 @@ func TestRedisStateManager_ListStale(t *testing.T) {
 }
 
 func TestRedisStateManager_ResetStale(t *testing.T) {
+	t.Parallel()
 	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
@@ -226,6 +233,7 @@ func TestRedisStateManager_ResetStale(t *testing.T) {
 }
 
 func TestRedisStateManager_ResetStale_Limit(t *testing.T) {
+	t.Parallel()
 	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
@@ -246,6 +254,7 @@ func TestRedisStateManager_ResetStale_Limit(t *testing.T) {
 }
 
 func TestRedisStateManager_StorePayload(t *testing.T) {
+	t.Parallel()
 	sm, _ := setupRedisStateManager(t)
 	ctx := context.Background()
 
@@ -263,6 +272,7 @@ func TestRedisStateManager_StorePayload(t *testing.T) {
 }
 
 func TestRedisStateManager_StorePayload_SkipsWhenNoState(t *testing.T) {
+	t.Parallel()
 	sm, _ := setupRedisStateManager(t)
 	ctx := context.Background()
 
@@ -283,6 +293,7 @@ func TestRedisStateManager_StorePayload_SkipsWhenNoState(t *testing.T) {
 }
 
 func TestRedisStateManager_StorePayload_NilOrEmpty(t *testing.T) {
+	t.Parallel()
 	sm, _ := setupRedisStateManager(t)
 	ctx := context.Background()
 
@@ -300,6 +311,7 @@ func TestRedisStateManager_StorePayload_NilOrEmpty(t *testing.T) {
 }
 
 func TestRedisStateManager_LoadStalePayloads(t *testing.T) {
+	t.Parallel()
 	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
@@ -335,6 +347,7 @@ func TestRedisStateManager_LoadStalePayloads(t *testing.T) {
 }
 
 func TestRedisStateManager_ClearPayload(t *testing.T) {
+	t.Parallel()
 	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
@@ -362,6 +375,7 @@ func TestRedisStateManager_ClearPayload(t *testing.T) {
 }
 
 func TestRedisStateManager_Prefix(t *testing.T) {
+	t.Parallel()
 	sm1, _ := setupRedisStateManager(t, WithPrefix("app1:"))
 	sm2, _ := setupRedisStateManager(t, WithPrefix("app2:"))
 	ctx := context.Background()
@@ -379,6 +393,7 @@ func TestRedisStateManager_Prefix(t *testing.T) {
 }
 
 func TestRedisStateManager_RecoveryRunner(t *testing.T) {
+	t.Parallel()
 	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 
@@ -420,6 +435,7 @@ func TestRedisStateManager_RecoveryRunner(t *testing.T) {
 }
 
 func TestRedisStatusConstants(t *testing.T) {
+	t.Parallel()
 	// Verify Redis status constants match expected values
 	if redisStatusProcessing != "processing" {
 		t.Errorf("redisStatusProcessing = %q, want %q", redisStatusProcessing, "processing")
@@ -430,6 +446,7 @@ func TestRedisStatusConstants(t *testing.T) {
 }
 
 func TestRedisStateManager_StorePayload_AtomicTTL(t *testing.T) {
+	t.Parallel()
 	sm, mr := setupRedisStateManager(t)
 	ctx := context.Background()
 
@@ -474,6 +491,7 @@ func TestRedisStateManager_StorePayload_AtomicTTL(t *testing.T) {
 }
 
 func TestRedisStateManager_PayloadRecovery(t *testing.T) {
+	t.Parallel()
 	sm, _, clk := setupRedisStateManagerWithClock(t)
 	ctx := context.Background()
 

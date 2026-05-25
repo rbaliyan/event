@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rbaliyan/event/v3/internal/clock"
 )
 
 func TestMemoryStore(t *testing.T) {
@@ -83,7 +85,8 @@ func TestMemoryStore(t *testing.T) {
 	})
 
 	t.Run("IsPoison returns false after TTL expires", func(t *testing.T) {
-		store := NewMemoryStore()
+		clk := clock.NewFake(time.Time{})
+		store := NewMemoryStore(withClock(clk))
 
 		store.MarkPoison(ctx, "msg-1", 10*time.Millisecond)
 
@@ -93,8 +96,8 @@ func TestMemoryStore(t *testing.T) {
 			t.Error("expected poisoned before expiry")
 		}
 
-		// Wait for expiry
-		time.Sleep(20 * time.Millisecond)
+		// Cross the quarantine TTL boundary deterministically.
+		clk.Advance(20 * time.Millisecond)
 
 		// Not poisoned after expiry
 		isPoisoned, _ = store.IsPoison(ctx, "msg-1")
@@ -137,12 +140,14 @@ func TestMemoryStore(t *testing.T) {
 	})
 
 	t.Run("Cleanup removes expired quarantine entries", func(t *testing.T) {
-		store := NewMemoryStore()
+		clk := clock.NewFake(time.Time{})
+		store := NewMemoryStore(withClock(clk))
 
 		store.MarkPoison(ctx, "msg-1", 10*time.Millisecond)
 		store.MarkPoison(ctx, "msg-2", time.Hour)
 
-		time.Sleep(20 * time.Millisecond)
+		// Cross only msg-1's TTL — msg-2's hour-long TTL stays in effect.
+		clk.Advance(20 * time.Millisecond)
 
 		store.Cleanup()
 
