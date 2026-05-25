@@ -11,23 +11,6 @@ import (
 	"github.com/rbaliyan/event/v3/transport/channel"
 )
 
-// eventuallyEqInt32 polls until atomic.Int32 reaches want or the deadline
-// fires. Replaces the time.Sleep + assert pattern: the test passes the
-// instant the contract is met, and only burns the timeout when something
-// is actually wrong. Defined here (not in internal/testutil) because the
-// root event package cannot import testutil — it would create an import
-// cycle through internal/testutil/bus.go.
-func eventuallyEqInt32(t testing.TB, timeout time.Duration, counter *atomic.Int32, want int32, msg string) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for counter.Load() != want {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: got %d, want %d (after %s)", msg, counter.Load(), want, timeout)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
 func TestWithBestEffort_AutoAcksAndSuppressesErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
