@@ -226,22 +226,33 @@ bus, _ := event.NewBus("mybus",
 // Normal publish - goes directly to transport
 orderEvent.Publish(ctx, order)
 
-// Inside transaction - automatically routes to outbox
-err := outbox.Transaction(ctx, mongoClient, func(ctx context.Context) error {
-    _, err := ordersCol.InsertOne(ctx, order)
-    if err != nil {
-        return err
-    }
-    return orderEvent.Publish(ctx, order)  // Goes to outbox!
-})
+// Inside transaction - wrap the context with WithOutboxTx so Bus.Send
+// routes to OutboxStore.Store instead of the transport.
+tx, _ := db.BeginTx(ctx, nil)
+txCtx := event.WithOutboxTx(ctx, tx)
+if _, err := tx.ExecContext(txCtx, "INSERT INTO orders ..."); err != nil {
+    _ = tx.Rollback()
+    return err
+}
+if err := orderEvent.Publish(txCtx, order); err != nil { // Goes to outbox
+    _ = tx.Rollback()
+    return err
+}
+if err := tx.Commit(); err != nil {
+    return err
+}
 ```
 
+For MongoDB the `event-mongodb` module wires the same `WithOutboxTx`
+pattern through `mongo.Session.WithTransaction` so the session value
+is available to `MongoOutboxStore.Store`.
+
 **How it works:**
-1. `outbox.Transaction()` wraps the context with `event.WithOutboxTx(ctx, session)`
-2. `Bus.Send()` checks `event.InOutboxTx(ctx)` before publishing
-3. If inside transaction AND outbox configured: routes to `OutboxStore.Store()`
-4. Otherwise: publishes directly to transport
-5. Background relay polls outbox and publishes to transport
+1. `event.WithOutboxTx(ctx, session)` stores the session/tx on the context.
+2. `Bus.Send()` checks `event.InOutboxTx(ctx)` before publishing.
+3. If inside transaction AND outbox configured: routes to `OutboxStore.Store()`.
+4. Otherwise: publishes directly to transport.
+5. Background relay polls outbox and publishes to transport.
 
 **Interface:**
 ```go

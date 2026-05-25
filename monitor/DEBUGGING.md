@@ -657,6 +657,36 @@ This means:
 - The `instance_id` in the entry reflects the pod that first recorded "pending", which may be different from the pod that completed processing (in crash/reclaim scenarios).
 - For broadcast mode, `subscription_id` is a UUID regenerated on pod restart, so historical entries may not match the current topology.
 
+### NOGROUP Recovery (Redis Auto-Recreate)
+
+`transport/redis` supports opt-in self-healing when the consumer group
+disappears (Redis restart without persistence, FLUSHDB, manual DEL,
+failover to an empty replica, eviction under maxmemory). Configure with
+`redis.WithAutoRecreateGroup(...)` and observe with
+`redis.WithRecreateHandler(...)`.
+
+**Operational impact by mode:**
+
+| Mode | Blast radius on recreate | When to enable |
+|------|--------------------------|----------------|
+| `RecreateBroadcast` | Low. Broadcast subscriptions own throwaway per-Subscribe groups; PEL loss only affects messages in flight to one replica. | Almost always; the gap window is small and recovery beats a manual process restart. |
+| `RecreateWorkerPool` | High. Worker-pool groups are shared cluster-wide; recreate drops the entire PEL (every other replica's in-flight messages). | Only when at-least-once gaps across Redis state loss are acceptable. |
+| `RecreateMode(0)` (default) | None. Behavior unchanged: NOGROUP retries with exponential backoff and never recovers without a restart. | Default. Choose explicitly via the option above. |
+
+**Detection signals:**
+- `consumer group recreated after NOGROUP` (Warn-level log) on each
+  recreate.
+- If wired, the `WithRecreateHandler` callback fires with
+  `(stream, group, mode)` — typically used to increment a Prometheus
+  counter or page an oncall.
+- Repeated recreate→NOGROUP cycles fall into exponential backoff so a
+  flapping group does not hot-loop.
+
+**What's not recovered:**
+The destroyed group's Pending Entries List is unrecoverable. Messages
+published in the gap between destruction and recreate are not delivered
+to a broadcast subscription that started at `$`.
+
 ### Reading Monitor Entry Fields
 
 | Field | Notes |

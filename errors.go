@@ -5,6 +5,36 @@ import (
 	"fmt"
 )
 
+// Sentinel errors exposed by the root event package. Check these with
+// errors.Is, since wrappers in Bus.Send / Event.Publish may add context.
+//
+// Bus and registration errors are declared in this file:
+//
+//   - ErrBusClosed, ErrBusExists, ErrBusNotFound
+//   - ErrEventExists, ErrEventNotFound, ErrTypeMismatch
+//   - ErrAlreadyBound, ErrTransportRequired, ErrInvalidFullName,
+//     ErrSchemaLoadFailed
+//
+// Handler-result sentinels (ErrAck, ErrNack, ErrReject, ErrDefer) and
+// their typed errors (RetryExhaustedError, DuplicateMessageError) are
+// declared further down in this file.
+//
+// Event lifecycle errors live in event.go:
+//
+//   - ErrEventNotBound, ErrInvalidSubscribeOptions
+//
+// Sub-package sentinels (errors.Is-compatible across the v3 module):
+//
+//   - idempotency.ErrAlreadyProcessed
+//   - poison.NewError (typed PoisonError)
+//   - schema.ErrSchemaNotFound, schema.ErrInvalidPayload,
+//     schema.ErrNoUpcaster
+//   - transport.ErrEventNotRegistered, transport.ErrEventAlreadyExists,
+//     transport.ErrTransportClosed, transport.ErrPublishTimeout
+//   - errors.ErrNotFound, errors.ErrVersionConflict, errors.ErrAlreadyExists,
+//     errors.ErrClosed, errors.ErrTimeout, errors.ErrInvalidArgument
+//     (cross-ecosystem shared errors; see COMPATIBILITY.md).
+
 // Bus errors
 var (
 	ErrBusClosed         = errors.New("bus is closed")

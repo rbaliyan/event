@@ -206,52 +206,21 @@ func Example_redisStore() {
 	// - TTL for automatic expiration
 }
 
-// Example_mongoStore demonstrates the MongoDB checkpoint store configuration.
+// Example_mongoStore points readers to the MongoDB checkpoint store, which
+// now lives in the event-mongodb module after the extraction described in
+// the package-level doc.
 //
-// MongoStore is production-ready and stores checkpoints as MongoDB documents.
-// This example shows the configuration pattern - actual MongoDB connection
-// is not established.
+//   import "github.com/rbaliyan/event-mongodb/checkpoint"
+//
+//   collection := client.Database("myapp").Collection("checkpoints")
+//   store := checkpoint.NewMongoStore(collection,
+//       checkpoint.WithMongoTTL(7*24*time.Hour))
+//   _ = store.EnsureIndexes(ctx) // creates the TTL index once on startup
+//   // Save/Load semantics match the in-package memory and Redis stores.
 func Example_mongoStore() {
-	// Note: This is configuration example only - no actual MongoDB connection
-	//
-	// In production code:
-	//
-	//   import "go.mongodb.org/mongo-driver/v2/mongo"
-	//
-	//   client, _ := mongo.Connect(options.Client().ApplyURI("mongodb://localhost:27017"))
-	//   collection := client.Database("myapp").Collection("checkpoints")
-	//
-	//   // Basic store
-	//   store := checkpoint.NewMongoStore(collection)
-	//
-	//   // With TTL - MongoDB automatically removes expired documents
-	//   store := checkpoint.NewMongoStore(collection,
-	//       checkpoint.WithMongoTTL(7*24*time.Hour))
-	//
-	//   // Create TTL index (call once on startup)
-	//   store.EnsureIndexes(ctx)
-	//
-	//   // Usage is identical to other stores
-	//   err := store.Save(ctx, "subscriber-id", time.Now())
-	//   position, err := store.Load(ctx, "subscriber-id")
-	//
-	// MongoDB stores checkpoints as documents:
-	//   {
-	//       "_id": "subscriber-id",
-	//       "position": ISODate("2024-01-15T10:30:00Z"),
-	//       "updated_at": ISODate("2024-01-15T10:30:00Z")
-	//   }
-
-	fmt.Println("MongoDB checkpoint store features:")
-	fmt.Println("- Document-based storage")
-	fmt.Println("- TTL index for automatic cleanup")
-	fmt.Println("- Tracks position and updated_at separately")
-
+	fmt.Println("see https://github.com/rbaliyan/event-mongodb for the MongoDB checkpoint store")
 	// Output:
-	// MongoDB checkpoint store features:
-	// - Document-based storage
-	// - TTL index for automatic cleanup
-	// - Tracks position and updated_at separately
+	// see https://github.com/rbaliyan/event-mongodb for the MongoDB checkpoint store
 }
 
 // Example_withEventSubscription demonstrates integrating checkpoints with event subscriptions.

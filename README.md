@@ -14,7 +14,7 @@ A **production-grade event pub-sub library** for Go with support for distributed
 ### Core
 - **Type-Safe Generics**: `Event[T]` ensures compile-time type safety
 - **Multiple Transports**: Channel (in-memory), Redis Streams, NATS JetStream, Kafka
-- **Fire-and-Forget API**: `Publish()` and `Subscribe()` are void - events are facts
+- **Simple API**: `Publish()` and `Subscribe()` return `error`, so callers see transport failures and registration errors directly; events are still treated as facts in domain code
 - **Delivery Modes**: Broadcast (fan-out) or WorkerPool (load balancing)
 
 ### Reliability
@@ -54,6 +54,37 @@ All packages share consistent patterns:
 - Multiple backend implementations (PostgreSQL, Redis, and MongoDB via event-mongodb)
 
 > **Note:** MongoDB implementations for outbox, monitor, distributed state manager, schema, idempotency, and checkpoint were moved to the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module. See each section below for migration details.
+
+## Sub-packages
+
+Top-level sub-packages of `github.com/rbaliyan/event/v3`. Each has its own godoc on pkg.go.dev.
+
+| Path | Purpose |
+|------|---------|
+| `backoff` | Exponential / linear / constant retry strategies with jitter |
+| `batch` | Batch publish helpers for high-throughput producers |
+| `checkpoint` | Subscriber checkpoint persistence (memory, file, Redis, PostgreSQL) |
+| `distributed` | WorkerPool semantics on broadcast-only transports + recovery runner |
+| `errors` | Shared sentinel errors and `Wrap*` helpers |
+| `health` | `Checker` interface and aggregator for transport / store health |
+| `idempotency` | Duplicate detection store (memory / Redis / PostgreSQL) |
+| `metrics` | OpenTelemetry meter wiring shared across packages |
+| `monitor` | Event-level processing telemetry; HTTP + gRPC surfaces in `monitor/http`, `monitor/grpc` |
+| `outbox` | Transactional outbox store + relay |
+| `partition` | Consistent-hash partition assignment for routed delivery |
+| `payload` | Codec interface + JSON / Msgpack implementations |
+| `poison` | Failure-count tracking + quarantine store |
+| `schema` | Publisher-defined event configuration + payload schema evolution |
+| `stack` | `WithReliabilityStack` convenience that wires monitor + idempotency + poison |
+| `store` | Common store interfaces (base + helpers) |
+| `transaction` | Bus-level transaction context helpers |
+| `validation` | Payload validator interface and helpers |
+| `transport/{channel,redis,nats,kafka}` | Production transports |
+| `transport/{ackonly,composite,noop,bridge,persistent,migration}` | Specialized transport adapters |
+| `transport/{message,codec,base}` | Transport-layer primitives |
+
+For implementation guidance and architecture context, see [`CLAUDE.md`](CLAUDE.md).
+For operational debugging, see [`monitor/DEBUGGING.md`](monitor/DEBUGGING.md).
 
 ## Installation
 
@@ -890,6 +921,40 @@ func TestOrderHandler(t *testing.T) {
     }
 }
 ```
+
+### Deterministic time with `internal/clock`
+
+Several stores (`distributed.MemoryStateManager`, `idempotency.MemoryStore`,
+`poison.MemoryStore`, `transport/bridge.MemoryCoordinator`) accept a
+`clock.Clock` via an unexported `withClock` test hook. Tests construct a
+`clock.NewFake(...)` instance and call `Advance(d)` to cross TTL or
+stale-timeout boundaries deterministically — no `time.Sleep` required.
+
+The `clock.Clock` interface and its `Real` / `Fake` implementations live
+in `internal/clock` (a leaf package, so they're available to both
+production code and `internal/testutil` without cycles). Tests inside
+the same package as the store reach the hook directly; tests in other
+packages within this repo go through `internal/testutil`, which
+re-exports `clock.Clock` as `testutil.Clock` etc.
+
+This pattern is internal — external consumers should not depend on
+`withClock` or `internal/clock`. Production callers always get the real
+clock, set as the default in each constructor.
+
+```go
+import "github.com/rbaliyan/event/v3/internal/clock"
+
+// inside the same package as the store under test:
+clk := clock.NewFake(time.Time{})
+sm := distributed.NewMemoryStateManager(distributed.WithCleanup(false, 0), withClock(clk))
+sm.Acquire(ctx, "msg-1", 10*time.Millisecond)
+clk.Advance(20 * time.Millisecond) // cross the TTL boundary
+// now sm.Acquire("msg-1") succeeds again
+```
+
+For cross-package tests, see `internal/testutil/clock.go` and the
+`Eventually` / `WaitFor` polling helpers in
+`internal/testutil/eventually.go`.
 
 ## Message Routing
 

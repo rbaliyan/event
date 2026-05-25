@@ -1,3 +1,16 @@
+// Package partition provides consistent-hash partition assignment for
+// routed event delivery.
+//
+// Partitioning maps a routing key (typically a domain identifier such as
+// order_id or tenant_id) onto a partition via consistent hashing with
+// virtual nodes. The same routing key always lands on the same partition
+// as long as the partition set is stable; when partitions are added or
+// removed, only the keys mapped to the affected positions move, leaving
+// the rest in place.
+//
+// Compose with `event.AsWorker` + `ContextWithRoutingKey` when ordering
+// across a key must be preserved by a specific worker, or when you want
+// to bind expensive per-key state to a particular subscriber.
 package partition
 
 import (
