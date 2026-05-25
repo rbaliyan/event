@@ -57,6 +57,7 @@ func setupCoverageBus(t *testing.T, busName, evName string) (event.EventInfo, fu
 }
 
 func TestHandleCoverage_BroadcastMatch(t *testing.T) {
+	t.Parallel()
 	busName := "cov-broadcast-" + t.Name()
 	evName := "coverage.broadcast"
 	ctx := context.Background()
@@ -121,6 +122,7 @@ func TestHandleCoverage_BroadcastMatch(t *testing.T) {
 }
 
 func TestHandleCoverage_WorkerPoolGroupMatch(t *testing.T) {
+	t.Parallel()
 	busName := "cov-wp-" + t.Name()
 	evName := "coverage.workergroup"
 	ctx := context.Background()
@@ -168,6 +170,7 @@ func TestHandleCoverage_WorkerPoolGroupMatch(t *testing.T) {
 }
 
 func TestHandleCoverage_MissingCount(t *testing.T) {
+	t.Parallel()
 	busName := "cov-missing-" + t.Name()
 	evName := "coverage.missing"
 	ctx := context.Background()
@@ -209,6 +212,7 @@ func TestHandleCoverage_MissingCount(t *testing.T) {
 }
 
 func TestHandleCoverage_EmptyEventID(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
@@ -223,6 +227,7 @@ func TestHandleCoverage_EmptyEventID(t *testing.T) {
 }
 
 func TestHandleCoverage_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 

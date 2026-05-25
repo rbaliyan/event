@@ -11,6 +11,7 @@ import (
 )
 
 func TestMemoryStateManager_Acquire(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := NewMemoryStateManager()
 	defer sm.Close()
@@ -44,6 +45,7 @@ func TestMemoryStateManager_Acquire(t *testing.T) {
 }
 
 func TestMemoryStateManager_MarkProcessed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := NewMemoryStateManager()
 	defer sm.Close()
@@ -67,6 +69,7 @@ func TestMemoryStateManager_MarkProcessed(t *testing.T) {
 }
 
 func TestMemoryStateManager_Reset(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := NewMemoryStateManager()
 	defer sm.Close()
@@ -90,6 +93,7 @@ func TestMemoryStateManager_Reset(t *testing.T) {
 }
 
 func TestMemoryStateManager_Expiry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
@@ -111,6 +115,7 @@ func TestMemoryStateManager_Expiry(t *testing.T) {
 }
 
 func TestStateOptions(t *testing.T) {
+	t.Parallel()
 	opts := defaultStateOptions()
 
 	// Test defaults
@@ -151,6 +156,7 @@ func TestStateOptions(t *testing.T) {
 }
 
 func TestMemoryStateManager_ListStale(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := NewMemoryStateManager(
 		WithCleanup(false, 0), // Disable cleanup for this test
@@ -196,6 +202,7 @@ func TestMemoryStateManager_ListStale(t *testing.T) {
 }
 
 func TestMemoryStateManager_ResetStale(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm := NewMemoryStateManager(
 		WithCleanup(false, 0),
@@ -230,6 +237,7 @@ func TestMemoryStateManager_ResetStale(t *testing.T) {
 }
 
 func TestRecoveryRunner_RecoverOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sm, clk := newSMWithFakeClock()
 	defer sm.Close()
@@ -274,6 +282,7 @@ func TestRecoveryRunner_RecoverOnce(t *testing.T) {
 }
 
 func TestRecoveryRunner_Run(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -349,6 +358,7 @@ func (s *countingSender) Send(_ context.Context, eventName, _ string, payload []
 // called after MarkProcessed succeeds. If MarkProcessed fails, payload must be
 // retained so the next recovery cycle can retry the re-publish.
 func TestRecovery_ClearPayloadAfterMarkProcessed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	inner, clk := newSMWithFakeClock()

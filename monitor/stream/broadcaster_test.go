@@ -49,6 +49,7 @@ func (m *mockStore) DeleteOlderThan(ctx context.Context, age time.Duration) (int
 }
 
 func TestMatchesFilter_Empty(t *testing.T) {
+	t.Parallel()
 	entry := &monitor.Entry{
 		EventID:   "e1",
 		EventName: "orders.created",
@@ -60,6 +61,7 @@ func TestMatchesFilter_Empty(t *testing.T) {
 }
 
 func TestMatchesFilter_EventName(t *testing.T) {
+	t.Parallel()
 	entry := &monitor.Entry{EventName: "orders.created"}
 
 	if !matchesFilter(entry, monitor.Filter{EventName: "orders.created"}) {
@@ -71,6 +73,7 @@ func TestMatchesFilter_EventName(t *testing.T) {
 }
 
 func TestMatchesFilter_Status(t *testing.T) {
+	t.Parallel()
 	entry := &monitor.Entry{Status: monitor.StatusFailed}
 
 	f := monitor.Filter{
@@ -87,6 +90,7 @@ func TestMatchesFilter_Status(t *testing.T) {
 }
 
 func TestMatchesFilter_HasError(t *testing.T) {
+	t.Parallel()
 	withErr := &monitor.Entry{Error: "something failed"}
 	noErr := &monitor.Entry{}
 
@@ -105,6 +109,7 @@ func TestMatchesFilter_HasError(t *testing.T) {
 }
 
 func TestMatchesFilter_DeliveryMode(t *testing.T) {
+	t.Parallel()
 	entry := &monitor.Entry{DeliveryMode: monitor.WorkerPool}
 
 	wp := monitor.WorkerPool
@@ -119,6 +124,7 @@ func TestMatchesFilter_DeliveryMode(t *testing.T) {
 }
 
 func TestMatchesFilter_TimeRange(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	entry := &monitor.Entry{StartedAt: now}
 
@@ -131,6 +137,7 @@ func TestMatchesFilter_TimeRange(t *testing.T) {
 }
 
 func TestMatchesFilter_MinDuration(t *testing.T) {
+	t.Parallel()
 	entry := &monitor.Entry{Duration: 5 * time.Second}
 
 	if !matchesFilter(entry, monitor.Filter{MinDuration: 3 * time.Second}) {
@@ -142,6 +149,7 @@ func TestMatchesFilter_MinDuration(t *testing.T) {
 }
 
 func TestMatchesFilter_MinRetries(t *testing.T) {
+	t.Parallel()
 	entry := &monitor.Entry{RetryCount: 3}
 
 	if !matchesFilter(entry, monitor.Filter{MinRetries: 2}) {
@@ -153,6 +161,7 @@ func TestMatchesFilter_MinRetries(t *testing.T) {
 }
 
 func TestSubscriber_Close(t *testing.T) {
+	t.Parallel()
 	sub := &Subscriber{
 		entries: make(chan *monitor.Entry, 10),
 		done:    make(chan struct{}),
@@ -164,6 +173,7 @@ func TestSubscriber_Close(t *testing.T) {
 }
 
 func TestSubscriber_Entries(t *testing.T) {
+	t.Parallel()
 	sub := &Subscriber{
 		entries: make(chan *monitor.Entry, 10),
 		done:    make(chan struct{}),
@@ -175,6 +185,7 @@ func TestSubscriber_Entries(t *testing.T) {
 }
 
 func TestNewBroadcaster(t *testing.T) {
+	t.Parallel()
 	store := &mockStore{}
 	b := NewBroadcaster(store, 0)
 	if b.pollInterval != DefaultPollInterval {
@@ -188,6 +199,7 @@ func TestNewBroadcaster(t *testing.T) {
 }
 
 func TestBroadcaster_SubscribeUnsubscribe(t *testing.T) {
+	t.Parallel()
 	store := &mockStore{}
 	b := NewBroadcaster(store, time.Second)
 
@@ -213,6 +225,7 @@ func TestBroadcaster_SubscribeUnsubscribe(t *testing.T) {
 }
 
 func TestBroadcaster_UnsubscribeNil(t *testing.T) {
+	t.Parallel()
 	store := &mockStore{}
 	b := NewBroadcaster(store, time.Second)
 	// Should not panic
@@ -220,6 +233,7 @@ func TestBroadcaster_UnsubscribeNil(t *testing.T) {
 }
 
 func TestBroadcaster_StartStop(t *testing.T) {
+	t.Parallel()
 	store := &mockStore{}
 	b := NewBroadcaster(store, 50*time.Millisecond)
 
@@ -234,6 +248,7 @@ func TestBroadcaster_StartStop(t *testing.T) {
 }
 
 func TestBroadcaster_StopWithoutStart(t *testing.T) {
+	t.Parallel()
 	store := &mockStore{}
 	b := NewBroadcaster(store, time.Second)
 	// Should not panic
@@ -241,6 +256,7 @@ func TestBroadcaster_StopWithoutStart(t *testing.T) {
 }
 
 func TestBroadcaster_BroadcastEntries(t *testing.T) {
+	t.Parallel()
 	entry := &monitor.Entry{
 		EventID:   "e1",
 		EventName: "orders.created",

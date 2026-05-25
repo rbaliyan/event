@@ -13,6 +13,7 @@ import (
 )
 
 func TestHandlerNew(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
@@ -23,6 +24,7 @@ func TestHandlerNew(t *testing.T) {
 }
 
 func TestHandlerList(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -115,6 +117,7 @@ func TestHandlerList(t *testing.T) {
 }
 
 func TestHandlerGetEntry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -167,6 +170,7 @@ func TestHandlerGetEntry(t *testing.T) {
 }
 
 func TestHandlerGetByEventID(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -219,6 +223,7 @@ func TestHandlerGetByEventID(t *testing.T) {
 }
 
 func TestHandlerCount(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -294,6 +299,7 @@ func TestHandlerCount(t *testing.T) {
 }
 
 func TestHandlerDelete(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("DELETE with default 24h", func(t *testing.T) {
@@ -400,6 +406,7 @@ func TestHandlerDelete(t *testing.T) {
 }
 
 func TestHandlerQueryParams(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -492,6 +499,7 @@ func TestHandlerQueryParams(t *testing.T) {
 }
 
 func TestHandlerContentType(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 

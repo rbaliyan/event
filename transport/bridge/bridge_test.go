@@ -226,6 +226,7 @@ func (m *testMessage) Ack(err error) error {
 // -----------------------------------------------------------------------------
 
 func TestNew_errors(t *testing.T) {
+	t.Parallel()
 	sink := newFakeTransport()
 	src := newFakeTransport()
 
@@ -242,6 +243,7 @@ func TestNew_errors(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestPump_forwardsMessages(t *testing.T) {
+	t.Parallel()
 	src := newFakeTransport()
 	sink := newFakeTransport()
 	ctx := context.Background()
@@ -280,6 +282,7 @@ func TestPump_forwardsMessages(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestPublishDelegatesToSink(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -303,6 +306,7 @@ func TestPublishDelegatesToSink(t *testing.T) {
 }
 
 func TestSubscribeDelegatesToSink(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -335,6 +339,7 @@ func TestSubscribeDelegatesToSink(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestDedupMiddleware_suppressesDuplicates(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -371,6 +376,7 @@ func TestDedupMiddleware_suppressesDuplicates(t *testing.T) {
 }
 
 func TestDedupMiddleware_differentIDsPassThrough(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -390,6 +396,7 @@ func TestDedupMiddleware_differentIDsPassThrough(t *testing.T) {
 }
 
 func TestDedup_failClosedOnCoordinatorError(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -421,6 +428,7 @@ func TestDedup_failClosedOnCoordinatorError(t *testing.T) {
 }
 
 func TestDedup_failOpenOnCoordinatorError(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -444,6 +452,7 @@ func TestDedup_failOpenOnCoordinatorError(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestDistributedDedup_isolatesEventNames(t *testing.T) {
+	t.Parallel()
 	// Regression: when multiple events share the same source (fan-out pattern,
 	// e.g. MongoDB change stream delivering to Created/Updated/Deleted pumps
 	// on the same bus), all pumps receive the same message. Without scoping the
@@ -498,6 +507,7 @@ func TestDistributedDedup_isolatesEventNames(t *testing.T) {
 }
 
 func TestDistributedDedup_crossReplicaDedup_stillWorks(t *testing.T) {
+	t.Parallel()
 	// Two bridges sharing the same coordinator simulate two replicas watching
 	// the same source. For the same event name, only one replica should
 	// publish each message.
@@ -554,6 +564,7 @@ func TestDistributedDedup_crossReplicaDedup_stillWorks(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestDLQMiddleware_catchesSinkErrors(t *testing.T) {
+	t.Parallel()
 	src, sink, dlq := newFakeTransport(), newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -590,6 +601,7 @@ func TestDLQMiddleware_catchesSinkErrors(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestFilterMiddleware(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -614,6 +626,7 @@ func TestFilterMiddleware(t *testing.T) {
 }
 
 func TestTransformMiddleware(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -636,6 +649,7 @@ func TestTransformMiddleware(t *testing.T) {
 }
 
 func TestObserveMiddleware_hooksFire(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -674,6 +688,7 @@ func TestObserveMiddleware_hooksFire(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestPump_recoversFromPanic(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -706,6 +721,7 @@ func TestPump_recoversFromPanic(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestClose_stopsPumps(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -727,6 +743,7 @@ func TestClose_stopsPumps(t *testing.T) {
 }
 
 func TestUnregisterEvent(t *testing.T) {
+	t.Parallel()
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
 	_ = src.RegisterEvent(ctx, "x")
@@ -748,6 +765,7 @@ func TestUnregisterEvent(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestMemoryCoordinator_claimsAndExpires(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	c := bridge.NewMemoryCoordinator()
 
@@ -777,6 +795,7 @@ func TestMemoryCoordinator_claimsAndExpires(t *testing.T) {
 }
 
 func TestNoopCoordinator_alwaysClaims(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	c := bridge.NoopCoordinator{}
 	for range 3 {
@@ -814,6 +833,7 @@ func (h *healthyFakeTransport) Health(_ context.Context) *transport.HealthCheckR
 }
 
 func TestHealth_BothHealthy(t *testing.T) {
+	t.Parallel()
 	src := newHealthFake(transport.HealthStatusHealthy, "ok")
 	sink := newHealthFake(transport.HealthStatusHealthy, "ok")
 	ctx := context.Background()
@@ -833,6 +853,7 @@ func TestHealth_BothHealthy(t *testing.T) {
 }
 
 func TestHealth_SourceUnhealthy(t *testing.T) {
+	t.Parallel()
 	src := newHealthFake(transport.HealthStatusUnhealthy, "source down")
 	sink := newHealthFake(transport.HealthStatusHealthy, "ok")
 	ctx := context.Background()
@@ -848,6 +869,7 @@ func TestHealth_SourceUnhealthy(t *testing.T) {
 }
 
 func TestHealth_SinkDegraded(t *testing.T) {
+	t.Parallel()
 	src := newHealthFake(transport.HealthStatusHealthy, "ok")
 	sink := newHealthFake(transport.HealthStatusDegraded, "slow")
 	ctx := context.Background()
@@ -862,6 +884,7 @@ func TestHealth_SinkDegraded(t *testing.T) {
 }
 
 func TestHealth_AfterClose(t *testing.T) {
+	t.Parallel()
 	src := newHealthFake(transport.HealthStatusHealthy, "ok")
 	sink := newHealthFake(transport.HealthStatusHealthy, "ok")
 	ctx := context.Background()
@@ -876,6 +899,7 @@ func TestHealth_AfterClose(t *testing.T) {
 }
 
 func TestHealth_NonHealthCheckerTransports(t *testing.T) {
+	t.Parallel()
 	// Plain fakeTransport does NOT implement HealthChecker.
 	src, sink := newFakeTransport(), newFakeTransport()
 	ctx := context.Background()
