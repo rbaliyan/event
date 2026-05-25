@@ -8,6 +8,7 @@ import (
 )
 
 func TestRoutingKey(t *testing.T) {
+	t.Parallel()
 	got := RoutingKey("region")
 	want := "X-Route-region"
 	if got != want {
@@ -16,6 +17,7 @@ func TestRoutingKey(t *testing.T) {
 }
 
 func TestHasRoutingKeys(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		metadata map[string]string
@@ -39,6 +41,7 @@ func TestHasRoutingKeys(t *testing.T) {
 }
 
 func TestMatchesRouteFilters(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		metadata map[string]string
@@ -67,6 +70,7 @@ func TestMatchesRouteFilters(t *testing.T) {
 }
 
 func TestContextWithRoutingKey(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Add a routing key
@@ -93,6 +97,7 @@ func TestContextWithRoutingKey(t *testing.T) {
 }
 
 func TestContextWithRoutingKey_OverwriteExisting(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	ctx = ContextWithRoutingKey(ctx, "region", "us-east")
 	ctx = ContextWithRoutingKey(ctx, "region", "eu-west")
@@ -104,6 +109,7 @@ func TestContextWithRoutingKey_OverwriteExisting(t *testing.T) {
 }
 
 func TestMatchesRouteFilters_Reexport(t *testing.T) {
+	t.Parallel()
 	// Verify the re-exported function works identically
 	meta := map[string]string{"X-Route-region": "us-east"}
 	if !MatchesRouteFilters(meta, map[string]string{"X-Route-region": "us-east"}) {
@@ -115,6 +121,7 @@ func TestMatchesRouteFilters_Reexport(t *testing.T) {
 }
 
 func TestWithRouteMatch_Composition(t *testing.T) {
+	t.Parallel()
 	// Two predicates composed with AND semantics
 	var opts []SubscribeOption[string]
 	opts = append(opts,

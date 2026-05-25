@@ -29,6 +29,7 @@ func eventuallyEqInt32(t testing.TB, timeout time.Duration, counter *atomic.Int3
 }
 
 func TestWithBestEffort_AutoAcksAndSuppressesErrors(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -65,6 +66,7 @@ func TestWithBestEffort_AutoAcksAndSuppressesErrors(t *testing.T) {
 }
 
 func TestWithAckPolicy_ExplicitIsDefault(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -102,6 +104,7 @@ func TestWithAckPolicy_ExplicitIsDefault(t *testing.T) {
 }
 
 func TestSubscribeOptionValidation_CoalesceAndLatestOnly(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	bus := mustNewBus(t, "validate-"+randomString(6), WithTransport(channel.New()))
 	defer bus.Close(ctx)
@@ -123,6 +126,7 @@ func TestSubscribeOptionValidation_CoalesceAndLatestOnly(t *testing.T) {
 }
 
 func TestSubscribeOptionValidation_BothCoalesceOptions(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	bus := mustNewBus(t, "validate2-"+randomString(6), WithTransport(channel.New()))
 	defer bus.Close(ctx)
@@ -144,6 +148,7 @@ func TestSubscribeOptionValidation_BothCoalesceOptions(t *testing.T) {
 }
 
 func TestBestEffortMiddleware(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -176,6 +181,7 @@ func TestBestEffortMiddleware(t *testing.T) {
 }
 
 func TestContextCoalescedCount_DefaultZero(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if count := ContextCoalescedCount(ctx); count != 0 {
 		t.Errorf("expected 0, got %d", count)
@@ -183,6 +189,7 @@ func TestContextCoalescedCount_DefaultZero(t *testing.T) {
 }
 
 func TestContextCoalescedCount_Set(t *testing.T) {
+	t.Parallel()
 	ctx := contextWithInfo(context.Background(), contextInfo{
 		id: "id", name: "name", source: "source", subID: "sub",
 		msgTime: time.Now(), mode: Broadcast, coalescedCount: 5,
@@ -193,6 +200,7 @@ func TestContextCoalescedCount_Set(t *testing.T) {
 }
 
 func TestWithCoalesceByKey_SupersedesPendingMessages(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
