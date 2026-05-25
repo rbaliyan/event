@@ -152,6 +152,7 @@ func (s *mockStore) publishedCount() int {
 // Tests
 
 func TestStatusConstants(t *testing.T) {
+	t.Parallel()
 	if StatusPending != "pending" {
 		t.Errorf("expected pending, got %s", StatusPending)
 	}
@@ -167,6 +168,7 @@ func TestStatusConstants(t *testing.T) {
 }
 
 func TestNewRelay(t *testing.T) {
+	t.Parallel()
 	store := newMockStore()
 	tr := channel.New()
 	relay := NewRelay(store, tr)
@@ -189,6 +191,7 @@ func TestNewRelay(t *testing.T) {
 }
 
 func TestRelayOptions(t *testing.T) {
+	t.Parallel()
 	store := newMockStore()
 	tr := channel.New()
 
@@ -210,6 +213,7 @@ func TestRelayOptions(t *testing.T) {
 }
 
 func TestRelayPublishOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := newMockStore()
 	tr := channel.New()
@@ -266,6 +270,7 @@ func TestRelayPublishOnce(t *testing.T) {
 }
 
 func TestRelayPublishFailure(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := newMockStore()
 	tr := channel.New()
@@ -300,6 +305,7 @@ func TestRelayPublishFailure(t *testing.T) {
 }
 
 func TestRelayStartStop(t *testing.T) {
+	t.Parallel()
 	store := newMockStore()
 	tr := channel.New()
 
@@ -328,6 +334,7 @@ func TestRelayStartStop(t *testing.T) {
 }
 
 func TestRelayMultipleMessages(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := newMockStore()
 	tr := channel.New()
@@ -371,6 +378,7 @@ func TestRelayMultipleMessages(t *testing.T) {
 }
 
 func TestMockStoreGetPendingError(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := newMockStore()
 	store.getPendingErr = errors.New("db connection failed")
@@ -408,6 +416,7 @@ func (s *mockProcessPendingStore) ProcessPending(ctx context.Context, limit int,
 }
 
 func TestRelayProcessPendingPreferred(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	inner := newMockStore()
 	store := &mockProcessPendingStore{mockStore: inner}
@@ -437,6 +446,7 @@ func TestRelayProcessPendingPreferred(t *testing.T) {
 }
 
 func TestRelayCleanup(t *testing.T) {
+	t.Parallel()
 	store := newMockStore()
 	store.deleted = 5 // simulate 5 deleted
 	tr := channel.New()
@@ -449,6 +459,7 @@ func TestRelayCleanup(t *testing.T) {
 }
 
 func TestRelayMarkFailedOnPublishError(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := newMockStore()
 	tr := channel.New()
@@ -473,6 +484,7 @@ func TestRelayMarkFailedOnPublishError(t *testing.T) {
 }
 
 func TestRelayEmptyStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := newMockStore()
 	tr := channel.New()
@@ -487,6 +499,7 @@ func TestRelayEmptyStore(t *testing.T) {
 }
 
 func TestRelayDeleteError(t *testing.T) {
+	t.Parallel()
 	store := newMockStore()
 	store.deleteErr = errors.New("delete failed")
 	tr := channel.New()
@@ -497,6 +510,7 @@ func TestRelayDeleteError(t *testing.T) {
 }
 
 func TestMessageStruct(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	msg := Message{
 		ID:         1,
@@ -524,6 +538,7 @@ func TestMessageStruct(t *testing.T) {
 }
 
 func TestRelayMaxRetries(t *testing.T) {
+	t.Parallel()
 	store := newMockStore()
 	tr := channel.New(channel.WithBufferSize(100))
 	relay := NewRelay(store, tr,
@@ -561,6 +576,7 @@ func TestRelayMaxRetries(t *testing.T) {
 }
 
 func TestRelayAdaptiveBackpressure(t *testing.T) {
+	t.Parallel()
 	store := newMockStore()
 	tr := channel.New(channel.WithBufferSize(100))
 
@@ -595,6 +611,7 @@ func (b *testBackoff) NextDelay(attempt int) time.Duration {
 }
 
 func TestRelayPriority(t *testing.T) {
+	t.Parallel()
 	store := newMockStore()
 	ctx := context.Background()
 
@@ -639,6 +656,7 @@ func TestRelayPriority(t *testing.T) {
 }
 
 func TestPostgresTransaction_PiggyBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Simulate already being inside a Postgres transaction.
@@ -663,6 +681,7 @@ func TestPostgresTransaction_PiggyBack(t *testing.T) {
 }
 
 func TestPostgresTransaction_PiggyBack_PropagatesError(t *testing.T) {
+	t.Parallel()
 	ctx := event.WithOutboxTx(context.Background(), &sql.Tx{})
 
 	testErr := errors.New("business logic failed")
@@ -675,6 +694,7 @@ func TestPostgresTransaction_PiggyBack_PropagatesError(t *testing.T) {
 }
 
 func TestPostgresTransaction_NoPiggyBackOnMongoSession(t *testing.T) {
+	t.Parallel()
 	// Set a non-*sql.Tx session (simulating a Mongo context.Context session).
 	// PostgresTransaction should NOT piggy-back — it should try to start a new tx.
 	ctx := event.WithOutboxTx(context.Background(), context.Background())
@@ -698,6 +718,7 @@ func TestPostgresTransaction_NoPiggyBackOnMongoSession(t *testing.T) {
 }
 
 func TestPostgresStoreImplementsOutboxStore(t *testing.T) {
+	t.Parallel()
 	var s interface{} = &PostgresStore{}
 	if _, ok := s.(event.OutboxStore); !ok {
 		t.Fatal("PostgresStore should implement event.OutboxStore")
@@ -705,6 +726,7 @@ func TestPostgresStoreImplementsOutboxStore(t *testing.T) {
 }
 
 func TestPostgresStore_Store_WrongSessionType(t *testing.T) {
+	t.Parallel()
 	store := &PostgresStore{tableName: "event_outbox"}
 	// Put a non-*sql.Tx session in context.
 	ctx := event.WithOutboxTx(context.Background(), "not-a-sql-tx")
