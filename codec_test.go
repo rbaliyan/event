@@ -10,6 +10,7 @@ import (
 )
 
 func TestJSONCodecEncode(t *testing.T) {
+	t.Parallel()
 	// Use the default codec
 	c := codec.Default()
 
@@ -44,6 +45,7 @@ func TestJSONCodecEncode(t *testing.T) {
 }
 
 func TestJSONCodecDecode(t *testing.T) {
+	t.Parallel()
 	c := codec.Default()
 
 	jsonData := `{"id":"msg-123","source":"src-456","payload":"dGVzdCBkYXRh","metadata":{"foo":"bar"}}`
@@ -72,6 +74,7 @@ func TestJSONCodecDecode(t *testing.T) {
 }
 
 func TestJSONCodecRoundTrip(t *testing.T) {
+	t.Parallel()
 	c := codec.Default()
 
 	type TestPayload struct {
@@ -134,6 +137,7 @@ func TestJSONCodecRoundTrip(t *testing.T) {
 }
 
 func TestJSONCodecDecodeInvalidJSON(t *testing.T) {
+	t.Parallel()
 	c := codec.Default()
 
 	_, err := c.Decode([]byte("not valid json"))
@@ -143,6 +147,7 @@ func TestJSONCodecDecodeInvalidJSON(t *testing.T) {
 }
 
 func TestJSONCodecEncodeNilMetadata(t *testing.T) {
+	t.Parallel()
 	c := codec.Default()
 
 	msg := message.New("test-id", "test-source", []byte("data"), nil)
@@ -165,6 +170,7 @@ func TestJSONCodecEncodeNilMetadata(t *testing.T) {
 }
 
 func TestJSONCodecDecodeNoMetadata(t *testing.T) {
+	t.Parallel()
 	c := codec.Default()
 
 	jsonData := `{"id":"msg-123","source":"src-456","payload":"dGVzdA=="}`

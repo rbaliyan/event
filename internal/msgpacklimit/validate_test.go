@@ -8,6 +8,7 @@ import (
 )
 
 func TestValidate_ValidInputs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value any
@@ -39,6 +40,7 @@ func TestValidate_ValidInputs(t *testing.T) {
 }
 
 func TestValidate_OversizedArray(t *testing.T) {
+	t.Parallel()
 	// Craft a msgpack array32 header claiming 2 billion elements
 	// 0xdd = array32, followed by 4-byte big-endian length
 	data := []byte{0xdd, 0x77, 0x35, 0x94, 0x00} // ~2 billion
@@ -49,6 +51,7 @@ func TestValidate_OversizedArray(t *testing.T) {
 }
 
 func TestValidate_OversizedMap(t *testing.T) {
+	t.Parallel()
 	// Craft a msgpack map32 header claiming 2 billion elements
 	data := []byte{0xdf, 0x77, 0x35, 0x94, 0x00}
 	err := Validate(data)
@@ -58,6 +61,7 @@ func TestValidate_OversizedMap(t *testing.T) {
 }
 
 func TestValidate_NestedOversizedArray(t *testing.T) {
+	t.Parallel()
 	// fixarray(1) containing an array32 with huge length
 	data := []byte{
 		0x91,                         // fixarray of 1 element
@@ -70,6 +74,7 @@ func TestValidate_NestedOversizedArray(t *testing.T) {
 }
 
 func TestValidate_CrashInput(t *testing.T) {
+	t.Parallel()
 	// The actual crash input from ClusterFuzzLite: 118x 0xdd + 0xc3 0xc3 0x81 0x81 0xc3
 	data := make([]byte, 123)
 	for i := 0; i < 118; i++ {
@@ -88,6 +93,7 @@ func TestValidate_CrashInput(t *testing.T) {
 }
 
 func TestValidate_EmptyInput(t *testing.T) {
+	t.Parallel()
 	if err := Validate(nil); err != nil {
 		t.Errorf("Validate(nil) = %v, want nil", err)
 	}
@@ -97,6 +103,7 @@ func TestValidate_EmptyInput(t *testing.T) {
 }
 
 func TestValidate_TruncatedInput(t *testing.T) {
+	t.Parallel()
 	// Truncated array32 header (missing length bytes)
 	if err := Validate([]byte{0xdd, 0x00}); err != nil {
 		t.Errorf("Validate(truncated) = %v, want nil", err)
@@ -104,6 +111,7 @@ func TestValidate_TruncatedInput(t *testing.T) {
 }
 
 func TestValidate_CumulativeBudgetExceeded(t *testing.T) {
+	t.Parallel()
 	// Chain of nested array32 headers each declaring 99,999 elements (under per-collection limit of 100K).
 	// 11 such headers = 1,099,989 total elements > maxTotalElements (1M).
 	// Each array32 header: 0xdd + 4-byte big-endian length
@@ -119,6 +127,7 @@ func TestValidate_CumulativeBudgetExceeded(t *testing.T) {
 }
 
 func TestValidate_CumulativeBudgetOK(t *testing.T) {
+	t.Parallel()
 	// 2 nested array32 headers each declaring 99,999 elements = 199,998 total (under 1M).
 	data := []byte{
 		0xdd, 0x00, 0x01, 0x86, 0x9F, // array32(99999)
@@ -131,6 +140,7 @@ func TestValidate_CumulativeBudgetOK(t *testing.T) {
 }
 
 func TestValidate_PerCollectionLimitExceeded(t *testing.T) {
+	t.Parallel()
 	// array32 with 200,000 elements (over per-collection limit of 100K)
 	data := []byte{0xdd, 0x00, 0x03, 0x0D, 0x40} // 200000
 	err := Validate(data)

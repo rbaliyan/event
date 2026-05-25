@@ -15,6 +15,7 @@ func testMessage(id string, payload []byte) transport.Message {
 }
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	if tr == nil {
 		t.Fatal("expected non-nil transport")
@@ -25,6 +26,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestRegisterEvent(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -40,6 +42,7 @@ func TestRegisterEvent(t *testing.T) {
 }
 
 func TestUnregisterEvent(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -61,6 +64,7 @@ func TestUnregisterEvent(t *testing.T) {
 }
 
 func TestPublish(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -85,6 +89,7 @@ func TestPublish(t *testing.T) {
 }
 
 func TestSubscribe(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -113,6 +118,7 @@ func TestSubscribe(t *testing.T) {
 }
 
 func TestSubscribeNeverReceivesMessages(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -137,6 +143,7 @@ func TestSubscribeNeverReceivesMessages(t *testing.T) {
 }
 
 func TestClose(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -179,6 +186,7 @@ func TestClose(t *testing.T) {
 }
 
 func TestHealth(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 
@@ -209,6 +217,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestUnregisterClosesSubscriptions(t *testing.T) {
+	t.Parallel()
 	tr := New()
 	ctx := context.Background()
 

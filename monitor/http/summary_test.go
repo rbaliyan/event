@@ -12,6 +12,7 @@ import (
 )
 
 func TestHandlerSummary(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()

@@ -31,6 +31,7 @@ func setup(t *testing.T) (*Transport, *channel.Transport, *channel.Transport) {
 }
 
 func TestNew_Validation(t *testing.T) {
+	t.Parallel()
 	_, err := New(nil, channel.New())
 	if !errors.Is(err, ErrOldTransportRequired) {
 		t.Fatalf("expected ErrOldTransportRequired, got %v", err)
@@ -42,6 +43,7 @@ func TestNew_Validation(t *testing.T) {
 }
 
 func TestPublish_GoesToNewOnly(t *testing.T) {
+	t.Parallel()
 	mt, old, new := setup(t)
 	ctx := context.Background()
 	event := "test.event"
@@ -81,6 +83,7 @@ func TestPublish_GoesToNewOnly(t *testing.T) {
 }
 
 func TestSubscribe_MergesBothTransports(t *testing.T) {
+	t.Parallel()
 	mt, old, _ := setup(t)
 	ctx := context.Background()
 	event := "test.event"
@@ -123,6 +126,7 @@ func TestSubscribe_MergesBothTransports(t *testing.T) {
 }
 
 func TestRegisterEvent_NewOnly(t *testing.T) {
+	t.Parallel()
 	mt, old, _ := setup(t)
 	ctx := context.Background()
 
@@ -138,6 +142,7 @@ func TestRegisterEvent_NewOnly(t *testing.T) {
 }
 
 func TestUnregisterEvent_Both(t *testing.T) {
+	t.Parallel()
 	mt, old, new := setup(t)
 	ctx := context.Background()
 	event := "test.event"
@@ -159,6 +164,7 @@ func TestUnregisterEvent_Both(t *testing.T) {
 }
 
 func TestClose_ClosesBoth(t *testing.T) {
+	t.Parallel()
 	mt, old, new := setup(t)
 	ctx := context.Background()
 
@@ -174,6 +180,7 @@ func TestClose_ClosesBoth(t *testing.T) {
 }
 
 func TestMergedSubscription_Close(t *testing.T) {
+	t.Parallel()
 	mt, old, _ := setup(t)
 	ctx := context.Background()
 	event := "test.event"
@@ -203,6 +210,7 @@ func TestMergedSubscription_Close(t *testing.T) {
 }
 
 func TestOldSubscribeFailure_FallsBackToNew(t *testing.T) {
+	t.Parallel()
 	old := channel.New(channel.WithBufferSize(100))
 	new := channel.New(channel.WithBufferSize(100))
 	mt, _ := New(old, new)
@@ -234,6 +242,7 @@ func TestOldSubscribeFailure_FallsBackToNew(t *testing.T) {
 }
 
 func TestName(t *testing.T) {
+	t.Parallel()
 	mt, _, _ := setup(t)
 	name := mt.Name()
 	if name != "migration(channel->channel)" {
@@ -243,6 +252,7 @@ func TestName(t *testing.T) {
 }
 
 func TestHealth(t *testing.T) {
+	t.Parallel()
 	mt, _, _ := setup(t)
 	ctx := context.Background()
 
@@ -255,6 +265,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestConsumerLag(t *testing.T) {
+	t.Parallel()
 	mt, _, _ := setup(t)
 	ctx := context.Background()
 
@@ -271,6 +282,7 @@ func TestConsumerLag(t *testing.T) {
 }
 
 func TestCloseThenOperate(t *testing.T) {
+	t.Parallel()
 	mt, _, _ := setup(t)
 	ctx := context.Background()
 
@@ -291,6 +303,7 @@ func TestCloseThenOperate(t *testing.T) {
 }
 
 func TestDoubleClose(t *testing.T) {
+	t.Parallel()
 	mt, _, _ := setup(t)
 	ctx := context.Background()
 	if err := mt.Close(ctx); err != nil {
@@ -302,6 +315,7 @@ func TestDoubleClose(t *testing.T) {
 }
 
 func TestWithLogger(t *testing.T) {
+	t.Parallel()
 	old := channel.New(channel.WithBufferSize(10))
 	newT := channel.New(channel.WithBufferSize(10))
 	logger := slog.New(slog.NewTextHandler(nil, nil))
@@ -313,6 +327,7 @@ func TestWithLogger(t *testing.T) {
 }
 
 func TestWithMergedBufferSize(t *testing.T) {
+	t.Parallel()
 	old := channel.New(channel.WithBufferSize(10))
 	newT := channel.New(channel.WithBufferSize(10))
 	mt, err := New(old, newT, WithMergedBufferSize(128))
@@ -326,6 +341,7 @@ func TestWithMergedBufferSize(t *testing.T) {
 }
 
 func TestWithMergedBufferSize_InvalidIgnored(t *testing.T) {
+	t.Parallel()
 	old := channel.New(channel.WithBufferSize(10))
 	newT := channel.New(channel.WithBufferSize(10))
 	mt, err := New(old, newT, WithMergedBufferSize(0))
@@ -339,6 +355,7 @@ func TestWithMergedBufferSize_InvalidIgnored(t *testing.T) {
 }
 
 func TestSupportsRedelivery(t *testing.T) {
+	t.Parallel()
 	mt, _, _ := setup(t)
 	// Channel transport does not implement Redeliverable, so should return false.
 	if mt.SupportsRedelivery() {
@@ -348,6 +365,7 @@ func TestSupportsRedelivery(t *testing.T) {
 }
 
 func TestContextCancellation_StopsSubscription(t *testing.T) {
+	t.Parallel()
 	mt, old, _ := setup(t)
 	event := "test.event"
 
@@ -380,6 +398,7 @@ func TestContextCancellation_StopsSubscription(t *testing.T) {
 }
 
 func TestConcurrentPublishSubscribe(t *testing.T) {
+	t.Parallel()
 	mt, old, _ := setup(t)
 	ctx := context.Background()
 	event := "test.event"

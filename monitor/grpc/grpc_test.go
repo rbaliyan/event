@@ -13,6 +13,7 @@ import (
 )
 
 func TestServiceNew(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
@@ -23,6 +24,7 @@ func TestServiceNew(t *testing.T) {
 }
 
 func TestServiceNewWithPollInterval(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 
@@ -36,6 +38,7 @@ func TestServiceNewWithPollInterval(t *testing.T) {
 }
 
 func TestServiceList(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -98,6 +101,7 @@ func TestServiceList(t *testing.T) {
 }
 
 func TestServiceGet(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -158,6 +162,7 @@ func TestServiceGet(t *testing.T) {
 }
 
 func TestServiceGetByEventID(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -203,6 +208,7 @@ func TestServiceGetByEventID(t *testing.T) {
 }
 
 func TestServiceCount(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -253,6 +259,7 @@ func TestServiceCount(t *testing.T) {
 }
 
 func TestServiceDeleteOlderThan(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
@@ -307,6 +314,7 @@ func TestServiceDeleteOlderThan(t *testing.T) {
 }
 
 func TestServiceStreamRequiresBroadcaster(t *testing.T) {
+	t.Parallel()
 	store := monitor.NewMemoryStore()
 	defer store.Close()
 

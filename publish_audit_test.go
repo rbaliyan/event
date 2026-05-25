@@ -40,6 +40,7 @@ func (f *fakePublishAuditStore) Len() int {
 }
 
 func TestPublishAudit_RecordsOnSuccessfulPublish(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	audit := &fakePublishAuditStore{}
 
@@ -81,6 +82,7 @@ func TestPublishAudit_RecordsOnSuccessfulPublish(t *testing.T) {
 }
 
 func TestPublishAudit_NotCalledWhenStoreNil(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	bus := mustNewBus(t, "audit-nil-"+randomString(5),
 		WithTransport(channel.New()),
@@ -102,6 +104,7 @@ func TestPublishAudit_NotCalledWhenStoreNil(t *testing.T) {
 }
 
 func TestPublishAudit_AccessorReturnsConfiguredStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	audit := &fakePublishAuditStore{}
 
@@ -121,6 +124,7 @@ func TestPublishAudit_AccessorReturnsConfiguredStore(t *testing.T) {
 }
 
 func TestPublishAudit_NotCalledOnClosedBus(t *testing.T) {
+	t.Parallel()
 	// Verifies that audit recording happens only on successful transport.Publish:
 	// publishes against a closed bus short-circuit before transport.Publish and
 	// so should not produce audit entries.
