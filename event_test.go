@@ -133,9 +133,10 @@ func CompareMetadata(expected, actual map[string]string) bool {
 }
 
 func TestEvent(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("test")
@@ -186,7 +187,8 @@ func TestEvent(t *testing.T) {
 }
 
 func TestMetadata(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("test")
@@ -238,8 +240,9 @@ func TestMetadata(t *testing.T) {
 }
 
 func TestPanic(t *testing.T) {
+	t.Parallel()
 	ch1 := make(chan struct{})
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("test",
@@ -264,7 +267,8 @@ func TestPanic(t *testing.T) {
 }
 
 func TestCancel(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("test")
@@ -314,9 +318,10 @@ func TestCancel(t *testing.T) {
 }
 
 func TestData(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	s := faker.Sentence()
@@ -410,7 +415,7 @@ func TestData(t *testing.T) {
 }
 
 func BenchmarkEvent(b *testing.B) {
-	bus := mustNewBus(b, "test", WithTransport(channel.New()))
+	bus := mustNewBus(b, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[int]("test")
@@ -439,12 +444,13 @@ func BenchmarkEvent(b *testing.B) {
 }
 
 func TestPool(t *testing.T) {
+	t.Parallel()
 	var poolSize int64 = 4
 	transport := channel.New(
 		channel.WithAsync(true),
 		channel.WithWorkerPoolSize(poolSize),
 	)
-	bus := mustNewBus(t, "test", WithTransport(transport))
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(transport))
 	defer bus.Close(context.Background())
 
 	e := New[int32]("test")
@@ -491,13 +497,14 @@ func TestPool(t *testing.T) {
 }
 
 func TestWorkerPoolDeliveryMode(t *testing.T) {
+	t.Parallel()
 	// Test worker pool delivery mode - each message goes to only one subscriber
 	transport := channel.New(
 		channel.WithBufferSize(100),
 		channel.WithTimeout(time.Duration(100)*time.Millisecond),
 	)
 	// Create bus (delivery mode is now per-subscription)
-	bus := mustNewBus(t, "test", WithTransport(transport))
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(transport))
 	defer bus.Close(context.Background())
 
 	e := New[int32]("test")
@@ -574,6 +581,7 @@ func TestWorkerPoolDeliveryMode(t *testing.T) {
 }
 
 func TestWorkerGroupDeliveryMode(t *testing.T) {
+	t.Parallel()
 	// Test worker groups - each group receives all messages, workers within compete
 	transport := channel.New(
 		channel.WithBufferSize(100),
@@ -674,6 +682,7 @@ func TestWorkerGroupDeliveryMode(t *testing.T) {
 }
 
 func TestWorkerGroupWithBroadcast(t *testing.T) {
+	t.Parallel()
 	// Test mixing worker groups with broadcast subscribers
 	transport := channel.New(
 		channel.WithBufferSize(100),
@@ -782,6 +791,7 @@ func TestWorkerGroupWithBroadcast(t *testing.T) {
 // TestContextImmutability verifies that context modification functions
 // don't mutate the original context data (race condition fix)
 func TestContextImmutability(t *testing.T) {
+	t.Parallel()
 	// Create initial context with data
 	ctx := context.Background()
 	ctx = ContextWithMetadata(ctx, map[string]string{"key": "original"})
@@ -822,6 +832,7 @@ func TestContextImmutability(t *testing.T) {
 
 // TestContextConcurrentAccess verifies context functions are safe for concurrent use
 func TestContextConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	ctx = ContextWithMetadata(ctx, map[string]string{"initial": "value"})
 	ctx = ContextWithEventID(ctx, "initial-id")
@@ -862,6 +873,7 @@ func TestContextConcurrentAccess(t *testing.T) {
 
 // TestTransportCloseDoesNotPanic verifies transport close doesn't cause panics
 func TestTransportCloseDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	tr := channel.New()
 
 	// Register an event first
@@ -897,7 +909,8 @@ func TestTransportCloseDoesNotPanic(t *testing.T) {
 
 // TestEventClose verifies event close works correctly
 func TestEventClose(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	e := New[any]("test-close")
 	if err := Register(context.Background(), bus, e); err != nil {
 		t.Fatalf("failed to register event: %v", err)
@@ -932,12 +945,13 @@ func TestEventClose(t *testing.T) {
 
 // TestWorkerPoolBackpressure verifies that worker pool blocks when exhausted
 func TestWorkerPoolBackpressure(t *testing.T) {
+	t.Parallel()
 	poolSize := int64(2)
 	transport := channel.New(
 		channel.WithAsync(true),
 		channel.WithWorkerPoolSize(poolSize),
 	)
-	bus := mustNewBus(t, "test", WithTransport(transport))
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(transport))
 	defer bus.Close(context.Background())
 
 	e := New[int]("test-pool-backpressure")
@@ -988,10 +1002,11 @@ func TestWorkerPoolBackpressure(t *testing.T) {
 
 // TestGracefulShutdown verifies that Close() blocks until all messages are delivered to subscribers
 func TestGracefulShutdown(t *testing.T) {
+	t.Parallel()
 	transport := channel.New(
 		channel.WithAsync(true),
 	)
-	bus := mustNewBus(t, "test", WithTransport(transport))
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(transport))
 
 	e := New[int]("test-graceful")
 	if err := Register(context.Background(), bus, e); err != nil {
@@ -1031,6 +1046,7 @@ func TestGracefulShutdown(t *testing.T) {
 
 // TestDiscardEvent verifies discardEvent works correctly
 func TestDiscardEvent(t *testing.T) {
+	t.Parallel()
 	e := Discard[string]()
 
 	if e.Name() != "" {
@@ -1047,6 +1063,7 @@ func TestDiscardEvent(t *testing.T) {
 
 // TestTransportErrorHandler verifies transport error handler is called on timeout
 func TestTransportErrorHandler(t *testing.T) {
+	t.Parallel()
 	errorCh := make(chan error, 1)
 
 	tr := channel.New(
@@ -1090,7 +1107,8 @@ func TestTransportErrorHandler(t *testing.T) {
 
 // TestEventsSlice verifies Events slice publish/subscribe
 func TestEventsSlice(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e1 := New[string]("event1")
@@ -1138,6 +1156,7 @@ func TestEventsSlice(t *testing.T) {
 
 // TestContextName verifies ContextName function
 func TestContextName(t *testing.T) {
+	t.Parallel()
 	// Test empty context returns empty string
 	ctx := context.Background()
 	if name := ContextName(ctx); name != "" {
@@ -1145,7 +1164,7 @@ func TestContextName(t *testing.T) {
 	}
 
 	// Test context with name (via handler context)
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 	e := New[any]("test-context-name")
 	if err := Register(context.Background(), bus, e); err != nil {
@@ -1172,6 +1191,7 @@ func TestContextName(t *testing.T) {
 
 // TestContextWithLogger verifies ContextWithLogger function
 func TestContextWithLogger(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Test nil logger returns same context
@@ -1200,6 +1220,7 @@ func TestContextWithLogger(t *testing.T) {
 
 // TestContextWithEventFromContext verifies ContextWithEventFromContext
 func TestContextWithEventFromContext(t *testing.T) {
+	t.Parallel()
 	// Create source context with data
 	from := context.Background()
 	from = ContextWithEventID(from, "event-abc")
@@ -1229,6 +1250,7 @@ func TestContextWithEventFromContext(t *testing.T) {
 
 // TestNewContext verifies NewContext function
 func TestNewContext(t *testing.T) {
+	t.Parallel()
 	// Create context with data
 	ctx := context.Background()
 	ctx = ContextWithEventID(ctx, "event-xyz")
@@ -1248,7 +1270,8 @@ func TestNewContext(t *testing.T) {
 
 // TestBusPublishSubscribe verifies basic bus publish/subscribe
 func TestBusPublishSubscribe(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	ch := make(chan any)
@@ -1276,6 +1299,7 @@ func TestBusPublishSubscribe(t *testing.T) {
 
 // TestTransportCloseWithSubscriptions verifies transport.Close(context.Background()) properly cleans up
 func TestTransportCloseWithSubscriptions(t *testing.T) {
+	t.Parallel()
 	tr := channel.New(channel.WithBufferSize(10))
 
 	// Register an event
@@ -1332,7 +1356,8 @@ func TestTransportCloseWithSubscriptions(t *testing.T) {
 
 // TestWithSubscriberTimeout verifies WithSubscriberTimeout option
 func TestWithSubscriberTimeout(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	timeout := 50 * time.Millisecond
@@ -1366,7 +1391,8 @@ func TestWithSubscriberTimeout(t *testing.T) {
 
 // TestBusLogger verifies bus logger is used by events
 func TestBusLogger(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("logger-test")
@@ -1419,6 +1445,7 @@ func caller(depth int) string {
 
 // TestSanitize verifies sanitize function
 func TestSanitize(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected string
@@ -1443,6 +1470,7 @@ func TestSanitize(t *testing.T) {
 
 // TestCaller verifies caller function
 func TestCaller(t *testing.T) {
+	t.Parallel()
 	// Test calling from this function
 	name := caller(1)
 	if name == "" {
@@ -1461,7 +1489,8 @@ func TestCaller(t *testing.T) {
 
 // TestAsyncHandler verifies AsyncHandler function
 func TestAsyncHandler(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[string]("async-handler-test")
@@ -1492,7 +1521,8 @@ func TestAsyncHandler(t *testing.T) {
 
 // TestAsyncHandlerWithPanic verifies AsyncHandler recovers from panic
 func TestAsyncHandlerWithPanic(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("async-panic-test")
@@ -1527,7 +1557,8 @@ func TestAsyncHandlerWithPanic(t *testing.T) {
 
 // TestEventString verifies eventImpl.String()
 func TestEventString(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("string-test")
@@ -1544,7 +1575,8 @@ func TestEventString(t *testing.T) {
 
 // TestEventSubscribers verifies eventImpl.Subscribers()
 func TestEventSubscribers(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("subscribers-test")
@@ -1574,6 +1606,7 @@ func TestEventSubscribers(t *testing.T) {
 
 // TestNilEventPublish verifies nil event doesn't panic on Publish
 func TestNilEventPublish(t *testing.T) {
+	t.Parallel()
 	var e *eventImpl[any]
 	// Should not panic
 	e.Publish(context.Background(), "data")
@@ -1581,6 +1614,7 @@ func TestNilEventPublish(t *testing.T) {
 
 // TestNilEventSubscribe verifies nil event doesn't panic on Subscribe
 func TestNilEventSubscribe(t *testing.T) {
+	t.Parallel()
 	var e *eventImpl[any]
 	// Should not panic
 	e.Subscribe(context.Background(), func(ctx context.Context, ev Event[any], data any) error { return nil })
@@ -1588,6 +1622,7 @@ func TestNilEventSubscribe(t *testing.T) {
 
 // TestSubscriptionClose verifies Subscription.Close() removes subscriber
 func TestSubscriptionClose(t *testing.T) {
+	t.Parallel()
 	tr := channel.New()
 	defer tr.Close(context.Background())
 
@@ -1620,6 +1655,7 @@ func TestSubscriptionClose(t *testing.T) {
 
 // TestSubscriptionCloseOnClosedTransport verifies subscription Close works after transport close
 func TestSubscriptionCloseOnClosedTransport(t *testing.T) {
+	t.Parallel()
 	tr := channel.New()
 
 	// Register event
@@ -1641,6 +1677,7 @@ func TestSubscriptionCloseOnClosedTransport(t *testing.T) {
 
 // TestTransportSubscribeRace verifies concurrent Subscribe calls
 func TestTransportSubscribeRace(t *testing.T) {
+	t.Parallel()
 	tr := channel.New()
 	defer tr.Close(context.Background())
 
@@ -1671,6 +1708,7 @@ func TestTransportSubscribeRace(t *testing.T) {
 
 // TestWithTransportLogger verifies WithTransportLogger option
 func TestWithTransportLogger(t *testing.T) {
+	t.Parallel()
 	customLogger := slog.New(slog.NewTextHandler(os.Stdout, nil)).With("component", "transport")
 	tr := channel.New(
 		channel.WithLogger(customLogger),
@@ -1695,7 +1733,8 @@ func TestWithTransportLogger(t *testing.T) {
 
 // TestBusMetricsIntegration verifies bus metrics work with events
 func TestBusMetricsIntegration(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("metrics-test")
@@ -1718,6 +1757,7 @@ func TestBusMetricsIntegration(t *testing.T) {
 
 // TestBusWithEmptyName verifies NewBus handles empty name
 func TestBusWithEmptyName(t *testing.T) {
+	t.Parallel()
 	bus := mustNewBus(t, "", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
@@ -1728,7 +1768,8 @@ func TestBusWithEmptyName(t *testing.T) {
 
 // TestBusRegister verifies Bus.Register works correctly
 func TestBusRegister(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// First call creates event
@@ -1749,7 +1790,8 @@ func TestBusRegister(t *testing.T) {
 
 // TestContextSubscriptionID verifies ContextSubscriptionID in handler
 func TestContextSubscriptionID(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("sub-id-test")
@@ -1777,6 +1819,7 @@ func TestContextSubscriptionID(t *testing.T) {
 
 // TestTransportPublishTimeout verifies publish timeout handling
 func TestTransportPublishTimeout(t *testing.T) {
+	t.Parallel()
 	errorCh := make(chan error, 1)
 
 	tr := channel.New(
@@ -1821,7 +1864,8 @@ func TestTransportPublishTimeout(t *testing.T) {
 
 // TestTracingDisabled verifies tracing can be disabled at bus level
 func TestTracingDisabled(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()), WithTracing(false))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()), WithTracing(false))
 	defer bus.Close(context.Background())
 
 	e := New[any]("no-tracing-test")
@@ -1844,7 +1888,8 @@ func TestTracingDisabled(t *testing.T) {
 
 // TestRecoveryDisabled verifies recovery can be disabled at bus level
 func TestRecoveryDisabled(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()), WithRecovery(false))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()), WithRecovery(false))
 	defer bus.Close(context.Background())
 
 	e := New[any]("no-recovery-test")
@@ -1867,6 +1912,7 @@ func TestRecoveryDisabled(t *testing.T) {
 
 // TestMultipleSubscribersGetUniqueIDs verifies each subscriber gets unique ID
 func TestMultipleSubscribersGetUniqueIDs(t *testing.T) {
+	t.Parallel()
 	tr := channel.New()
 	defer tr.Close(context.Background())
 
@@ -1895,6 +1941,7 @@ func TestMultipleSubscribersGetUniqueIDs(t *testing.T) {
 
 // TestBroadcastMultipleSubscribers verifies Broadcast delivers to all subscribers
 func TestBroadcastMultipleSubscribers(t *testing.T) {
+	t.Parallel()
 	tr := channel.New(channel.WithBufferSize(10))
 	defer tr.Close(context.Background())
 
@@ -1937,7 +1984,8 @@ func TestBroadcastMultipleSubscribers(t *testing.T) {
 
 // TestUnsubscribedEventDropsMessages verifies that events without subscribers drop messages
 func TestUnsubscribedEventDropsMessages(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Register two events
@@ -1990,7 +2038,8 @@ func TestUnsubscribedEventDropsMessages(t *testing.T) {
 
 // TestBlockedSubscriberDoesNotAffectOtherEvents verifies event isolation when one subscriber is blocked
 func TestBlockedSubscriberDoesNotAffectOtherEvents(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Register two events
@@ -2065,7 +2114,8 @@ func TestBlockedSubscriberDoesNotAffectOtherEvents(t *testing.T) {
 
 // TestMultipleEventsIndependentDelivery verifies each event delivers only to its own subscribers
 func TestMultipleEventsIndependentDelivery(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Register three events
@@ -2148,6 +2198,7 @@ func TestMultipleEventsIndependentDelivery(t *testing.T) {
 
 // TestAsyncHandlerWithContextCopy verifies AsyncHandler with context copy functions
 func TestAsyncHandlerWithContextCopy(t *testing.T) {
+	t.Parallel()
 	// Test that AsyncHandler copies context values when provided with copy functions
 	ch := make(chan string)
 
@@ -2195,7 +2246,8 @@ func TestAsyncHandlerWithContextCopy(t *testing.T) {
 
 // TestBusAddDuplicate verifies Bus returns error for duplicate event name
 func TestBusAddDuplicate(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	// Create first event
@@ -2213,7 +2265,8 @@ func TestBusAddDuplicate(t *testing.T) {
 
 // TestNewEventWithExistingEventID verifies publishing with existing event ID
 func TestNewEventWithExistingEventID(t *testing.T) {
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	t.Parallel()
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[any]("existing-id-test")
@@ -2243,12 +2296,13 @@ func TestNewEventWithExistingEventID(t *testing.T) {
 
 // TestTypedEvent verifies compile-time type safety with generics
 func TestTypedEvent(t *testing.T) {
+	t.Parallel()
 	type User struct {
 		ID   string
 		Name string
 	}
 
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e := New[User]("user.created")
@@ -2277,12 +2331,13 @@ func TestTypedEvent(t *testing.T) {
 
 // TestTypedEventsSlice verifies Events slice with typed events
 func TestTypedEventsSlice(t *testing.T) {
+	t.Parallel()
 	type Order struct {
 		ID     string
 		Amount float64
 	}
 
-	bus := mustNewBus(t, "test", WithTransport(channel.New()))
+	bus := mustNewBus(t, "test-"+randomString(5), WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
 	e1 := New[Order]("order.created")
@@ -2322,6 +2377,7 @@ func TestTypedEventsSlice(t *testing.T) {
 
 // TestGetBus verifies GetBus returns registered buses
 func TestGetBus(t *testing.T) {
+	t.Parallel()
 	busName := "test-getbus-" + NewID()
 	bus := mustNewBus(t, busName, WithTransport(channel.New()))
 	defer bus.Close(context.Background())
@@ -2343,6 +2399,7 @@ func TestGetBus(t *testing.T) {
 
 // TestListBuses verifies ListBuses returns all registered bus names
 func TestListBuses(t *testing.T) {
+	t.Parallel()
 	busName1 := "test-list-1-" + NewID()
 	busName2 := "test-list-2-" + NewID()
 
@@ -2374,6 +2431,7 @@ func TestListBuses(t *testing.T) {
 
 // TestDuplicateBusError verifies NewBus returns error for duplicate name
 func TestDuplicateBusError(t *testing.T) {
+	t.Parallel()
 	busName := "test-duplicate-" + NewID()
 	bus1 := mustNewBus(t, busName, WithTransport(channel.New()))
 	defer bus1.Close(context.Background())
@@ -2390,6 +2448,7 @@ func TestDuplicateBusError(t *testing.T) {
 
 // TestBusUnregisteredOnClose verifies bus is removed from registry on Close
 func TestBusUnregisteredOnClose(t *testing.T) {
+	t.Parallel()
 	busName := "test-unregister-" + NewID()
 	bus := mustNewBus(t, busName, WithTransport(channel.New()))
 
@@ -2416,6 +2475,7 @@ func TestBusUnregisteredOnClose(t *testing.T) {
 
 // TestGetEventByFullName verifies Get[T] works with full name
 func TestGetEventByFullName(t *testing.T) {
+	t.Parallel()
 	type Order struct {
 		ID string
 	}
@@ -2443,6 +2503,7 @@ func TestGetEventByFullName(t *testing.T) {
 
 // TestGetEventTypeMismatch verifies Get returns error for type mismatch
 func TestGetEventTypeMismatch(t *testing.T) {
+	t.Parallel()
 	type Order struct {
 		ID string
 	}
@@ -2473,6 +2534,7 @@ func TestGetEventTypeMismatch(t *testing.T) {
 
 // TestPublishByFullName verifies Publish works with full name
 func TestPublishByFullName(t *testing.T) {
+	t.Parallel()
 	type Order struct {
 		ID string
 	}
@@ -2512,6 +2574,7 @@ func TestPublishByFullName(t *testing.T) {
 
 // TestSubscribeByFullName verifies Subscribe works with full name
 func TestSubscribeByFullName(t *testing.T) {
+	t.Parallel()
 	type Order struct {
 		ID string
 	}
@@ -2551,6 +2614,7 @@ func TestSubscribeByFullName(t *testing.T) {
 
 // TestInvalidFullName verifies error handling for invalid full names
 func TestInvalidFullName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		fullName string
@@ -2576,6 +2640,7 @@ func TestInvalidFullName(t *testing.T) {
 
 // TestGetEventNotFound verifies error for non-existent event
 func TestGetEventNotFound(t *testing.T) {
+	t.Parallel()
 	busName := "test-notfound-" + NewID()
 	bus := mustNewBus(t, busName, WithTransport(channel.New()))
 	defer bus.Close(context.Background())
@@ -2593,6 +2658,7 @@ func TestGetEventNotFound(t *testing.T) {
 
 // TestGetBusNotFound verifies error for non-existent bus in full name
 func TestGetBusNotFound(t *testing.T) {
+	t.Parallel()
 	fullName := "nonexistent-bus-12345://some.event"
 	_, err := Get[any](fullName)
 	if err == nil {
@@ -2668,6 +2734,7 @@ func (d *mockPoisonDetector) RecordSuccess(ctx context.Context, messageID string
 
 // TestBusLevelIdempotency verifies that bus-level idempotency automatically skips duplicates
 func TestBusLevelIdempotency(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	idempStore := newMockIdempotencyStore()
 
@@ -2699,6 +2766,7 @@ func TestBusLevelIdempotency(t *testing.T) {
 
 // TestBusLevelPoisonDetection verifies that bus-level poison detection skips quarantined messages
 func TestBusLevelPoisonDetection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	poisonDetector := newMockPoisonDetector(2) // quarantine after 2 failures
 
@@ -2741,6 +2809,7 @@ func TestBusLevelPoisonDetection(t *testing.T) {
 
 // TestBusLevelMiddlewareCombined verifies both idempotency and poison detection work together
 func TestBusLevelMiddlewareCombined(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	idempStore := newMockIdempotencyStore()
 	poisonDetector := newMockPoisonDetector(3)
@@ -2868,6 +2937,7 @@ func (p *mockSchemaProvider) Close() error {
 
 // TestSchemaLoadingOnRegister verifies that schemas are loaded when events are registered
 func TestSchemaLoadingOnRegister(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	provider := newMockSchemaProvider()
 
@@ -2917,6 +2987,7 @@ func TestSchemaLoadingOnRegister(t *testing.T) {
 
 // TestSchemaNotFoundFallback verifies that missing schema doesn't prevent registration
 func TestSchemaNotFoundFallback(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	provider := newMockSchemaProvider()
 	// Don't pre-register any schema
@@ -2941,6 +3012,7 @@ func TestSchemaNotFoundFallback(t *testing.T) {
 
 // TestSchemaControlsMiddleware verifies that schema flags control which middleware is applied
 func TestSchemaControlsMiddleware(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("schema enables only monitor", func(t *testing.T) {
@@ -3042,6 +3114,7 @@ func TestSchemaControlsMiddleware(t *testing.T) {
 
 // TestNoSchemaFallbackToBusMiddleware verifies middleware is applied when no schema exists
 func TestNoSchemaFallbackToBusMiddleware(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	provider := newMockSchemaProvider()
 	// No schema registered
@@ -3082,6 +3155,7 @@ func TestNoSchemaFallbackToBusMiddleware(t *testing.T) {
 
 // TestSchemaDisablesAllMiddleware verifies that schema can disable all middleware
 func TestSchemaDisablesAllMiddleware(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	provider := newMockSchemaProvider()
 	provider.Set(ctx, &EventSchema{
@@ -3139,6 +3213,7 @@ func TestSchemaDisablesAllMiddleware(t *testing.T) {
 
 // TestSchemaTimeoutApplied verifies that schema timeout is applied to events
 func TestSchemaTimeoutApplied(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	provider := newMockSchemaProvider()
 	provider.Set(ctx, &EventSchema{
@@ -3167,6 +3242,7 @@ func TestSchemaTimeoutApplied(t *testing.T) {
 
 // TestEventTimeoutOverridesSchema verifies that event-level timeout takes precedence
 func TestEventTimeoutOverridesSchema(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	provider := newMockSchemaProvider()
 	provider.Set(ctx, &EventSchema{
@@ -3226,6 +3302,7 @@ func (m *mockOutboxStore) Messages() []mockOutboxMessage {
 }
 
 func TestOutboxIntegration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Create mock outbox store
@@ -3301,6 +3378,7 @@ func TestOutboxIntegration(t *testing.T) {
 }
 
 func TestOutboxContextHelpers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("InOutboxTx returns false without transaction", func(t *testing.T) {
@@ -3334,6 +3412,7 @@ func TestOutboxContextHelpers(t *testing.T) {
 }
 
 func TestWithMessageFilter(t *testing.T) {
+	t.Parallel()
 	filter := func(meta map[string]string) bool {
 		return meta["collection"] == "orders"
 	}
@@ -3351,6 +3430,7 @@ func TestWithMessageFilter(t *testing.T) {
 }
 
 func TestWithMessageFilter_Nil(t *testing.T) {
+	t.Parallel()
 	opts := newEventOptions(WithMessageFilter(nil))
 	if opts.messageFilter != nil {
 		t.Error("expected nil messageFilter to be stored as nil")
@@ -3358,6 +3438,7 @@ func TestWithMessageFilter_Nil(t *testing.T) {
 }
 
 func TestMessageFilter_SkipsNonMatching(t *testing.T) {
+	t.Parallel()
 	bus := mustNewBus(t, "test-filter", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
@@ -3421,6 +3502,7 @@ func TestMessageFilter_SkipsNonMatching(t *testing.T) {
 }
 
 func TestMessageFilter_NilAcceptsAll(t *testing.T) {
+	t.Parallel()
 	bus := mustNewBus(t, "test-filter-nil", WithTransport(channel.New()))
 	defer bus.Close(context.Background())
 
@@ -3452,6 +3534,7 @@ func TestMessageFilter_NilAcceptsAll(t *testing.T) {
 }
 
 func TestWithDecodeErrorHandler(t *testing.T) {
+	t.Parallel()
 	handler := func(ctx context.Context, msg message.Message, err error) error {
 		return ErrReject
 	}
@@ -3462,6 +3545,7 @@ func TestWithDecodeErrorHandler(t *testing.T) {
 }
 
 func TestWithDecodeErrorHandler_Nil(t *testing.T) {
+	t.Parallel()
 	opts := newEventOptions(WithDecodeErrorHandler(nil))
 	if opts.decodeErrorHandler != nil {
 		t.Error("expected nil decodeErrorHandler to be stored as nil")
@@ -3469,6 +3553,7 @@ func TestWithDecodeErrorHandler_Nil(t *testing.T) {
 }
 
 func TestDecodeErrorHandler_AckSkipsDLQ(t *testing.T) {
+	t.Parallel()
 	dlqStore := newTestDLQStore()
 	bus := mustNewBus(t, "test-decode-ack", WithTransport(channel.New()), WithDLQ(dlqStore))
 	defer bus.Close(context.Background())
@@ -3510,6 +3595,7 @@ func TestDecodeErrorHandler_AckSkipsDLQ(t *testing.T) {
 }
 
 func TestDecodeErrorHandler_RejectSendsToDLQ(t *testing.T) {
+	t.Parallel()
 	dlqStore := newTestDLQStore()
 	bus := mustNewBus(t, "test-decode-reject", WithTransport(channel.New()), WithDLQ(dlqStore))
 	defer bus.Close(context.Background())
@@ -3539,6 +3625,7 @@ func TestDecodeErrorHandler_RejectSendsToDLQ(t *testing.T) {
 }
 
 func TestDecodeErrorHandler_DefaultBehaviorWhenNotSet(t *testing.T) {
+	t.Parallel()
 	dlqStore := newTestDLQStore()
 	bus := mustNewBus(t, "test-decode-default", WithTransport(channel.New()), WithDLQ(dlqStore))
 	defer bus.Close(context.Background())
