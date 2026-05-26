@@ -17,7 +17,7 @@ All commits and PRs must:
 
 ## Project Overview
 
-Event Manager (`github.com/rbaliyan/event`) is a production-grade event pub-sub library for Go with support for distributed event handling, metrics, tracing, and configurable transports.
+Event Manager (`github.com/rbaliyan/event/v3`) is a production-grade event pub-sub library for Go with support for distributed event handling, metrics, tracing, and configurable transports.
 
 ## Build Commands
 
@@ -114,7 +114,7 @@ func New(opts ...Option) *Client {
 **Monitor (monitor/)** - Event processing monitoring with mode-aware tracking:
 - Broadcast mode: tracks per `(EventID, SubscriptionID)`
 - WorkerPool mode: tracks per `EventID` only
-- Stores: PostgreSQL, MongoDB, in-memory
+- Stores in-module: PostgreSQL, in-memory. MongoDB store extracted to [event-mongodb](https://github.com/rbaliyan/event-mongodb).
 - HTTP API: `monitor/http` - REST handler using protoJSON
 - gRPC API: `monitor/grpc` - gRPC service implementation
 - Shared protobuf definitions in `monitor/proto`
@@ -129,7 +129,7 @@ func New(opts ...Option) *Client {
 - Publishers define event configuration (timeouts, retries, feature flags)
 - Subscribers auto-load schema on `Register()`
 - Schema flags control which middleware is applied
-- Providers: PostgreSQL, MongoDB, Redis, in-memory
+- Providers in-module: PostgreSQL, Redis, in-memory. MongoDB provider extracted to [event-mongodb](https://github.com/rbaliyan/event-mongodb).
 - HTTP API: `schema/http` - REST CRUD handler (list/get/put/delete, version auto-increment)
 
 **Reliability Stack (stack/)** - Convenience BusOption that wires Monitor + Idempotency + Poison detection:
@@ -214,7 +214,9 @@ Bus-level outbox support for atomic database writes with event publishing:
 
 **Configuration:**
 ```go
-store, _ := outbox.NewMongoStore(db)
+// PostgreSQL (in-module). For MongoDB, import the equivalent constructor
+// from the event-mongodb module.
+store, _ := outbox.NewPostgresStore(db)
 bus, _ := event.NewBus("mybus",
     event.WithTransport(transport),
     event.WithOutbox(store),  // Enables outbox routing
@@ -226,22 +228,33 @@ bus, _ := event.NewBus("mybus",
 // Normal publish - goes directly to transport
 orderEvent.Publish(ctx, order)
 
-// Inside transaction - automatically routes to outbox
-err := outbox.Transaction(ctx, mongoClient, func(ctx context.Context) error {
-    _, err := ordersCol.InsertOne(ctx, order)
-    if err != nil {
-        return err
-    }
-    return orderEvent.Publish(ctx, order)  // Goes to outbox!
-})
+// Inside transaction - wrap the context with WithOutboxTx so Bus.Send
+// routes to OutboxStore.Store instead of the transport.
+tx, _ := db.BeginTx(ctx, nil)
+txCtx := event.WithOutboxTx(ctx, tx)
+if _, err := tx.ExecContext(txCtx, "INSERT INTO orders ..."); err != nil {
+    _ = tx.Rollback()
+    return err
+}
+if err := orderEvent.Publish(txCtx, order); err != nil { // Goes to outbox
+    _ = tx.Rollback()
+    return err
+}
+if err := tx.Commit(); err != nil {
+    return err
+}
 ```
 
+For MongoDB the `event-mongodb` module wires the same `WithOutboxTx`
+pattern through `mongo.Session.WithTransaction` so the session value
+is available to the MongoDB outbox store's `Store` method.
+
 **How it works:**
-1. `outbox.Transaction()` wraps the context with `event.WithOutboxTx(ctx, session)`
-2. `Bus.Send()` checks `event.InOutboxTx(ctx)` before publishing
-3. If inside transaction AND outbox configured: routes to `OutboxStore.Store()`
-4. Otherwise: publishes directly to transport
-5. Background relay polls outbox and publishes to transport
+1. `event.WithOutboxTx(ctx, session)` stores the session/tx on the context.
+2. `Bus.Send()` checks `event.InOutboxTx(ctx)` before publishing.
+3. If inside transaction AND outbox configured: routes to `OutboxStore.Store()`.
+4. Otherwise: publishes directly to transport.
+5. Background relay polls outbox and publishes to transport.
 
 **Interface:**
 ```go

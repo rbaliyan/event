@@ -1,13 +1,26 @@
 // Package monitor provides event processing monitoring and observability.
 //
-// The monitor package tracks event processing with mode-aware tracking granularity:
-//   - Broadcast (Pub/Sub): Track per (EventID, SubscriptionID) - each subscriber's processing is separate
-//   - WorkerPool (Queue): Track per EventID only - one worker processes each event
+// The monitor package tracks event processing with mode-aware tracking
+// granularity:
+//   - Broadcast (Pub/Sub): track per (EventID, SubscriptionID) — each
+//     subscriber's processing is separate.
+//   - WorkerPool (Queue): track per EventID only — one worker processes
+//     each event.
+//
+// Available stores in-module:
+//   - MemoryStore (in-process)
+//   - PostgresStore
+//
+// The MongoDB-backed monitor store was extracted to the event-mongodb
+// module: https://github.com/rbaliyan/event-mongodb
 //
 // Example usage:
 //
 //	// Create a PostgreSQL monitor store
-//	store := monitor.NewPostgresStore(db)
+//	store, err := monitor.NewPostgresStore(db)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //	defer store.Close()
 //
 //	// Add monitor middleware to subscription
@@ -22,6 +35,9 @@
 //	    StartTime: time.Now().Add(-time.Hour),
 //	    Limit:     100,
 //	})
+//
+// For operational debugging, see
+// https://github.com/rbaliyan/event/blob/main/monitor/DEBUGGING.md
 package monitor
 
 import (

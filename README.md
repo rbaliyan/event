@@ -14,7 +14,7 @@ A **production-grade event pub-sub library** for Go with support for distributed
 ### Core
 - **Type-Safe Generics**: `Event[T]` ensures compile-time type safety
 - **Multiple Transports**: Channel (in-memory), Redis Streams, NATS JetStream, Kafka
-- **Fire-and-Forget API**: `Publish()` and `Subscribe()` are void - events are facts
+- **Simple API**: `Publish()` and `Subscribe()` return `error`, so callers see transport failures and registration errors directly; events are still treated as facts in domain code
 - **Delivery Modes**: Broadcast (fan-out) or WorkerPool (load balancing)
 
 ### Reliability
@@ -54,6 +54,37 @@ All packages share consistent patterns:
 - Multiple backend implementations (PostgreSQL, Redis, and MongoDB via event-mongodb)
 
 > **Note:** MongoDB implementations for outbox, monitor, distributed state manager, schema, idempotency, and checkpoint were moved to the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module. See each section below for migration details.
+
+## Sub-packages
+
+Top-level sub-packages of `github.com/rbaliyan/event/v3`. Each has its own godoc on pkg.go.dev.
+
+| Path | Purpose |
+|------|---------|
+| `backoff` | Exponential / linear / constant retry strategies with jitter |
+| `batch` | Batch publish helpers for high-throughput producers |
+| `checkpoint` | Subscriber checkpoint persistence (memory, Redis; MongoDB via [event-mongodb](https://github.com/rbaliyan/event-mongodb)) |
+| `distributed` | WorkerPool semantics on broadcast-only transports + recovery runner |
+| `errors` | Shared sentinel errors and `Wrap*` helpers |
+| `health` | `Checker` interface and aggregator for transport / store health |
+| `idempotency` | Duplicate detection store (memory / Redis / PostgreSQL) |
+| `metrics` | OpenTelemetry meter wiring shared across packages |
+| `monitor` | Event-level processing telemetry; HTTP + gRPC surfaces in `monitor/http`, `monitor/grpc` |
+| `outbox` | Transactional outbox store + relay |
+| `partition` | Consistent-hash partition assignment for routed delivery |
+| `payload` | Codec interface + JSON / Msgpack implementations |
+| `poison` | Failure-count tracking + quarantine store |
+| `schema` | Publisher-defined event configuration + payload schema evolution |
+| `stack` | `WithReliabilityStack` convenience that wires monitor + idempotency + poison |
+| `store` | Common store interfaces (base + helpers) |
+| `transaction` | Bus-level transaction context helpers |
+| `validation` | Payload validator interface and helpers |
+| `transport/{channel,redis,nats,kafka}` | Production transports |
+| `transport/{ackonly,composite,noop,bridge,persistent,migration}` | Specialized transport adapters |
+| `transport/{message,codec,base}` | Transport-layer primitives |
+
+For implementation guidance and architecture context, see [`CLAUDE.md`](CLAUDE.md).
+For operational debugging, see [`monitor/DEBUGGING.md`](monitor/DEBUGGING.md).
 
 ## Installation
 
@@ -98,16 +129,83 @@ func main() {
         log.Fatal(err)
     }
 
-    // Subscribe with type-safe handler
-    orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
+    // Subscribe with type-safe handler. Subscribe returns error on
+    // transport / registration problems — handle it the same way.
+    if err := orderEvent.Subscribe(ctx, func(ctx context.Context, e event.Event[Order], order Order) error {
         fmt.Printf("Order received: %s, Amount: $%.2f\n", order.ID, order.Amount)
         return nil
-    })
+    }); err != nil {
+        log.Fatal(err)
+    }
 
-    // Publish (fire-and-forget)
-    orderEvent.Publish(ctx, Order{ID: "ORD-123", Amount: 99.99})
+    // Publish — returns error so the caller can surface transport
+    // failures or unregistered-event mistakes.
+    if err := orderEvent.Publish(ctx, Order{ID: "ORD-123", Amount: 99.99}); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
+
+## Options Reference
+
+### Bus Options
+
+`event.NewBus(name, opts ...BusOption)` accepts the following options (godoc in `bus_options.go`):
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| `WithTransport(t)` | required | The underlying transport (channel, redis, nats, kafka, …). |
+| `WithLogger(l *slog.Logger)` | `slog.Default()` | Structured logger; component label is `bus>{name}`. |
+| `WithRecovery(bool)` | `true` | Wrap handlers in panic recovery; on panic the message is treated as `Defer`. |
+| `WithTracing(bool)` | `true` | OpenTelemetry span creation around handler invocation. |
+| `WithMetrics(bool)` | `true` | OpenTelemetry counters / histograms for publish + handler. |
+| `WithOutbox(store)` | nil | When set, publishes inside `WithOutboxTx` route to the outbox instead of the transport. |
+| `WithIdempotency(store)` | nil | Bus-level idempotency middleware. See [Idempotency](#idempotency). |
+| `WithPoisonDetection(detector)` | nil | Bus-level quarantine middleware. See [Poison Message Detection](#poison-message-detection). |
+| `WithMonitor(store)` | nil | Records per-message processing state. See [Event Monitoring](#event-monitoring). |
+| `WithSchemaProvider(p)` | nil | Subscribers auto-load `EventSchema` config on register. |
+| `WithStrictSchema(bool)` | `false` | When true, schema provider errors fail `Register` instead of being logged. |
+| `WithDLQ(store)` | nil | Bus-level Dead Letter Queue. Rejected / max-retry / decode-error messages route here automatically. Wrap an existing event-dlq store with `dlq.NewStoreAdapter(store, "service-name")`. |
+| `WithPublishAudit(store)` | nil | Producer-side audit log of every successful `transport.Publish`. Closes the gap between "published" and "processed" — see [`monitor/DEBUGGING.md` WithPublishAudit section](monitor/DEBUGGING.md#withpublishaudit--closing-the-publish--process-gap) for the fault-localization table. Any monitor store (e.g. `monitor.NewMemoryStore()`) doubles as a `PublishAuditStore`. |
+| `WithDrainTimeout(d)` | 0 (no wait) | Maximum time `Bus.Close()` blocks waiting for in-flight handlers to finish. |
+| `WithAll(opts ...)` | — | Combiner for composing `BusOption`s from sub-packages (`stack.WithReliabilityStack(...)`, etc.). |
+
+### Event Options
+
+Options passed to `event.New[T](name, opts ...Option)` (godoc in `option.go`):
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| `WithSubscriberTimeout(d)` | 0 (no timeout) | Per-message handler deadline applied to subscriber contexts for this event. |
+| `WithErrorHandler(fn)` | nil | Custom error sink called when a panic is recovered in a handler for this event. |
+| `WithMaxRetries(n)` | `0` (unlimited) | Cap on retry attempts before the message is rejected to the DLQ. `0` keeps the historical "retry forever" behavior; transports that have their own retry budget still apply it. |
+| `WithPayloadCodec(c)` | JSON | Override the codec used to encode/decode this event's payload. |
+| `WithMessageFilter(f)` | nil | Predicate over metadata. Subscribers skip messages where `f(metadata) == false`. |
+| `WithDecodeErrorHandler(fn)` | nil | Per-event hook to decide what to do with a decode failure (`nil` → ack and drop; `ErrReject` → route to DLQ). |
+
+### Subscribe Options
+
+Passed to `Event.Subscribe(ctx, handler, opts ...SubscribeOption[T])`. The full set is documented in `option.go`; commonly-used:
+
+- `AsBroadcast[T]()` / `AsWorker[T]()` / `WithWorkerGroup[T](name)` — see [Delivery Modes](#delivery-modes).
+- `WithMiddleware(...)`, `WithMiddlewareChain[T](chain)` — chain user middleware. Schema-controlled middleware runs outside this chain (see [COMPATIBILITY.md](COMPATIBILITY.md#middleware-chain-order)).
+- `WithSubscriberName[T](name)`, `WithSubscriberDescription[T](desc)` — labels surfaced in topology, monitoring, and traces.
+- `WithLatestOnly[T]()`, `WithMaxAge[T](d)`, `WithBufferSize[T](size)` — backpressure / freshness tuning.
+- `WithAckPolicy[T](...)` / `WithBestEffort[T]()` — control ack semantics, see [Error Handling](#error-handling).
+- `WithCoalesceByKey[T](keyFn)` / `WithCoalesceByMetadata[T](metaKey)` — drop superseded updates, see [Message Coalescing](#message-coalescing).
+- `WithRouteFilter[T](...)` / `WithRouteMatch[T](...)` — message routing predicates, see [Message Routing](#message-routing).
+- `WithConsumerID[T](name)` — pin a logical consumer for Redis transports, see [Consumer Identity (Redis)](#consumer-identity-redis).
+
+```go
+ev.Subscribe(ctx, processOrder,
+    event.AsWorker[Order](),
+    event.WithWorkerGroup[Order]("order-processors"),
+    event.WithMiddleware(loggingMW, metricsMW),
+    event.WithSubscriberName[Order]("orders.workflow.v3"),
+)
+```
+
+For transport-specific options (`redis.WithAutoRecreateGroup`, `nats.WithJetStream`, etc.) see the transport sections below.
 
 ## Transports
 
@@ -203,12 +301,13 @@ import (
     "github.com/rbaliyan/event/v3"
     mongodb "github.com/rbaliyan/event-mongodb"
     "go.mongodb.org/mongo-driver/v2/mongo"
+    "go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 func main() {
     ctx := context.Background()
 
-    client, _ := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+    client, _ := mongo.Connect(options.Client().ApplyURI("mongodb://localhost:27017"))
     db := client.Database("myapp")
 
     // Watch a specific collection
@@ -273,10 +372,13 @@ transport, _ := redis.New(rdb,
     // Enable per-mode. Broadcast is low blast radius (per-Subscribe throwaway
     // group). WorkerPool is high blast radius (shared cluster-wide PEL is
     // dropped on recreate) — opt in only when at-least-once gaps across Redis
-    // state loss are acceptable.
-    redis.WithAutoRecreateGroup(redis.RecreateBroadcast | redis.RecreateWorkerPool),
+    // state loss are acceptable. Use redis.RecreateAll as a shorthand for
+    // RecreateBroadcast | RecreateWorkerPool.
+    redis.WithAutoRecreateGroup(redis.RecreateAll),
 
     // Optional: observe recreate events (wire a metric counter or alert here).
+    // mode.String() yields one of "none" / "broadcast" / "worker_pool" / "all"
+    // — safe to use directly as a Prometheus label value.
     redis.WithRecreateHandler(func(stream, group string, mode redis.RecreateMode) {
         recreatesTotal.WithLabelValues(stream, group, mode.String()).Inc()
     }),
@@ -450,7 +552,7 @@ runner, _ := distributed.NewRecoveryRunner(coord,
 go runner.Run(ctx)
 ```
 
-For MongoDB-backed payload recovery, use `distributed.NewMongoStateManager` from the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module.
+For MongoDB-backed payload recovery, import `github.com/rbaliyan/event-mongodb/distributed` and use `distributed.NewMongoStateManager(collection, opts ...)` from that module (not the `distributed` package in this repository). The constructor takes a `*mongo.Collection` — same `WorkerStore` / `PayloadStore` interface, MongoDB-native locking primitives.
 
 Recovery is two-phase:
 1. **Re-publish**: Stale entries with stored payload are re-published via the bus with a new event ID
@@ -482,7 +584,7 @@ orderEvent.Subscribe(ctx, collectAnalytics, event.WithMiddleware(mwB))
 | Backend | Package | Use Case |
 |---------|---------|----------|
 | Redis | `distributed.NewRedisStateManager` | Distributed deployments (recommended) |
-| MongoDB | `distributed.NewMongoStateManager` (event-mongodb) | When MongoDB is already your primary store |
+| MongoDB | `event-mongodb/distributed.NewMongoStateManager` | When MongoDB is already your primary store |
 | Memory | `distributed.NewMemoryStateManager` | Single-instance or testing |
 
 All three backends implement both `Coordinator` and `PayloadStore` interfaces.
@@ -655,16 +757,49 @@ Endpoints:
 - `GET /v1/workers/{message_id}` - Get single worker
 - `GET /v1/workers/count` - Count workers matching filter
 
+### Monitor HTTP Options
+
+`monitorhttp.New(store, opts ...Option)` accepts:
+
+| Option | What it does |
+|--------|--------------|
+| `WithWorkerStore(ws)` | Enables `/v1/workers*` endpoints backed by a `distributed.WorkerStore`. |
+| `WithSystemRefreshInterval(d)` | Background interval for `/v1/system` aggregation. Required for the endpoint to return data; pass `0` to disable. |
+| `WithStuckPendingProvider(p)` | Wires stuck-pending detection into `/v1/system`. Provider is queried on every refresh. |
+| `WithDLQAlertHook(fn, threshold)` | Fires `fn` from each system refresh when DLQ pending count crosses `threshold`. Use to page operators or push metrics. |
+
+```go
+handler := monitorhttp.New(store,
+    monitorhttp.WithWorkerStore(sm),
+    monitorhttp.WithSystemRefreshInterval(30*time.Second),
+    monitorhttp.WithStuckPendingProvider(redisStuckProvider),
+    monitorhttp.WithDLQAlertHook(func(ctx context.Context, count int64) {
+        dlqAlertsTotal.Inc()
+    }, 100),
+)
+```
+
+See [`monitor/DEBUGGING.md`](monitor/DEBUGGING.md) for guidance on triaging `/v1/system` output.
+
 ## Schema Registry
 
 Define event configuration centrally:
 
 ```go
-import "github.com/rbaliyan/event/v3/schema"
+import (
+    "context"
+    "github.com/rbaliyan/event/v3/schema"
+)
 
-// The second argument is a publish function called when schema changes are made.
-// Pass nil only if your application never needs schema-change notifications.
-provider, _ := schema.NewPostgresProvider(db, nil /* publisher */)
+// The second argument is the change-notification callback. It is required;
+// pass a no-op closure if you don't need subscribers to be notified of
+// schema changes.
+provider, err := schema.NewPostgresProvider(db,
+    func(ctx context.Context, change schema.SchemaChangeEvent) error { return nil },
+)
+if err != nil {
+    log.Fatal(err)
+}
 defer provider.Close()
 
 bus, _ := event.NewBus("order-service",
@@ -675,18 +810,22 @@ bus, _ := event.NewBus("order-service",
 )
 
 // Publisher: Define schema
-provider.Set(ctx, &schema.EventSchema{
+if err := provider.Set(ctx, &schema.EventSchema{
     Name:              "order.created",
     Version:           1,
     SubTimeout:        30 * time.Second,
     MaxRetries:        3,
     EnableMonitor:     true,
     EnableIdempotency: true,
-})
+}); err != nil {
+    log.Fatal(err)
+}
 
 // Subscriber: Schema auto-loaded on Register()
 orderEvent := event.New[Order]("order.created")
-event.Register(ctx, bus, orderEvent) // Loads schema automatically
+if err := event.Register(ctx, bus, orderEvent); err != nil { // Loads schema automatically
+    log.Fatal(err)
+}
 ```
 
 ## Error Handling
@@ -890,6 +1029,43 @@ func TestOrderHandler(t *testing.T) {
     }
 }
 ```
+
+### Deterministic time in tests (internal pattern)
+
+The repo's own tests use an internal `clock.Clock` interface so they
+can cross TTL and stale-timeout boundaries deterministically instead of
+sleeping. The hook is on:
+
+- `distributed.MemoryStateManager` / `distributed.RedisStateManager`
+- `idempotency.MemoryStore`
+- `poison.MemoryStore`
+- `transport.CircuitBreaker`
+- `transport/bridge.MemoryCoordinator` (via `SetClockForTesting` from `export_test.go`)
+
+The other stores use `withClock` — an unexported option that production
+code never sees.
+
+This pattern is **internal to this repository**. The `internal/clock`
+package and the `withClock` options are not part of the public API and
+cannot be imported by external consumers (Go enforces the `internal/`
+import-path rule). Production callers always get the real clock,
+installed as the default in each constructor.
+
+A shape of how tests inside a store's own package use the hook:
+
+```go
+// distributed/payload_test.go (excerpt)
+clk := clock.NewFake(time.Time{})
+sm := NewMemoryStateManager(WithCleanup(false, 0), withClock(clk))
+sm.Acquire(ctx, "msg-1", 10*time.Millisecond)
+clk.Advance(20 * time.Millisecond) // cross the TTL boundary
+// next sm.Acquire("msg-1") succeeds
+```
+
+Tests in other packages within this repo reach `clock.Clock` through
+`internal/testutil/clock.go`, which re-exports the type aliases. See
+`internal/testutil/eventually.go` for the `Eventually` / `WaitFor`
+polling helpers that pair with the fake clock.
 
 ## Message Routing
 

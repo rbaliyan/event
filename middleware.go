@@ -241,7 +241,8 @@ func DeduplicationMiddleware[T any](store DeduplicationStore) Middleware[T] {
 //
 // Example usage:
 //
-//	store := idempotency.NewRedisStore(redisClient, time.Hour)
+//	store, err := idempotency.NewRedisStore(redisClient, time.Hour)
+//	if err != nil { log.Fatal(err) }
 //	ev.Subscribe(ctx, handler, event.WithMiddleware(event.IdempotencyMiddleware[Order](store)))
 func IdempotencyMiddleware[T any](store IdempotencyStore) Middleware[T] {
 	return func(next Handler[T]) Handler[T] {
@@ -309,7 +310,8 @@ type RecordStartParams struct {
 //
 // Example:
 //
-//	store := monitor.NewPostgresStore(db)
+//	store, err := monitor.NewPostgresStore(db)
+//	if err != nil { log.Fatal(err) }
 //	ev.Subscribe(ctx, handler, event.WithMiddleware(
 //	    event.MonitorMiddleware[Order](store),
 //	))
@@ -345,8 +347,11 @@ type RecordPublishParams struct {
 // event was ever published (transport fault) or never fired at all (app bug).
 //
 // Implementations:
-//   - monitor.NewPublishMemoryStore(): In-memory store for development/testing
-//   - For production, implement PublishStore from the monitor package and wrap it
+//   - Any monitor.Store value (monitor.NewMemoryStore(),
+//     monitor.NewPostgresStore(db)) satisfies this interface. The
+//     stack.WithReliabilityStack convenience option promotes the
+//     configured monitor store to also serve as the publish-audit store
+//     automatically.
 type PublishAuditStore interface {
 	RecordPublish(ctx context.Context, params RecordPublishParams) error
 }
@@ -392,7 +397,8 @@ type RecordCompleteParams struct {
 //
 // Example usage:
 //
-//	store := monitor.NewPostgresStore(db)
+//	store, err := monitor.NewPostgresStore(db)
+//	if err != nil { log.Fatal(err) }
 //	ev.Subscribe(ctx, handler, event.WithMiddleware(event.MonitorMiddleware[Order](store)))
 func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 	return func(next Handler[T]) Handler[T] {

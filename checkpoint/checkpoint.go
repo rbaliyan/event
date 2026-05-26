@@ -7,7 +7,9 @@
 // Available implementations:
 //   - MemoryCheckpointStore: in-memory store for testing
 //   - RedisCheckpointStore: Redis-backed store for production
-//   - MongoCheckpointStore: MongoDB-backed store for production
+//
+// The MongoDB-backed checkpoint store was extracted to the
+// event-mongodb module: https://github.com/rbaliyan/event-mongodb
 package checkpoint
 
 import (

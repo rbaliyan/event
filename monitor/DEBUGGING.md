@@ -553,7 +553,7 @@ db._event_resume_tokens_GLOBAL.deleteMany({})
 
 ## Redis Direct Queries
 
-Streams are named `evt.{busName}.{eventName}`. Consumer groups are named `{deploymentName}-{eventName}-{workerGroup}`.
+Streams are named `evt.{busName}.{eventName}`. Consumer groups are named `{baseGroupID}-{eventName}-{workerGroup}` for worker-pool subscribers with a worker group, `{baseGroupID}` for worker-pool subscribers without one, and `{baseGroupID}-{subID}` for broadcast subscribers (per-Subscribe throwaway group). `baseGroupID` is set by `redis.WithGroupID(...)` and defaults to the bus name.
 
 ### List all event streams
 
@@ -638,8 +638,9 @@ In bridge mode, events originate as MongoDB change stream events and are forward
 
 Each worker group gets its own Redis consumer group. Consumer group names follow the pattern:
 ```
-{deploymentName}-{eventName}-{workerGroup}
+{baseGroupID}-{eventName}-{workerGroup}
 ```
+where `baseGroupID` is set by `redis.WithGroupID(...)` and defaults to the bus name. See "Redis Direct Queries" above for the broadcast / no-worker-group variants.
 
 **Different worker groups are completely independent**: if event `case_record.created` has worker groups `workflow` and `timeline`, every message is delivered to **both** groups (each group gets its own copy). Within each group, only one pod processes the message.
 
@@ -656,6 +657,83 @@ This means:
 - You cannot tell from the monitor entry which specific pod ultimately completed the handler.
 - The `instance_id` in the entry reflects the pod that first recorded "pending", which may be different from the pod that completed processing (in crash/reclaim scenarios).
 - For broadcast mode, `subscription_id` is a UUID regenerated on pod restart, so historical entries may not match the current topology.
+
+### NOGROUP Recovery (Redis Auto-Recreate)
+
+`transport/redis` supports opt-in self-healing when the consumer group
+disappears (Redis restart without persistence, FLUSHDB, manual DEL,
+failover to an empty replica, eviction under maxmemory). Configure with
+`redis.WithAutoRecreateGroup(...)` and observe with
+`redis.WithRecreateHandler(...)`.
+
+**Operational impact by mode:**
+
+| Mode | `mode.String()` | Blast radius on recreate | When to enable |
+|------|-----------------|--------------------------|----------------|
+| `RecreateMode(0)` (default) | `"none"` | None. Behavior unchanged: NOGROUP retries with exponential backoff and never recovers without a restart. | Default. Choose explicitly via the option above. |
+| `RecreateBroadcast` | `"broadcast"` | Low. Broadcast subscriptions own throwaway per-Subscribe groups; PEL loss only affects messages in flight to one replica. | Almost always — gap window is small and recovery beats a manual process restart. |
+| `RecreateWorkerPool` | `"worker_pool"` | High. Worker-pool groups are shared cluster-wide; recreate drops the entire PEL (every other replica's in-flight messages). | Only when at-least-once gaps across Redis state loss are acceptable. |
+| `RecreateAll` (= `RecreateBroadcast \| RecreateWorkerPool`) | `"all"` | Mixed — see broadcast / worker-pool rows above. | Convenient shorthand when enabling both modes. |
+
+**Detection signals:**
+- `consumer group recreated after NOGROUP` (Warn-level log) on each
+  recreate. Field: `stream`, `group`, `mode`.
+- If wired, the `WithRecreateHandler(func(stream, group string, mode RecreateMode))`
+  callback fires after every successful recreate. Suggested wiring:
+  ```promql
+  event_redis_consumer_group_recreated_total{stream="<stream>",group="<group>",mode="<none|broadcast|worker_pool|all>"}
+  ```
+  `mode.String()` is safe to drop directly into a Prometheus label —
+  the possible values are documented above.
+- Repeated recreate→NOGROUP cycles fall into exponential backoff so a
+  flapping group does not hot-loop. Treat sustained increase in the
+  counter as a backing-store alert, not a missing-message alert.
+- Default deployments emit zero recreate events but the metric still
+  fires with `mode="none"` if the `WithRecreateHandler` is wired
+  without `WithAutoRecreateGroup`. Treat a `mode="none"` series as
+  "auto-recreate disabled" rather than as missing data.
+
+**What's not recovered:**
+The destroyed group's Pending Entries List is unrecoverable. Messages
+published in the gap between destruction and recreate are not delivered
+to a broadcast subscription that started at `$`.
+
+### `WithPublishAudit` — closing the publish → process gap
+
+When monitor entries are missing for events you know were published, the
+fault could be in the producer (call never happened), the transport
+(call returned `error` but caller ignored it), or the subscriber
+(consumer group / handler problem). `WithPublishAudit(store)` records
+every successful `transport.Publish` so the gap between "publisher said
+it published" and "consumer recorded a monitor entry" is observable:
+
+| Event has audit entry | Event has monitor entry | Fault domain |
+|-----------------------|-------------------------|--------------|
+| Yes | Yes | Working as expected. |
+| Yes | No | Transport or subscriber: message reached the broker but no consumer started processing. Inspect consumer group lag, PEL, and topology coverage. |
+| No | No | Producer side: the bus never published. Check the publisher's error return, outbox routing (`InOutboxTx`), and DLQ for rejected publish attempts. |
+| No | Yes | (Rare.) Monitor recorded an event the audit didn't — usually means an event was injected via `bus.Send` rather than `Event.Publish`. |
+
+Wire it once on the bus. `event.PublishAuditStore` is satisfied by any
+monitor store, so the simplest setup reuses the monitor store you
+already have:
+
+```go
+monitorStore := monitor.NewMemoryStore()             // or monitor.NewPostgresStore(db)
+bus, _ := event.NewBus("orders",
+    event.WithTransport(transport),
+    event.WithMonitor(monitorStore),
+    event.WithPublishAudit(monitorStore),            // same store; doubles as audit store
+)
+```
+
+`stack.WithReliabilityStack(...)` auto-promotes the configured monitor
+store to also serve as the publish-audit store, so applications using
+the reliability stack get this wiring for free.
+
+Outbox-routed publishes (inside `event.WithOutboxTx`) are *not* recorded
+in the audit — the publish doesn't reach the transport until the relay
+runs. The relay's own publish is audited normally.
 
 ### Reading Monitor Entry Fields
 
@@ -701,6 +779,9 @@ Use this checklist when a subscriber appears to have missed an event:
   □ Check entry.error field
   □ Check GET /v1/system dlq.messages_by_event for DLQ accumulation
 □ If event never reached Redis (no PEL, no consumer lag):
+  □ If WithPublishAudit is configured: query the audit store for
+    event_id — present means transport.Publish succeeded; absent means
+    Bus.Send was never invoked (producer-side bug or outbox routing).
   □ Check bridge dedup: db._event_worker_state.findOne({_id: event_id})
   □ Check MongoDB change stream lag: db._event_resume_tokens_* for stale tokens
   □ Check mongodb_stream_reconnections_total metric for history_lost events

@@ -27,16 +27,25 @@
 //	    log.Fatal(err)
 //	}
 //
-//	// Subscribe with type-safe handler
-//	userEvent.Subscribe(ctx, func(ctx context.Context, ev event.Event[User], user User) error {
+//	// Subscribe with type-safe handler. Subscribe returns error on
+//	// transport / registration problems — handle it the same way as
+//	// Publish below.
+//	if err := userEvent.Subscribe(ctx, func(ctx context.Context, ev event.Event[User], user User) error {
 //	    fmt.Printf("User created: %s\n", user.Name)
 //	    return nil
-//	})
+//	}); err != nil {
+//	    log.Fatal(err)
+//	}
 //
-//	// Publish
-//	userEvent.Publish(ctx, User{ID: "123", Name: "John"})
+//	// Publish — returns error on transport failure or unregistered event.
+//	if err := userEvent.Publish(ctx, User{ID: "123", Name: "John"}); err != nil {
+//	    log.Fatal(err)
+//	}
 //
-// Bus Options:
+// Bus Options Reference. README.md "Options Reference" is the canonical
+// surface (defaults, prose, cross-links); bus_options.go has the per-symbol
+// godoc that pkg.go.dev renders. This list is a brief inventory; keep it
+// in sync with the README table when adding options.
 //   - WithTransport: set transport (required). Use channel.New(), redis.New(), etc.
 //   - WithTracing: enable/disable OpenTelemetry tracing. Default is true.
 //   - WithRecovery: enable/disable panic recovery in handlers. Default is true.
@@ -49,15 +58,30 @@
 //   - WithStrictSchema: fail registration if schema provider returns an error.
 //   - WithOutbox: set outbox store for transactional event publishing.
 //   - WithDLQ: set DLQ store for automatic dead letter routing.
+//   - WithPublishAudit: record every successful transport.Publish for
+//     publish-vs-process gap triage; any monitor store satisfies the
+//     PublishAuditStore interface.
+//   - WithDrainTimeout: maximum time Bus.Close() blocks waiting for
+//     in-flight handlers. Default is 0 (no wait).
+//   - WithAll: combiner that fans a slice of BusOption values into one
+//     option; used by sub-packages such as stack.WithReliabilityStack.
 //
-// Event Options:
+// Event Options (option.go):
 //   - WithSubscriberTimeout: set handler execution timeout. Default is 0 (no timeout).
 //   - WithErrorHandler: set panic recovery error callback.
 //   - WithMaxRetries: set max retry attempts before sending to DLQ. Default is 0 (unlimited).
-// Subscribe Options:
+//   - WithPayloadCodec: override codec for this event's payload.
+//   - WithMessageFilter: predicate over metadata; subscribers skip false-results.
+//   - WithDecodeErrorHandler: decide what to do with a decode failure
+//     (nil → ack and drop; ErrReject → route to DLQ).
+//
+// Subscribe Options (option.go):
 //   - AsWorker: use WorkerPool mode (load balancing - one subscriber receives each message).
 //   - AsBroadcast: use Broadcast mode (fan-out - all subscribers receive each message). Default.
-//   - WithMiddleware: add custom middleware to the handler chain.
+//   - WithWorkerGroup: name a worker group; multiple groups each receive all messages, workers within compete.
+//   - WithMiddleware / WithMiddlewareChain: add custom middleware to the handler chain.
+//   - WithLatestOnly / WithMaxAge / WithBufferSize: freshness / backpressure tuning.
+//   - WithSubscriberName / WithSubscriberDescription: labels surfaced in topology, monitor entries, and traces.
 //
 // Bus Registry:
 // Buses are registered globally by name. Events can be accessed via full name syntax:
@@ -102,18 +126,22 @@
 //	)
 //
 //	// Publisher defines schema
-//	provider.Set(ctx, &schema.EventSchema{
+//	if err := provider.Set(ctx, &schema.EventSchema{
 //	    Name:              "order.created",
 //	    Version:           1,
 //	    SubTimeout:        30 * time.Second,
 //	    MaxRetries:        3,
 //	    EnableIdempotency: true,
 //	    EnablePoison:      true,
-//	})
+//	}); err != nil {
+//	    log.Fatal(err)
+//	}
 //
 //	// Subscriber auto-loads schema on Register
 //	orderEvent := event.New[Order]("order.created")
-//	event.Register(ctx, bus, orderEvent)  // Schema applied automatically
+//	if err := event.Register(ctx, bus, orderEvent); err != nil { // Schema applied automatically
+//	    log.Fatal(err)
+//	}
 //
 // Schema providers: MemoryProvider, PostgresProvider, RedisProvider.
 // For MongoDB schema storage, use the separate event-mongodb module (https://github.com/rbaliyan/event-mongodb).

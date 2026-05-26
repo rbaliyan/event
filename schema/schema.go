@@ -1,20 +1,24 @@
-// Package schema provides event configuration registry with transport-first
-// storage and database fallback support.
+// Package schema provides two related-but-distinct features for event
+// definitions: an EventSchema configuration registry and a payload-schema
+// evolution mechanism.
 //
-// Publishers define event processing configuration (timeouts, retries, feature flags)
-// in the schema registry. Subscribers automatically load and apply this configuration
-// when events are registered, ensuring all workers processing the same event have
-// consistent settings.
+// # 1. EventSchema configuration registry
 //
-// Schema providers support two strategies:
-//   - Transport-based: Uses transport's KV/retention if available (NATS KV, Kafka compacted)
-//   - Database fallback: PostgreSQL or Redis for transports without retention;
-//     for MongoDB, use the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
+// Publishers define event processing configuration (timeouts, retries,
+// feature flags) in the schema registry. Subscribers automatically load and
+// apply this configuration when events are registered, ensuring all workers
+// processing the same event have consistent settings.
 //
-// Example usage:
+// SchemaProvider implementations support two storage strategies:
+//   - Transport-based: uses transport KV/retention if available (NATS KV,
+//     Kafka compacted topics).
+//   - Database fallback: PostgreSQL or Redis for transports without
+//     retention. For MongoDB use the event-mongodb module
+//     (https://github.com/rbaliyan/event-mongodb).
 //
-//	// Publisher registers schema
-//	err := schema.Register(ctx, bus, &schema.EventSchema{
+//	// Publisher stores the schema in a provider...
+//	provider := schema.NewMemoryProvider()
+//	_ = provider.Set(ctx, &schema.EventSchema{
 //	    Name:              "order.created",
 //	    Version:           1,
 //	    SubTimeout:        30 * time.Second,
@@ -23,9 +27,57 @@
 //	    EnableIdempotency: true,
 //	})
 //
-//	// Subscriber auto-loads schema on Register()
+//	// ...and wires the provider into the bus.
+//	bus, _ := event.NewBus("orders",
+//	    event.WithTransport(transport),
+//	    event.WithSchemaProvider(provider),
+//	)
+//
+//	// Subscribers auto-load the schema when the event is registered with
+//	// the bus; no extra call is needed.
 //	orderEvent := event.New[Order]("order.created")
-//	event.Register(ctx, bus, orderEvent)
+//	_ = event.Register(ctx, bus, orderEvent)
+//
+// # 2. Payload-schema evolution
+//
+// Payload schema evolution enables safe versioning of message payloads:
+//   - Schema registration and validation (JSONSchema)
+//   - Version upcasting (transforming old payload versions to new)
+//   - Backward-compatibility checks
+//   - Envelope-based wire format that carries version metadata
+//
+// The lifecycle is: register the new schema version, add an upcaster from
+// the previous version, then consumers auto-upcast old messages to the
+// latest schema before invoking the typed handler.
+//
+//	registry := schema.NewMemoryRegistry()
+//	v1 := schema.NewJSONSchema("orders.created", 1).
+//	    WithRequired("order_id", "customer_id").
+//	    WithProperty("order_id", "string").
+//	    WithProperty("customer_id", "string")
+//	registry.Register(ctx, "orders.created", v1)
+//
+//	v2 := schema.NewJSONSchema("orders.created", 2).
+//	    WithRequired("order_id", "customer_id", "email").
+//	    WithProperty("order_id", "string").
+//	    WithProperty("customer_id", "string").
+//	    WithProperty("email", "string")
+//	registry.Register(ctx, "orders.created", v2)
+//
+//	registry.AddUpcaster("orders.created",
+//	    schema.NewFieldMapper(1, 2).
+//	        AddDefault("email", "unknown@example.com"))
+//
+//	codec := schema.NewVersionedCodec(registry)
+//	data, _ := codec.Encode(ctx, "orders.created", order) // emits latest version
+//	var order Order
+//	_ = codec.Decode(ctx, "orders.created", data, &order) // auto-upcasts older payloads
+//
+// Best practices:
+//   - Add new payload fields as optional or with defaults.
+//   - Never remove required fields without a matching upcaster.
+//   - Test upcasters against production payload samples.
+//   - Monitor failed validations in production.
 package schema
 
 import (

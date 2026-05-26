@@ -6,11 +6,11 @@ This document describes version compatibility between the event library and its 
 
 | Package | Current | Go Version | Dependencies |
 |---------|---------|------------|--------------|
-| event/v3 | 3.x | 1.25.8+ | otel 1.40+ |
-| event-scheduler | 1.x | 1.25+ | event/v3, go-redis/v9 |
-| event-dlq | 1.x | 1.25+ | event/v3, go-redis/v9 |
-| event-extras | 1.x | 1.25+ | event/v3, go-redis/v9 |
-| event-mongodb | 0.x | 1.25+ | event/v3, mongo-driver/v2 |
+| event/v3 | 3.x | 1.26.3+ | otel 1.40+ |
+| event-scheduler | 1.x | 1.26+ | event/v3, go-redis/v9 |
+| event-dlq | 1.x | 1.26+ | event/v3, go-redis/v9 |
+| event-extras | 1.x | 1.26+ | event/v3, go-redis/v9 |
+| event-mongodb | 0.x | 1.26+ | event/v3, mongo-driver/v2 |
 
 ## Shared Packages
 
@@ -35,6 +35,15 @@ if eventerrors.IsVersionConflict(err) { ... }
 - `ErrClosed` - component closed
 - `ErrTimeout` - operation timed out
 - `ErrInvalidArgument` - validation failed
+- `ErrMaxRetriesExceeded` - retry budget exhausted
+- `ErrStorageUnavailable` - backing store temporarily unreachable
+- `ErrScheduledInPast` - attempted to schedule a message at a past time
+- `ErrTransportUnavailable` - transport connection lost
+
+The root `event` package's sentinel cross-reference block in
+`errors.go` enumerates every error reachable from the v3 module
+including sub-package sentinels — single source of truth for
+`errors.Is` callers.
 
 ### event/v3/health
 
@@ -82,9 +91,46 @@ All transports implement `transport.Transport`:
 
 ## Breaking Changes
 
+See [CHANGELOG.md](CHANGELOG.md) for the running list. Highlights:
+
 ### v3.x to v4.x (Future)
 
 No breaking changes planned. All v3.x APIs will remain stable.
+
+### Within v3.x
+
+- **MongoDB store extraction** (mid-v3): MongoDB implementations for outbox,
+  monitor, distributed state manager, schema, idempotency, and checkpoint
+  moved out of this module into
+  [event-mongodb](https://github.com/rbaliyan/event-mongodb). Update imports
+  from `github.com/rbaliyan/event/v3/<pkg>` MongoDB constructors to the
+  matching `github.com/rbaliyan/event-mongodb/<pkg>` constructors.
+- **transport/redis NOGROUP recovery** (`WithAutoRecreateGroup`,
+  `WithRecreateHandler`, `RecreateMode`): new opt-in option family added.
+  Default behavior is unchanged (`RecreateMode(0)` — no auto-recreate). See
+  README "Auto-Recreate Consumer Group (Redis)" for blast-radius guidance.
+- **transport/redis broadcast group teardown** (#118): the consume
+  goroutine is drained before `XGroupDestroy` runs. Only observable as the
+  absence of a previous `read error, retrying with backoff` log line during
+  Subscription.Close on the broadcast path.
+- **transport/redis retained-stream replay** (#116): a Broadcast subscriber
+  no longer replays the retained Redis Stream on restart. If you depend on
+  the prior behavior, capture and replay externally.
+- **transport/redis deferred group creation** (#120): the base
+  consumer group is created on first Subscribe rather than at
+  RegisterEvent. Callers that introspected groups between RegisterEvent and
+  Subscribe must adjust.
+- **Internal `clock.Clock` injection** (test-only, v3.17.x): the
+  `distributed.MemoryStateManager`, `distributed.RedisStateManager`,
+  `idempotency.MemoryStore`, `poison.MemoryStore`, and
+  `transport.CircuitBreaker` stores gained an unexported `withClock`
+  test hook backed by `internal/clock`. The
+  `transport/bridge.MemoryCoordinator` exposes the same capability via
+  a `SetClockForTesting` method in `export_test.go`. Not a breaking
+  change for external consumers — `internal/` paths cannot be imported
+  externally — but recorded here so downstream maintainers can
+  correlate the test-quality lift with the diff. See CHANGELOG.md for
+  the PR-by-PR breakdown.
 
 ### v2.x to v3.x
 
@@ -110,25 +156,38 @@ All store implementations follow the same interface patterns:
 
 ## Middleware Chain Order
 
-When middleware is applied, it executes in this order:
+When a handler is subscribed the bus wraps it in this chain. Execution
+flows outermost to handler:
 
 ```
-Outermost (first added)
-    → Middle layers
-        → Innermost (last added)
+Monitor (bus-level, controlled by schema if loaded)
+  → Poison detection (bus-level, controlled by schema if loaded)
+    → Idempotency (bus-level, controlled by schema if loaded)
+      → Custom middleware (via WithMiddleware)
+        → Timeout (context deadline)
+          → Recovery (panic handling)
             → Handler
-        ← Innermost returns
-    ← Middle returns
-← Outermost returns
 ```
 
-Example:
+User-defined chains via `event.NewChain[T]()` follow the standard
+outer-to-inner ordering with the first `Use` call as the outermost layer:
+
 ```go
 chain := event.NewChain[Order]().
-    Use(myLoggingMiddleware).    // 1. Outermost - logs before/after (user-defined)
-    Use(myMetricsMiddleware).    // 2. Records timing (user-defined)
-    Use(myValidationMiddleware)  // 3. Innermost - validates data (user-defined)
+    Use(myLoggingMiddleware).    // outermost
+    Use(myMetricsMiddleware).
+    Use(myValidationMiddleware)  // innermost
 ```
+
+Schema-controlled middleware:
+- When a schema is loaded, each of monitor/poison/idempotency only runs
+  if the matching `Enable*` flag is true **and** the bus has a store
+  configured for it.
+- When no schema is loaded, the bus falls back to applying any configured
+  store unconditionally.
+
+This block is canonical — `CLAUDE.md` mirrors it under
+"Middleware Chain Execution Order".
 
 ## Backoff Strategy Compatibility
 

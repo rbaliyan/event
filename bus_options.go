@@ -78,7 +78,10 @@ func WithLogger(l *slog.Logger) BusOption {
 //
 // Example:
 //
-//	store := idempotency.NewRedisStore(redisClient, time.Hour)
+//	store, err := idempotency.NewRedisStore(redisClient, time.Hour)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //	bus, _ := event.NewBus("my-app",
 //	    event.WithTransport(transport),
 //	    event.WithIdempotency(store),
@@ -102,7 +105,11 @@ func WithIdempotency(store IdempotencyStore) BusOption {
 //
 // Example:
 //
-//	detector := poison.NewDetector(poison.NewRedisStore(redisClient),
+//	store, err := poison.NewRedisStore(redisClient)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	detector := poison.NewDetector(store,
 //	    poison.WithThreshold(5),
 //	    poison.WithQuarantineTime(time.Hour),
 //	)
@@ -129,7 +136,10 @@ func WithPoisonDetection(detector PoisonDetector) BusOption {
 //
 // Example:
 //
-//	store := monitor.NewPostgresStore(db)
+//	store, err := monitor.NewPostgresStore(db)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //	bus, _ := event.NewBus("my-app",
 //	    event.WithTransport(transport),
 //	    event.WithMonitor(store),
@@ -155,17 +165,27 @@ func WithMonitor(store MonitorStore) BusOption {
 //
 // Example:
 //
-//	// Using in-memory provider for testing
+//	// Using the in-memory provider (testing, single-instance):
 //	provider := schema.NewMemoryProvider()
 //	bus, _ := event.NewBus("my-app",
 //	    event.WithTransport(transport),
 //	    event.WithSchemaProvider(provider),
 //	)
 //
-//	// Using PostgreSQL provider with notification callback
-//	provider := schema.NewPostgresProvider(db, func(ctx context.Context, change schema.SchemaChangeEvent) error {
-//	    return bus.publishSchemaChange(ctx, change)
-//	})
+//	// Using the PostgreSQL provider. The callback is required: it is
+//	// invoked after each Set so subscribers can be notified via the
+//	// transport. Pass a no-op closure if you do not need notifications.
+//	provider, err := schema.NewPostgresProvider(db,
+//	    func(ctx context.Context, change schema.SchemaChangeEvent) error {
+//	        // Forward the change to a well-known event so subscribers
+//	        // can refresh their cached schema. Wire to the transport you
+//	        // already use, e.g. event.Publish(ctx, "_/schema.changed", change).
+//	        return nil
+//	    },
+//	)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 func WithSchemaProvider(provider SchemaProvider) BusOption {
 	return func(o *busOptions) {
 		if provider != nil {
@@ -265,13 +285,18 @@ func WithDLQ(store DLQStore) BusOption {
 // not recorded here; they bypass the transport path and are tracked separately
 // by the outbox store until the relay delivers them.
 //
-// Example:
+// Any monitor store satisfies PublishAuditStore, so the simplest setup
+// reuses the monitor store you already pass to WithMonitor:
 //
-//	ps := monitor.NewPublishMemoryStore()
+//	ms := monitor.NewMemoryStore() // or monitor.NewPostgresStore(db)
 //	bus, _ := event.NewBus("my-app",
 //	    event.WithTransport(transport),
-//	    event.WithPublishAudit(ps),
+//	    event.WithMonitor(ms),
+//	    event.WithPublishAudit(ms),
 //	)
+//
+// See monitor/DEBUGGING.md (#withpublishaudit) for the publish↔process
+// fault-localization table.
 func WithPublishAudit(store PublishAuditStore) BusOption {
 	return func(o *busOptions) {
 		if store != nil {
@@ -283,6 +308,8 @@ func WithPublishAudit(store PublishAuditStore) BusOption {
 // WithDrainTimeout sets the maximum time Bus.Close() will wait for in-flight
 // message handlers to complete before proceeding with shutdown.
 // A value of 0 (the default) means no waiting — current behavior is preserved.
+// Negative values are coerced to the same "no wait" behavior; the option is
+// idempotent for non-positive d.
 func WithDrainTimeout(d time.Duration) BusOption {
 	return func(o *busOptions) {
 		if d > 0 {
