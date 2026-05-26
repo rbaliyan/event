@@ -126,18 +126,22 @@
 //	)
 //
 //	// Publisher defines schema
-//	provider.Set(ctx, &schema.EventSchema{
+//	if err := provider.Set(ctx, &schema.EventSchema{
 //	    Name:              "order.created",
 //	    Version:           1,
 //	    SubTimeout:        30 * time.Second,
 //	    MaxRetries:        3,
 //	    EnableIdempotency: true,
 //	    EnablePoison:      true,
-//	})
+//	}); err != nil {
+//	    log.Fatal(err)
+//	}
 //
 //	// Subscriber auto-loads schema on Register
 //	orderEvent := event.New[Order]("order.created")
-//	event.Register(ctx, bus, orderEvent)  // Schema applied automatically
+//	if err := event.Register(ctx, bus, orderEvent); err != nil { // Schema applied automatically
+//	    log.Fatal(err)
+//	}
 //
 // Schema providers: MemoryProvider, PostgresProvider, RedisProvider.
 // For MongoDB schema storage, use the separate event-mongodb module (https://github.com/rbaliyan/event-mongodb).

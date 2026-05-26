@@ -30,7 +30,8 @@ import (
 //
 // Example:
 //
-//	store := outbox.NewPostgresStore(db)
+//	store, err := outbox.NewPostgresStore(db)
+//	if err != nil { log.Fatal(err) }
 //	relay := outbox.NewRelay(store, transport,
 //	    outbox.WithPollDelay(100 * time.Millisecond),
 //	    outbox.WithBatchSize(100),

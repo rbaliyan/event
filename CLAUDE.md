@@ -17,7 +17,7 @@ All commits and PRs must:
 
 ## Project Overview
 
-Event Manager (`github.com/rbaliyan/event`) is a production-grade event pub-sub library for Go with support for distributed event handling, metrics, tracing, and configurable transports.
+Event Manager (`github.com/rbaliyan/event/v3`) is a production-grade event pub-sub library for Go with support for distributed event handling, metrics, tracing, and configurable transports.
 
 ## Build Commands
 
@@ -129,7 +129,7 @@ func New(opts ...Option) *Client {
 - Publishers define event configuration (timeouts, retries, feature flags)
 - Subscribers auto-load schema on `Register()`
 - Schema flags control which middleware is applied
-- Providers: PostgreSQL, MongoDB, Redis, in-memory
+- Providers in-module: PostgreSQL, Redis, in-memory. MongoDB provider extracted to [event-mongodb](https://github.com/rbaliyan/event-mongodb).
 - HTTP API: `schema/http` - REST CRUD handler (list/get/put/delete, version auto-increment)
 
 **Reliability Stack (stack/)** - Convenience BusOption that wires Monitor + Idempotency + Poison detection:

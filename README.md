@@ -810,18 +810,22 @@ bus, _ := event.NewBus("order-service",
 )
 
 // Publisher: Define schema
-provider.Set(ctx, &schema.EventSchema{
+if err := provider.Set(ctx, &schema.EventSchema{
     Name:              "order.created",
     Version:           1,
     SubTimeout:        30 * time.Second,
     MaxRetries:        3,
     EnableMonitor:     true,
     EnableIdempotency: true,
-})
+}); err != nil {
+    log.Fatal(err)
+}
 
 // Subscriber: Schema auto-loaded on Register()
 orderEvent := event.New[Order]("order.created")
-event.Register(ctx, bus, orderEvent) // Loads schema automatically
+if err := event.Register(ctx, bus, orderEvent); err != nil { // Loads schema automatically
+    log.Fatal(err)
+}
 ```
 
 ## Error Handling
