@@ -552,7 +552,7 @@ runner, _ := distributed.NewRecoveryRunner(coord,
 go runner.Run(ctx)
 ```
 
-For MongoDB-backed payload recovery, use `distributed.NewMongoStateManager(collection, opts ...)` from the [event-mongodb](https://github.com/rbaliyan/event-mongodb) module. The constructor takes a `*mongo.Collection` (not a Redis client) — same `WorkerStore` / `PayloadStore` interface, MongoDB-native locking primitives.
+For MongoDB-backed payload recovery, import `github.com/rbaliyan/event-mongodb/distributed` and use `distributed.NewMongoStateManager(collection, opts ...)` from that module (not the `distributed` package in this repository). The constructor takes a `*mongo.Collection` — same `WorkerStore` / `PayloadStore` interface, MongoDB-native locking primitives.
 
 Recovery is two-phase:
 1. **Re-publish**: Stale entries with stored payload are re-published via the bus with a new event ID
@@ -584,7 +584,7 @@ orderEvent.Subscribe(ctx, collectAnalytics, event.WithMiddleware(mwB))
 | Backend | Package | Use Case |
 |---------|---------|----------|
 | Redis | `distributed.NewRedisStateManager` | Distributed deployments (recommended) |
-| MongoDB | `distributed.NewMongoStateManager` (event-mongodb) | When MongoDB is already your primary store |
+| MongoDB | `event-mongodb/distributed.NewMongoStateManager` | When MongoDB is already your primary store |
 | Memory | `distributed.NewMemoryStateManager` | Single-instance or testing |
 
 All three backends implement both `Coordinator` and `PayloadStore` interfaces.
@@ -757,16 +757,49 @@ Endpoints:
 - `GET /v1/workers/{message_id}` - Get single worker
 - `GET /v1/workers/count` - Count workers matching filter
 
+### Monitor HTTP Options
+
+`monitorhttp.New(store, opts ...Option)` accepts:
+
+| Option | What it does |
+|--------|--------------|
+| `WithWorkerStore(ws)` | Enables `/v1/workers*` endpoints backed by a `distributed.WorkerStore`. |
+| `WithSystemRefreshInterval(d)` | Background interval for `/v1/system` aggregation. Required for the endpoint to return data; pass `0` to disable. |
+| `WithStuckPendingProvider(p)` | Wires stuck-pending detection into `/v1/system`. Provider is queried on every refresh. |
+| `WithDLQAlertHook(fn, threshold)` | Fires `fn` from each system refresh when DLQ pending count crosses `threshold`. Use to page operators or push metrics. |
+
+```go
+handler := monitorhttp.New(store,
+    monitorhttp.WithWorkerStore(sm),
+    monitorhttp.WithSystemRefreshInterval(30*time.Second),
+    monitorhttp.WithStuckPendingProvider(redisStuckProvider),
+    monitorhttp.WithDLQAlertHook(func(ctx context.Context, count int64) {
+        dlqAlertsTotal.Inc()
+    }, 100),
+)
+```
+
+See [`monitor/DEBUGGING.md`](monitor/DEBUGGING.md) for guidance on triaging `/v1/system` output.
+
 ## Schema Registry
 
 Define event configuration centrally:
 
 ```go
-import "github.com/rbaliyan/event/v3/schema"
+import (
+    "context"
+    "github.com/rbaliyan/event/v3/schema"
+)
 
-// The second argument is a publish function called when schema changes are made.
-// Pass nil only if your application never needs schema-change notifications.
-provider, _ := schema.NewPostgresProvider(db, nil /* publisher */)
+// The second argument is the change-notification callback. It is required;
+// pass a no-op closure if you don't need subscribers to be notified of
+// schema changes.
+provider, err := schema.NewPostgresProvider(db,
+    func(ctx context.Context, change schema.SchemaChangeEvent) error { return nil },
+)
+if err != nil {
+    log.Fatal(err)
+}
 defer provider.Close()
 
 bus, _ := event.NewBus("order-service",

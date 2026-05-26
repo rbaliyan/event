@@ -553,7 +553,7 @@ db._event_resume_tokens_GLOBAL.deleteMany({})
 
 ## Redis Direct Queries
 
-Streams are named `evt.{busName}.{eventName}`. Consumer groups are named `{deploymentName}-{eventName}-{workerGroup}`.
+Streams are named `evt.{busName}.{eventName}`. Consumer groups are named `{baseGroupID}-{eventName}-{workerGroup}` for worker-pool subscribers with a worker group, `{baseGroupID}` for worker-pool subscribers without one, and `{baseGroupID}-{subID}` for broadcast subscribers (per-Subscribe throwaway group). `baseGroupID` is set by `redis.WithGroupID(...)` and defaults to the bus name.
 
 ### List all event streams
 
@@ -638,8 +638,9 @@ In bridge mode, events originate as MongoDB change stream events and are forward
 
 Each worker group gets its own Redis consumer group. Consumer group names follow the pattern:
 ```
-{deploymentName}-{eventName}-{workerGroup}
+{baseGroupID}-{eventName}-{workerGroup}
 ```
+where `baseGroupID` is set by `redis.WithGroupID(...)` and defaults to the bus name. See "Redis Direct Queries" above for the broadcast / no-worker-group variants.
 
 **Different worker groups are completely independent**: if event `case_record.created` has worker groups `workflow` and `timeline`, every message is delivered to **both** groups (each group gets its own copy). Within each group, only one pod processes the message.
 
@@ -687,6 +688,10 @@ failover to an empty replica, eviction under maxmemory). Configure with
 - Repeated recreate→NOGROUP cycles fall into exponential backoff so a
   flapping group does not hot-loop. Treat sustained increase in the
   counter as a backing-store alert, not a missing-message alert.
+- Default deployments emit zero recreate events but the metric still
+  fires with `mode="none"` if the `WithRecreateHandler` is wired
+  without `WithAutoRecreateGroup`. Treat a `mode="none"` series as
+  "auto-recreate disabled" rather than as missing data.
 
 **What's not recovered:**
 The destroyed group's Pending Entries List is unrecoverable. Messages
@@ -774,6 +779,9 @@ Use this checklist when a subscriber appears to have missed an event:
   □ Check entry.error field
   □ Check GET /v1/system dlq.messages_by_event for DLQ accumulation
 □ If event never reached Redis (no PEL, no consumer lag):
+  □ If WithPublishAudit is configured: query the audit store for
+    event_id — present means transport.Publish succeeded; absent means
+    Bus.Send was never invoked (producer-side bug or outbox routing).
   □ Check bridge dedup: db._event_worker_state.findOne({_id: event_id})
   □ Check MongoDB change stream lag: db._event_resume_tokens_* for stale tokens
   □ Check mongodb_stream_reconnections_total metric for history_lost events

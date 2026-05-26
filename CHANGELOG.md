@@ -31,10 +31,28 @@ the project uses [Semantic Versioning](https://semver.org/). See
 - `monitor/DEBUGGING.md`: NOGROUP / `WithAutoRecreateGroup` operational
   section with per-mode blast-radius matrix.
 
+### Documentation contract clarifications
+- `schema.NewPostgresProvider`: documented as requiring a non-nil
+  publisher callback. The constructor has always returned
+  `"schema: publisher is required"` when called with `nil`; earlier
+  docs incorrectly implied the callback was optional. Callers who
+  don't need change notifications should pass a no-op closure:
+  `func(context.Context, schema.SchemaChangeEvent) error { return nil }`.
+- `WithDrainTimeout(d)`: documented that negative durations are
+  coerced to the same "no wait" behavior as `d == 0` (no code change;
+  behavior was already so).
+
 ### Fixed
 - README: removed the incorrect "fire-and-forget / void Publish/Subscribe"
   claim; both methods have always returned `error`. Quick-start example
   now checks the returned error.
+- Quick-start examples in README, `doc.go`, and the WithIdempotency /
+  WithPoisonDetection / WithMonitor godoc blocks now check the `error`
+  returned by the underlying store constructors (`NewRedisStore`,
+  `NewPostgresStore`, …) instead of silently dropping it.
+- `bus_options.go` `WithSchemaProvider` example no longer references
+  the never-existed `bus.publishSchemaChange` helper; the callback
+  signature and required-vs-optional semantics are now documented.
 - README: MongoDB CDC snippet imports `mongo/options` and uses the
   v2-driver `mongo.Connect(opts ...)` signature (no `ctx` argument).
 - README: `checkpoint` sub-package row now lists only the backends that

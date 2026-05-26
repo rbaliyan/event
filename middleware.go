@@ -241,7 +241,8 @@ func DeduplicationMiddleware[T any](store DeduplicationStore) Middleware[T] {
 //
 // Example usage:
 //
-//	store := idempotency.NewRedisStore(redisClient, time.Hour)
+//	store, err := idempotency.NewRedisStore(redisClient, time.Hour)
+//	if err != nil { log.Fatal(err) }
 //	ev.Subscribe(ctx, handler, event.WithMiddleware(event.IdempotencyMiddleware[Order](store)))
 func IdempotencyMiddleware[T any](store IdempotencyStore) Middleware[T] {
 	return func(next Handler[T]) Handler[T] {
@@ -309,7 +310,8 @@ type RecordStartParams struct {
 //
 // Example:
 //
-//	store := monitor.NewPostgresStore(db)
+//	store, err := monitor.NewPostgresStore(db)
+//	if err != nil { log.Fatal(err) }
 //	ev.Subscribe(ctx, handler, event.WithMiddleware(
 //	    event.MonitorMiddleware[Order](store),
 //	))
@@ -395,7 +397,8 @@ type RecordCompleteParams struct {
 //
 // Example usage:
 //
-//	store := monitor.NewPostgresStore(db)
+//	store, err := monitor.NewPostgresStore(db)
+//	if err != nil { log.Fatal(err) }
 //	ev.Subscribe(ctx, handler, event.WithMiddleware(event.MonitorMiddleware[Order](store)))
 func MonitorMiddleware[T any](store MonitorStore) Middleware[T] {
 	return func(next Handler[T]) Handler[T] {

@@ -114,7 +114,7 @@ func New(opts ...Option) *Client {
 **Monitor (monitor/)** - Event processing monitoring with mode-aware tracking:
 - Broadcast mode: tracks per `(EventID, SubscriptionID)`
 - WorkerPool mode: tracks per `EventID` only
-- Stores: PostgreSQL, MongoDB, in-memory
+- Stores in-module: PostgreSQL, in-memory. MongoDB store extracted to [event-mongodb](https://github.com/rbaliyan/event-mongodb).
 - HTTP API: `monitor/http` - REST handler using protoJSON
 - gRPC API: `monitor/grpc` - gRPC service implementation
 - Shared protobuf definitions in `monitor/proto`

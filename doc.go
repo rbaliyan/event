@@ -27,14 +27,20 @@
 //	    log.Fatal(err)
 //	}
 //
-//	// Subscribe with type-safe handler
-//	userEvent.Subscribe(ctx, func(ctx context.Context, ev event.Event[User], user User) error {
+//	// Subscribe with type-safe handler. Subscribe returns error on
+//	// transport / registration problems — handle it the same way as
+//	// Publish below.
+//	if err := userEvent.Subscribe(ctx, func(ctx context.Context, ev event.Event[User], user User) error {
 //	    fmt.Printf("User created: %s\n", user.Name)
 //	    return nil
-//	})
+//	}); err != nil {
+//	    log.Fatal(err)
+//	}
 //
-//	// Publish
-//	userEvent.Publish(ctx, User{ID: "123", Name: "John"})
+//	// Publish — returns error on transport failure or unregistered event.
+//	if err := userEvent.Publish(ctx, User{ID: "123", Name: "John"}); err != nil {
+//	    log.Fatal(err)
+//	}
 //
 // Bus Options Reference. README.md "Options Reference" is the canonical
 // surface (defaults, prose, cross-links); bus_options.go has the per-symbol
