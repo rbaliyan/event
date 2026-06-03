@@ -16,6 +16,14 @@ import (
 
 // setupCoverageBus registers a bus with one broadcast and one worker-pool
 // subscription, returns the live topology entry for the event, and a cleanup func.
+//
+// Callers must NOT be parallel. This registers a real bus in the process-global
+// event.Topology(), which the system-view tests (TestHandleSystemView,
+// TestHandleSystemHealth, TestBackgroundRefresh_Health) aggregate into a health
+// status. A bus observed by one of those tests' background refresh while it is
+// being torn down here reports Unhealthy and flips their aggregate, so these
+// bus-registering tests run serially — before the parallel system-view tests
+// resume — to keep the global topology clean while those tests execute.
 func setupCoverageBus(t *testing.T, busName, evName string) (event.EventInfo, func()) {
 	t.Helper()
 	tr := channel.New()
@@ -57,7 +65,7 @@ func setupCoverageBus(t *testing.T, busName, evName string) (event.EventInfo, fu
 }
 
 func TestHandleCoverage_BroadcastMatch(t *testing.T) {
-	t.Parallel()
+	// Not parallel: registers a global-topology bus — see setupCoverageBus.
 	busName := "cov-broadcast-" + t.Name()
 	evName := "coverage.broadcast"
 	ctx := context.Background()
@@ -122,7 +130,7 @@ func TestHandleCoverage_BroadcastMatch(t *testing.T) {
 }
 
 func TestHandleCoverage_WorkerPoolGroupMatch(t *testing.T) {
-	t.Parallel()
+	// Not parallel: registers a global-topology bus — see setupCoverageBus.
 	busName := "cov-wp-" + t.Name()
 	evName := "coverage.workergroup"
 	ctx := context.Background()
@@ -170,7 +178,7 @@ func TestHandleCoverage_WorkerPoolGroupMatch(t *testing.T) {
 }
 
 func TestHandleCoverage_MissingCount(t *testing.T) {
-	t.Parallel()
+	// Not parallel: registers a global-topology bus — see setupCoverageBus.
 	busName := "cov-missing-" + t.Name()
 	evName := "coverage.missing"
 	ctx := context.Background()
