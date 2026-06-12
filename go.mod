@@ -5,14 +5,14 @@ go 1.26.4
 require (
 	github.com/AdamKorcz/go-118-fuzz-build v0.0.0-20250520111509-a70c2aa677fa
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/IBM/sarama v1.50.1
+	github.com/IBM/sarama v1.50.2
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/go-faker/faker/v4 v4.7.0
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.3
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/nats-io/nats.go v1.52.0
-	github.com/redis/go-redis/v9 v9.20.0
+	github.com/redis/go-redis/v9 v9.20.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	go.opentelemetry.io/otel v1.44.0
@@ -21,7 +21,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0
 	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
-	modernc.org/sqlite v1.51.0
+	modernc.org/sqlite v1.52.0
 )
 
 require (
@@ -47,7 +47,7 @@ require (
 	github.com/nats-io/nkeys v0.4.16 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/pierrec/lz4/v4 v4.1.26 // indirect
+	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
