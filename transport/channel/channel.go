@@ -299,6 +299,16 @@ func (t *Transport) Publish(ctx context.Context, name string, msg transport.Mess
 }
 
 func (t *Transport) sendToSubscriber(ctx context.Context, sub *subscription, msg transport.Message) error {
+	// Guard against Close closing sub.Ch() concurrently with the sends below.
+	// Publish collects subscribers and then sends to them; a subscriber can be
+	// closed in that window, so without this guard the send below would race
+	// (and can panic) on a closed channel.
+	release, open := sub.SendGuard()
+	if !open {
+		return transport.ErrSubscriptionClosed
+	}
+	defer release()
+
 	// Use timeout if configured
 	timeout := atomic.LoadInt64(&t.timeout)
 	if timeout > 0 {
