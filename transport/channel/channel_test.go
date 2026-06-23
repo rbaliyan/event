@@ -16,6 +16,75 @@ func testMessage(id, source, payload string) transport.Message {
 	return message.New(id, source, []byte(payload), nil)
 }
 
+// TestPublishCloseRace exercises concurrent Publish and subscription Close.
+//
+// Publish collects matching subscribers and then sends to them; a subscriber
+// can be closed in that window. The send must be synchronized against the
+// subscription closing its channel, otherwise sendToSubscriber sends on a
+// closed channel — a data race (and potential "send on closed channel" panic).
+// Run with -race; without the synchronization fix this fails reliably.
+func TestPublishCloseRace(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	for i := 0; i < 200; i++ {
+		tr := New(WithBufferSize(1))
+		if err := tr.RegisterEvent(ctx, "race"); err != nil {
+			t.Fatalf("RegisterEvent: %v", err)
+		}
+		sub, err := tr.Subscribe(ctx, "race")
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		stop := make(chan struct{})
+
+		// Drain so publishes complete quickly and the publish loops spin fast,
+		// maximizing the number of sends in flight when Close races in.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case _, ok := <-sub.Messages():
+					if !ok {
+						return
+					}
+				case <-stop:
+					return
+				}
+			}
+		}()
+
+		// Several publishers hammer the subscription concurrently.
+		const publishers = 4
+		for p := 0; p < publishers; p++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						// Errors once Close races in are expected and ignored.
+						_ = tr.Publish(ctx, "race", testMessage("m", "s", "p"))
+					}
+				}
+			}()
+		}
+
+		// Let the publishers saturate, then close mid-flight: this races
+		// close(s.ch) against the send on s.ch inside sendToSubscriber.
+		time.Sleep(time.Millisecond)
+		_ = sub.Close(ctx)
+		close(stop)
+		wg.Wait()
+		_ = tr.Close(ctx)
+	}
+}
+
 func TestNew(t *testing.T) {
 	t.Parallel()
 	tr := New()

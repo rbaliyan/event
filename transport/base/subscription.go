@@ -126,6 +126,38 @@ func (s *Subscription) Close(cleanup func() error) error {
 	return cleanupErr
 }
 
+// SendGuard locks the subscription against Close closing the message channel
+// for the duration of an external send on Ch(), reporting whether the
+// subscription is still open. On success the caller MUST invoke the returned
+// release function once the send completes (typically via defer):
+//
+//	release, open := sub.SendGuard()
+//	if !open {
+//	    return transport.ErrSubscriptionClosed
+//	}
+//	defer release()
+//	select {
+//	case <-sub.ClosedCh():
+//	    return transport.ErrSubscriptionClosed
+//	case sub.Ch() <- msg:
+//	    return nil
+//	}
+//
+// Transports that send to Ch() directly instead of via SendToChannel must hold
+// this guard, otherwise Close may close the channel concurrently with the send
+// (a data race and potential "send on closed channel" panic). The send select
+// must still watch ClosedCh so it unblocks when Close signals shutdown — Close
+// closes ClosedCh before acquiring the write lock, so a guarded sender never
+// deadlocks Close.
+func (s *Subscription) SendGuard() (release func(), open bool) {
+	s.chMu.RLock()
+	if s.IsClosed() {
+		s.chMu.RUnlock()
+		return func() {}, false
+	}
+	return s.chMu.RUnlock, true
+}
+
 // SendToChannel sends a message to the channel with optional timeout.
 // Returns SendOK on success, SendClosed if subscription closed, SendTimeout on timeout.
 func (s *Subscription) SendToChannel(msg transport.Message) SendResult {
