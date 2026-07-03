@@ -51,6 +51,30 @@ jobs:
       - name: Run smoke tests
         run: go test -tags=smoke -race -count=1 -timeout=60s ./...
 
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      # Exercise every benchmark briefly so a broken or panicking benchmark is
+      # caught in CI. Absolute timings are not gated (runner variance);
+      # -benchtime=1x runs each benchmark a single iteration -- enough to catch
+      # a compile break or panic without paying for measurement.
+      #
+      # Dependabot PRs only touch dependency manifests and never the benchmarked
+      # code, so skip the work for them. The step (not the job) is gated so the
+      # job still reports success -- a skipped required check would block merge.
+      - name: Run benchmarks
+        if: github.actor != 'dependabot[bot]'
+        run: go test -run='^$' -bench=. -benchmem -benchtime=1x ./...
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
