@@ -1,20 +1,21 @@
 name: Fuzz
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
 permissions: read-all
 
+# This is the pull-request fuzz gate only. The deep push-to-main and weekly
+# campaign is owned by cflite_batch.yml (ClusterFuzzLite), so this workflow
+# does not run on push to avoid duplicating that coverage.
+#
 # Cancel a superseded run for the same ref -- e.g. when a PR's merge commit is
 # recomputed after the base branch advances, GitHub starts a fresh run and the
 # stale one would otherwise linger and surface a spurious "cancelled" status.
-# Only PR runs are cancelled; push-to-main runs to completion.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   # Emit the fuzz targets as a JSON matrix so each target runs as its own job
@@ -81,8 +82,8 @@ jobs:
         env:
           PKG: ${{ matrix.pkg }}
           FN: ${{ matrix.fn }}
-          # Short smoke budget on push/PR; -race is dropped so a slow input near
-          # the deadline does not flake the run (see scripts/fuzz_one.sh).
+          # Short smoke budget for the PR gate; -race is dropped so a slow input
+          # near the deadline does not flake the run (see scripts/fuzz_one.sh).
           FUZZTIME: 40s
           FUZZ_RACE: '0'
         run: bash scripts/fuzz_one.sh "$PKG" "$FN"
