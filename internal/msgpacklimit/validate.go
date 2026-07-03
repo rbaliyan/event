@@ -10,7 +10,9 @@
 // headers and rejects inputs that declare collection sizes exceeding safe limits.
 // It enforces both per-collection and cumulative element budgets to prevent a
 // small crafted input from triggering multi-GB memory allocations through nested
-// collections.
+// collections. It likewise rejects str/bin/ext blobs whose declared byte length
+// exceeds the bytes actually present, which would otherwise drive the same
+// pre-allocation OOM (e.g. a 9-byte input declaring a 4GB bin32 payload).
 package msgpacklimit
 
 import (
@@ -33,6 +35,14 @@ const maxTotalElements = 1_000_000
 // ErrOversizedCollection is returned when a msgpack input declares a collection
 // larger than MaxCollectionElements or exceeds the total element budget.
 var ErrOversizedCollection = errors.New("msgpack: collection size exceeds safety limit")
+
+// ErrOversizedBlob is returned when a msgpack str/bin/ext header declares a byte
+// length larger than the bytes actually present in the input. A blob occupies
+// exactly its declared length immediately after the header, so a length beyond
+// the remaining input is malformed -- and decoding it would make the msgpack
+// library pre-allocate that many bytes (a multi-GB OOM vector). It is rejected
+// before decoding rather than silently clamped.
+var ErrOversizedBlob = errors.New("msgpack: blob size exceeds input length")
 
 // scanner tracks cumulative element counts during validation.
 type scanner struct {
@@ -250,21 +260,28 @@ func skipBytes(data []byte, off, n int) (int, error) {
 }
 
 // skipSized reads a size header of sizeBytes width and skips that many data bytes.
+// The declared length is read as uint64 so a 4-byte size near 2^32 cannot wrap
+// a 32-bit int negative and slip past the bounds check.
 func skipSized(data []byte, off, sizeBytes int) (int, error) {
 	if off+sizeBytes > len(data) {
 		return len(data), nil
 	}
-	var n int
+	var n uint64
 	switch sizeBytes {
 	case 1:
-		n = int(data[off])
+		n = uint64(data[off])
 	case 2:
-		n = int(binary.BigEndian.Uint16(data[off:]))
+		n = uint64(binary.BigEndian.Uint16(data[off:]))
 	case 4:
-		n = int(binary.BigEndian.Uint32(data[off:]))
+		n = uint64(binary.BigEndian.Uint32(data[off:]))
 	}
 	off += sizeBytes
-	return skipBytes(data, off, n)
+	// len(data)-off is non-negative: off <= len(data) after the header bounds
+	// check above, then off advanced by sizeBytes which that check accounted for.
+	if n > uint64(len(data)-off) { // #nosec G115 -- len(data)-off is non-negative (see comment)
+		return 0, fmt.Errorf("%w: blob declares %d bytes, only %d remain", ErrOversizedBlob, n, len(data)-off)
+	}
+	return skipBytes(data, off, int(n))
 }
 
 // skipExtSized reads a size header, then skips type(1) + size data bytes.
@@ -272,15 +289,20 @@ func skipExtSized(data []byte, off, sizeBytes int) (int, error) {
 	if off+sizeBytes > len(data) {
 		return len(data), nil
 	}
-	var n int
+	var n uint64
 	switch sizeBytes {
 	case 1:
-		n = int(data[off])
+		n = uint64(data[off])
 	case 2:
-		n = int(binary.BigEndian.Uint16(data[off:]))
+		n = uint64(binary.BigEndian.Uint16(data[off:]))
 	case 4:
-		n = int(binary.BigEndian.Uint32(data[off:]))
+		n = uint64(binary.BigEndian.Uint32(data[off:]))
 	}
 	off += sizeBytes
-	return skipBytes(data, off, n+1) // +1 for ext type byte
+	// ext payload is type(1) + n data bytes; same OOM reasoning as skipSized.
+	// len(data)-off is non-negative (off <= len(data) after the bounds check).
+	if n+1 > uint64(len(data)-off) { // #nosec G115 -- len(data)-off is non-negative (see comment)
+		return 0, fmt.Errorf("%w: ext declares %d bytes, only %d remain", ErrOversizedBlob, n, len(data)-off)
+	}
+	return skipBytes(data, off, int(n)+1) // +1 for ext type byte
 }
