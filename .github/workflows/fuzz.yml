@@ -1,0 +1,117 @@
+name: Fuzz
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: read-all
+
+# Cancel a superseded run for the same ref -- e.g. when a PR's merge commit is
+# recomputed after the base branch advances, GitHub starts a fresh run and the
+# stale one would otherwise linger and surface a spurious "cancelled" status.
+# Only PR runs are cancelled; push-to-main runs to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Emit the fuzz targets as a JSON matrix so each target runs as its own job
+  # and can be re-run in isolation ("Re-run failed jobs" re-runs only the
+  # target that failed, not the whole sweep). Discovery is shared with the
+  # local sweep (scripts/fuzz_targets.sh) so new targets are picked up with no
+  # wiring.
+  discover:
+    name: Discover targets
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: List fuzz targets
+        id: list
+        env:
+          # Dependabot PRs only touch dependency manifests and never the fuzzed
+          # code. Emit an empty matrix so the target jobs do not run; the
+          # aggregate "Fuzz" check below still reports success (a skipped
+          # required check would block merge).
+          ACTOR: ${{ github.actor }}
+        run: |
+          if [ "$ACTOR" = "dependabot[bot]" ]; then
+            echo 'targets=[]' >> "$GITHUB_OUTPUT"
+          else
+            echo "targets=$(bash scripts/fuzz_targets.sh --json)" >> "$GITHUB_OUTPUT"
+          fi
+
+  # One job per fuzz target. fail-fast is off so a finding in one target does
+  # not cancel the others, and GitHub's "Re-run failed jobs" re-runs only the
+  # target(s) that failed.
+  target:
+    name: ${{ matrix.name }}
+    needs: discover
+    if: needs.discover.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.targets) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      # Persist each target's generated corpus separately so repeated runs
+      # accumulate coverage without cross-target cache races.
+      - name: Cache fuzz corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4
+        with:
+          path: ~/.cache/go-build/fuzz
+          key: fuzz-corpus-${{ runner.os }}-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ runner.os }}-${{ matrix.name }}-
+
+      - name: Fuzz ${{ matrix.name }}
+        env:
+          PKG: ${{ matrix.pkg }}
+          FN: ${{ matrix.fn }}
+          # Short smoke budget on push/PR; -race is dropped so a slow input near
+          # the deadline does not flake the run (see scripts/fuzz_one.sh).
+          FUZZTIME: 40s
+          FUZZ_RACE: '0'
+        run: bash scripts/fuzz_one.sh "$PKG" "$FN"
+
+      # On a crash, Go writes a minimized reproducer under testdata/fuzz; upload
+      # it so the failing input can be replayed (go test -run=FuzzX/<hash>).
+      - name: Upload crash reproducer
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crasher-${{ matrix.name }}
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: ignore
+
+  # Single required status check. Green when every target passed (or was
+  # skipped for Dependabot); red if any target reported a genuine finding.
+  fuzz:
+    name: Fuzz
+    needs: [discover, target]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any target reported a finding
+        if: needs.target.result == 'failure'
+        run: |
+          echo "One or more fuzz targets reported a genuine finding."
+          exit 1
+      - name: Summary
+        env:
+          RESULT: ${{ needs.target.result }}
+        run: |
+          echo "Fuzz targets result: $RESULT"
