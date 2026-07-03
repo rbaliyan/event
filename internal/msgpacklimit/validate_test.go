@@ -92,6 +92,51 @@ func TestValidate_CrashInput(t *testing.T) {
 	}
 }
 
+func TestValidate_OversizedBinBlob(t *testing.T) {
+	t.Parallel()
+	// Fuzz-discovered crash: bin32 (0xc6) header declaring ~4GB (0xEE994F88)
+	// backed by only a few bytes. The validator must reject this before the
+	// msgpack library pre-allocates the declared size and OOMs.
+	data := []byte{0xc6, 0xee, 0x99, 0x4f, 0x88, 0xe9, 0xd9, 0x01, 0x30}
+	err := Validate(data)
+	if !errors.Is(err, ErrOversizedBlob) {
+		t.Errorf("Validate() = %v, want ErrOversizedBlob", err)
+	}
+}
+
+func TestValidate_OversizedStrAndExt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		// str32 (0xdb) declaring ~4GB with no payload.
+		{"str32", []byte{0xdb, 0xff, 0xff, 0xff, 0xff}},
+		// str8 (0xd9) declaring 255 bytes backed by one.
+		{"str8", []byte{0xd9, 0xff, 0x00}},
+		// ext32 (0xc9) declaring ~4GB payload.
+		{"ext32", []byte{0xc9, 0xff, 0xff, 0xff, 0xff, 0x01}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := Validate(tt.data); !errors.Is(err, ErrOversizedBlob) {
+				t.Errorf("Validate() = %v, want ErrOversizedBlob", err)
+			}
+		})
+	}
+}
+
+func TestValidate_ExactLengthBlobOK(t *testing.T) {
+	t.Parallel()
+	// A blob whose declared length exactly matches the bytes present is valid
+	// and must not be rejected: bin8 (0xc4) length 3 followed by 3 bytes.
+	data := []byte{0xc4, 0x03, 0x01, 0x02, 0x03}
+	if err := Validate(data); err != nil {
+		t.Errorf("Validate() = %v, want nil", err)
+	}
+}
+
 func TestValidate_EmptyInput(t *testing.T) {
 	t.Parallel()
 	if err := Validate(nil); err != nil {
