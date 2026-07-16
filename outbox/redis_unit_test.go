@@ -3,7 +3,6 @@ package outbox
 import (
 	"context"
 	"errors"
-	"strconv"
 	"testing"
 	"time"
 
@@ -12,15 +11,15 @@ import (
 )
 
 // setupRedis spins up an in-process miniredis and returns a RedisStore wired
-// to it. Each test gets an isolated Redis state via miniredis.RunT(t).
+// to it with the consumer group already created. Each test gets isolated Redis
+// state via miniredis.RunT(t).
 func setupRedis(t *testing.T, opts ...RedisStoreOption) (*RedisStore, *miniredis.Miniredis, *redis.Client) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	// Pin consumer name and group so test SQL matches mock expectations
-	// and BUSYGROUP-like behavior is reproducible across runs.
+	// Pin consumer name and group so PEL behavior is reproducible across runs.
 	allOpts := append([]RedisStoreOption{
 		WithConsumerName("test-consumer"),
 		WithGroupName("test-group"),
@@ -28,6 +27,9 @@ func setupRedis(t *testing.T, opts ...RedisStoreOption) (*RedisStore, *miniredis
 	s, err := NewRedisStore(client, allOpts...)
 	if err != nil {
 		t.Fatalf("NewRedisStore: %v", err)
+	}
+	if err := s.EnsureGroup(context.Background()); err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
 	}
 	return s, mr, client
 }
@@ -49,7 +51,6 @@ func TestNewRedisStore_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRedisStore: %v", err)
 	}
-	// Default pending key is "outbox:pending"; group name is "outbox-relay".
 	if s.pendingKey != "outbox:pending" {
 		t.Errorf("default pendingKey: got %q", s.pendingKey)
 	}
@@ -84,238 +85,261 @@ func TestNewRedisStore_AppliesOptions(t *testing.T) {
 	}
 }
 
-func TestRedisStore_Insert_GeneratesIDAndTimestamp(t *testing.T) {
-	t.Parallel()
-	s, _, _ := setupRedis(t)
-
-	msg := &RedisMessage{
-		EventName: "order.created",
-		EventID:   "evt-1",
-		Payload:   []byte(`{"order":1}`),
-	}
-	before := time.Now().Add(-time.Second)
-	streamID, err := s.Insert(context.Background(), msg)
-	if err != nil {
-		t.Fatalf("Insert: %v", err)
-	}
-	if streamID == "" {
-		t.Error("Insert returned empty streamID")
-	}
-	// Insert populates msg.ID when absent (UUID fallback for caller traceability).
-	if msg.ID == "" {
-		t.Error("Insert did not populate msg.ID")
-	}
-	if msg.CreatedAt.Before(before) {
-		t.Errorf("Insert did not set CreatedAt; got %v", msg.CreatedAt)
-	}
-}
-
-func TestRedisStore_Insert_PreservesProvidedFields(t *testing.T) {
-	t.Parallel()
-	s, _, _ := setupRedis(t)
-
-	custom := time.Unix(1_700_000_000, 0).UTC()
-	msg := &RedisMessage{
-		ID:        "client-supplied",
-		EventName: "e",
-		EventID:   "e1",
-		Payload:   []byte("p"),
-		CreatedAt: custom,
-	}
-	if _, err := s.Insert(context.Background(), msg); err != nil {
-		t.Fatalf("Insert: %v", err)
-	}
-	if msg.ID != "client-supplied" {
-		t.Errorf("Insert clobbered msg.ID; got %q", msg.ID)
-	}
-	if !msg.CreatedAt.Equal(custom) {
-		t.Errorf("Insert clobbered CreatedAt; got %v want %v", msg.CreatedAt, custom)
-	}
-}
-
-func TestRedisStore_EnsureGroup_CreatesGroup(t *testing.T) {
-	t.Parallel()
-	s, _, _ := setupRedis(t)
-	ctx := context.Background()
-
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
-}
-
 func TestRedisStore_EnsureGroup_TolerateBusygroup(t *testing.T) {
 	t.Parallel()
-	s, _, _ := setupRedis(t)
+	s, _, _ := setupRedis(t) // setupRedis already created the group once
 	ctx := context.Background()
 
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("first EnsureGroup: %v", err)
-	}
-	// Second EnsureGroup must NOT fail — BUSYGROUP is the documented
+	// A second EnsureGroup must NOT fail — BUSYGROUP is the documented
 	// re-create case (relay restart against an existing stream).
 	if err := s.EnsureGroup(ctx); err != nil {
 		t.Errorf("second EnsureGroup must tolerate BUSYGROUP; got %v", err)
 	}
 }
 
-func TestRedisStore_GetPending_ReturnsNewMessages(t *testing.T) {
+func TestRedisStore_EnsureReady_WrapsEnsureGroup(t *testing.T) {
+	t.Parallel()
+	// A fresh store with no group yet: EnsureReady must create it so a
+	// subsequent ClaimPending's XREADGROUP does not return NOGROUP.
+	mr := miniredis.RunT(t)
+	c := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = c.Close() })
+	s, err := NewRedisStore(c, WithConsumerName("c"), WithGroupName("g"))
+	if err != nil {
+		t.Fatalf("NewRedisStore: %v", err)
+	}
+	ctx := context.Background()
+	if err := s.EnsureReady(ctx); err != nil {
+		t.Fatalf("EnsureReady: %v", err)
+	}
+	if _, err := s.ClaimPending(ctx, 10); err != nil {
+		t.Fatalf("ClaimPending after EnsureReady: %v", err)
+	}
+}
+
+func TestRedisStore_Store_AppendsToStream(t *testing.T) {
+	t.Parallel()
+	s, mr, _ := setupRedis(t)
+	ctx := context.Background()
+
+	if err := s.Store(ctx, "order.created", "evt-1", []byte(`{"id":1}`), map[string]string{"k": "v"}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	entries, err := mr.Stream("outbox:pending")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("Store did not append one entry; got %d", len(entries))
+	}
+}
+
+func TestRedisStore_ClaimPending_EmptyReturnsResourceFreeBatch(t *testing.T) {
 	t.Parallel()
 	s, _, _ := setupRedis(t)
 	ctx := context.Background()
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
 
-	// Insert two messages.
-	for _, ev := range []string{"e1", "e2"} {
-		_, err := s.Insert(ctx, &RedisMessage{
-			ID: ev, EventName: "evt", EventID: ev, Payload: []byte("p"),
-		})
-		if err != nil {
-			t.Fatalf("Insert %s: %v", ev, err)
-		}
-	}
-
-	got, err := s.GetPending(ctx, 10)
+	// Block: -1 makes an empty XREADGROUP non-blocking — this must return
+	// immediately with a non-nil empty batch, not hang.
+	b, err := s.ClaimPending(ctx, 10)
 	if err != nil {
-		t.Fatalf("GetPending: %v", err)
+		t.Fatalf("ClaimPending empty: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("GetPending: got %d messages, want 2", len(got))
+	if b == nil {
+		t.Fatal("empty claim must return non-nil Batch")
 	}
-	for _, m := range got {
-		if m.StreamID == "" {
-			t.Error("StreamID not populated on returned message")
+	if len(b.Messages()) != 0 {
+		t.Fatalf("expected 0 messages, got %d", len(b.Messages()))
+	}
+	if err := b.Close(ctx); err != nil {
+		t.Fatalf("Close empty batch: %v", err)
+	}
+}
+
+func TestRedisStore_ClaimPending_ReturnsNewEntries(t *testing.T) {
+	t.Parallel()
+	s, _, _ := setupRedis(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"e1", "e2"} {
+		if err := s.Store(ctx, "evt", id, []byte("p"), nil); err != nil {
+			t.Fatalf("Store %s: %v", id, err)
 		}
+	}
+
+	b, err := s.ClaimPending(ctx, 10)
+	if err != nil {
+		t.Fatalf("ClaimPending: %v", err)
+	}
+	msgs := b.Messages()
+	if len(msgs) != 2 {
+		t.Fatalf("ClaimPending: got %d messages, want 2", len(msgs))
+	}
+	for _, m := range msgs {
 		if m.EventName != "evt" {
 			t.Errorf("EventName: got %q", m.EventName)
 		}
+		if m.RetryCount != 0 {
+			t.Errorf("first delivery is not a retry; RetryCount=%d, want 0", m.RetryCount)
+		}
+		if m.Status != StatusProcessing {
+			t.Errorf("claimed message Status=%v, want %v", m.Status, StatusProcessing)
+		}
+		if Token(m) == nil {
+			t.Error("claimed message missing backend token")
+		}
 	}
 }
 
-// TestRedisStore_GetPending_EmptyStream is INTENTIONALLY OMITTED.
-//
-// Production code passes `Block: 0` to XREADGROUP with the inline comment
-// "// Non-blocking" — but in Redis, `BLOCK 0` means "block indefinitely
-// until a new message arrives" (go-redis sends it verbatim, and miniredis
-// faithfully blocks the goroutine on the server side). Against an empty
-// stream with no producers, GetPending therefore blocks forever, and
-// neither a context timeout nor miniredis's own internal deadline reliably
-// escapes the block within a CI test budget.
-//
-// This is a real production bug. The fix is one character: change `Block:
-// 0` to `Block: -1` (true non-blocking semantics) in redis.go:234. Deferred
-// to a follow-up PR so this test-only change stays scoped.
-
-func TestRedisStore_GetPending_ClaimsUnackedOnRestart(t *testing.T) {
+func TestRedisStore_ClaimPending_ParsesPayloadAndMetadata(t *testing.T) {
 	t.Parallel()
 	s, _, _ := setupRedis(t)
 	ctx := context.Background()
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
+
+	if err := s.Store(ctx, "evt", "e1", []byte(`{"n":1}`), map[string]string{"trace": "abc"}); err != nil {
+		t.Fatalf("Store: %v", err)
 	}
-
-	_, _ = s.Insert(ctx, &RedisMessage{ID: "e1", EventName: "e", EventID: "e1", Payload: []byte("p")})
-
-	// First GetPending claims the message but we DON'T ack — simulates a
-	// relay crash mid-publish. Use count=1 so the second GetPending below
-	// takes the early-return path (len(pendingMsgs) >= count) and avoids
-	// the `Block: 0` blocking call documented in
-	// TestRedisStore_GetPending_EmptyStream.
-	first, err := s.GetPending(ctx, 1)
+	b, err := s.ClaimPending(ctx, 10)
 	if err != nil {
-		t.Fatalf("first GetPending: %v", err)
+		t.Fatalf("ClaimPending: %v", err)
 	}
-	if len(first) != 1 {
-		t.Fatalf("first call: got %d", len(first))
+	msgs := b.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
 	}
-
-	// Second GetPending must re-deliver the unacked message via the
-	// claimPendingMessages path (XPENDING + XCLAIM). Without this, a
-	// restarted relay would silently lose unacked messages.
-	second, err := s.GetPending(ctx, 1)
-	if err != nil {
-		t.Fatalf("second GetPending: %v", err)
+	m := msgs[0]
+	if m.EventID != "e1" {
+		t.Errorf("EventID: got %q", m.EventID)
 	}
-	if len(second) != 1 {
-		t.Errorf("second call should re-deliver unacked; got %d", len(second))
+	if string(m.Payload) != `{"n":1}` {
+		t.Errorf("Payload: got %q", string(m.Payload))
 	}
-	if second[0].StreamID != first[0].StreamID {
-		t.Errorf("re-delivered StreamID mismatch: %q vs %q", second[0].StreamID, first[0].StreamID)
+	if m.Metadata["trace"] != "abc" {
+		t.Errorf("Metadata: got %v", m.Metadata)
 	}
 }
 
-func TestRedisStore_MarkPublished_AcksAndDeletes(t *testing.T) {
+func TestRedisStore_Ack_RemovesFromClaimableSet(t *testing.T) {
 	t.Parallel()
-	s, mr, _ := setupRedis(t)
+	s, _, _ := setupRedis(t)
 	ctx := context.Background()
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
 
-	_, _ = s.Insert(ctx, &RedisMessage{ID: "e1", EventName: "e", EventID: "e1", Payload: []byte("p")})
-	got, _ := s.GetPending(ctx, 10)
-	if len(got) != 1 {
-		t.Fatalf("setup expected 1 pending, got %d", len(got))
+	if err := s.Store(ctx, "evt", "e1", []byte("p"), nil); err != nil {
+		t.Fatalf("Store: %v", err)
 	}
+	b, err := s.ClaimPending(ctx, 10)
+	if err != nil {
+		t.Fatalf("ClaimPending: %v", err)
+	}
+	msgs := b.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("got %d, want 1", len(msgs))
+	}
+	if err := b.Ack(ctx, msgs[0]); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+	_ = b.Close(ctx)
 
-	if err := s.MarkPublished(ctx, got[0].StreamID); err != nil {
-		t.Fatalf("MarkPublished: %v", err)
+	// After Ack (XACK + XDEL) a fresh claim must return nothing: the PEL is
+	// cleared and the stream entry is deleted.
+	b2, err := s.ClaimPending(ctx, 10)
+	if err != nil {
+		t.Fatalf("second ClaimPending: %v", err)
 	}
-
-	// After MarkPublished:
-	//   1. XACK was issued — the consumer group's PEL no longer has the
-	//      message (verified via XPENDING on the underlying client).
-	//   2. XDEL was issued — the stream entry itself is gone (verified
-	//      via XLEN).
-	if length, _ := s.Len(ctx); length != 0 {
-		t.Errorf("after MarkPublished: Len=%d, want 0 (XDEL did not run)", length)
+	if len(b2.Messages()) != 0 {
+		t.Errorf("acked message re-claimed; got %d", len(b2.Messages()))
 	}
-	// PEL ack is verified by Len()==0 above. We don't issue a follow-up
-	// GetPending here because the production code's `Block: 0` would
-	// block forever on the now-empty stream (see the
-	// GetPending_EmptyStream test for context).
-	_ = mr // mr available for future ad-hoc inspection
+	_ = b2.Close(ctx)
 }
 
-func TestRedisStore_MarkFailed_RecordsHashAndAcks(t *testing.T) {
+func TestRedisStore_Fail_LeavesInPELAndReDelivers(t *testing.T) {
 	t.Parallel()
-	s, mr, _ := setupRedis(t)
+	s, _, _ := setupRedis(t)
 	ctx := context.Background()
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
+
+	if err := s.Store(ctx, "evt", "e1", []byte("p"), nil); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	b, err := s.ClaimPending(ctx, 10)
+	if err != nil {
+		t.Fatalf("ClaimPending: %v", err)
+	}
+	if len(b.Messages()) != 1 {
+		t.Fatalf("got %d, want 1", len(b.Messages()))
+	}
+	// Fail must NOT XACK — the entry stays in the PEL for re-delivery.
+	if err := b.Fail(ctx, b.Messages()[0], context.DeadlineExceeded); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	_ = b.Close(ctx)
+
+	// Bump the delivery-count via RecoverStuck (XAUTOCLAIM), mirroring the
+	// crashed-consumer sweep, then re-claim: RetryCount must reflect the PEL
+	// delivery-count (>=1 after the failure).
+	if _, err := s.RecoverStuck(ctx, 0); err != nil {
+		t.Fatalf("RecoverStuck: %v", err)
+	}
+	b2, err := s.ClaimPending(ctx, 10)
+	if err != nil {
+		t.Fatalf("second ClaimPending: %v", err)
+	}
+	msgs := b2.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("failed message not re-claimable; got %d", len(msgs))
+	}
+	if msgs[0].RetryCount < 1 {
+		t.Errorf("expected RetryCount>=1 after fail+re-claim, got %d", msgs[0].RetryCount)
+	}
+	_ = b2.Close(ctx)
+}
+
+func TestRedisStore_ClaimPending_RetryCountProgression(t *testing.T) {
+	t.Parallel()
+	s, _, _ := setupRedis(t)
+	ctx := context.Background()
+	failErr := errors.New("handler failed")
+
+	if err := s.Store(ctx, "evt", "e1", []byte("p"), nil); err != nil {
+		t.Fatalf("Store: %v", err)
 	}
 
-	msg := &RedisMessage{ID: "msg-1", EventName: "e", EventID: "evt-1", Payload: []byte("p"), RetryCount: 2}
-	streamID, _ := s.Insert(ctx, msg)
+	// Re-claiming the same unacked entry via the PEL path (XPENDING + XCLAIM)
+	// must report RetryCount as the number of PRIOR failed deliveries: 0 on
+	// the first (XREADGROUP) read, then 1, then 2 on each subsequent re-claim
+	// after a Fail. This mirrors Postgres, which increments retry_count on
+	// each Fail. Deliberately does NOT use RecoverStuck/XAUTOCLAIM here: that
+	// path injects its own delivery-count bump and would mask an off-by-one
+	// in the plain re-claim path exercised by ClaimPending alone.
+	for i, want := range []int{0, 1, 2} {
+		b, err := s.ClaimPending(ctx, 10)
+		if err != nil {
+			t.Fatalf("ClaimPending iteration %d: %v", i, err)
+		}
+		msgs := b.Messages()
+		if len(msgs) != 1 {
+			t.Fatalf("ClaimPending iteration %d: got %d messages, want 1", i, len(msgs))
+		}
+		if msgs[0].RetryCount != want {
+			t.Errorf("ClaimPending iteration %d: RetryCount=%d, want %d", i, msgs[0].RetryCount, want)
+		}
+		if err := b.Fail(ctx, msgs[0], failErr); err != nil {
+			t.Fatalf("Fail iteration %d: %v", i, err)
+		}
+		if err := b.Close(ctx); err != nil {
+			t.Fatalf("Close iteration %d: %v", i, err)
+		}
+	}
+}
 
-	// Drive GetPending so the message is in the consumer's PEL before
-	// MarkFailed acks it (mirrors the real relay flow).
-	if _, err := s.GetPending(ctx, 10); err != nil {
-		t.Fatalf("GetPending: %v", err)
+func TestRedisStore_Cleanup_IsNoOp(t *testing.T) {
+	t.Parallel()
+	s, _, _ := setupRedis(t)
+	n, err := s.Cleanup(context.Background(), time.Hour)
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
 	}
-
-	if err := s.MarkFailed(ctx, streamID, msg, errors.New("downstream timeout")); err != nil {
-		t.Fatalf("MarkFailed: %v", err)
-	}
-
-	// Failed-message hash must exist and carry the error + incremented
-	// retry count.
-	failedKey := "outbox:failed:msg-1"
-	if !mr.Exists(failedKey) {
-		t.Fatalf("MarkFailed did not write to %q", failedKey)
-	}
-	if got := mr.HGet(failedKey, "error"); got != "downstream timeout" {
-		t.Errorf("failed-record error: got %q, want %q", got, "downstream timeout")
-	}
-	// retry_count = msg.RetryCount + 1 = 3
-	if got := mr.HGet(failedKey, "retry_count"); got != "3" {
-		t.Errorf("failed-record retry_count: got %q, want 3 (incremented from 2)", got)
-	}
-
-	// Stream entry was acked + deleted.
-	if length, _ := s.Len(ctx); length != 0 {
-		t.Errorf("after MarkFailed: Len=%d, want 0 (XDEL did not run)", length)
+	if n != 0 {
+		t.Errorf("Cleanup should be a no-op returning 0; got %d", n)
 	}
 }
 
@@ -323,26 +347,24 @@ func TestRedisStore_RecoverStuck_ClaimsIdleMessages(t *testing.T) {
 	t.Parallel()
 	s, _, _ := setupRedis(t)
 	ctx := context.Background()
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
 
-	_, _ = s.Insert(ctx, &RedisMessage{ID: "e1", EventName: "e", EventID: "e1", Payload: []byte("p")})
-	if _, err := s.GetPending(ctx, 10); err != nil {
-		t.Fatalf("GetPending: %v", err)
+	if err := s.Store(ctx, "evt", "e1", []byte("p"), nil); err != nil {
+		t.Fatalf("Store: %v", err)
 	}
-	// Use a real (small) sleep rather than miniredis.FastForward — Stream
-	// PEL idle accounting in miniredis is keyed off wall-clock delivery
-	// time, not the fast-forwarded `now`. A 60ms sleep with a 25ms idle
-	// threshold gives us comfortable headroom while keeping the test fast.
+	if _, err := s.ClaimPending(ctx, 10); err != nil {
+		t.Fatalf("ClaimPending: %v", err)
+	}
+	// Use a real (small) sleep rather than miniredis.FastForward — Stream PEL
+	// idle accounting is keyed off wall-clock delivery time. A 60ms sleep with
+	// a 25ms idle threshold gives comfortable headroom while staying fast.
 	time.Sleep(60 * time.Millisecond)
 
-	recovered, err := s.RecoverStuck(ctx, 25*time.Millisecond)
+	moved, err := s.RecoverStuck(ctx, 25*time.Millisecond)
 	if err != nil {
 		t.Fatalf("RecoverStuck: %v", err)
 	}
-	if recovered != 1 {
-		t.Errorf("RecoverStuck: got %d, want 1", recovered)
+	if moved != 1 {
+		t.Errorf("RecoverStuck: got %d, want 1", moved)
 	}
 }
 
@@ -350,20 +372,20 @@ func TestRedisStore_RecoverStuck_SkipsRecentMessages(t *testing.T) {
 	t.Parallel()
 	s, _, _ := setupRedis(t)
 	ctx := context.Background()
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
+
+	if err := s.Store(ctx, "evt", "e1", []byte("p"), nil); err != nil {
+		t.Fatalf("Store: %v", err)
 	}
-
-	_, _ = s.Insert(ctx, &RedisMessage{ID: "e1", EventName: "e", EventID: "e1", Payload: []byte("p")})
-	_, _ = s.GetPending(ctx, 10)
-	// No FastForward — message is idle 0ms.
-
-	recovered, err := s.RecoverStuck(ctx, 5*time.Second)
+	if _, err := s.ClaimPending(ctx, 10); err != nil {
+		t.Fatalf("ClaimPending: %v", err)
+	}
+	// Entry is idle ~0ms; a 5s threshold must not reclaim it.
+	moved, err := s.RecoverStuck(ctx, 5*time.Second)
 	if err != nil {
 		t.Fatalf("RecoverStuck: %v", err)
 	}
-	if recovered != 0 {
-		t.Errorf("RecoverStuck: recent message should NOT be claimed; got %d, want 0", recovered)
+	if moved != 0 {
+		t.Errorf("RecoverStuck: recent message should NOT be reclaimed; got %d, want 0", moved)
 	}
 }
 
@@ -371,228 +393,25 @@ func TestRedisStore_RecoverStuck_EmptyPending(t *testing.T) {
 	t.Parallel()
 	s, _, _ := setupRedis(t)
 	ctx := context.Background()
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
 
-	recovered, err := s.RecoverStuck(ctx, time.Second)
+	moved, err := s.RecoverStuck(ctx, time.Second)
 	if err != nil {
 		t.Fatalf("RecoverStuck on empty: %v", err)
 	}
-	if recovered != 0 {
-		t.Errorf("RecoverStuck on empty: got %d, want 0", recovered)
+	if moved != 0 {
+		t.Errorf("RecoverStuck on empty: got %d, want 0", moved)
 	}
 }
 
-func TestRedisStore_RetryFailed_ReQueuesAndDeletes(t *testing.T) {
-	t.Parallel()
-	s, mr, _ := setupRedis(t)
-	ctx := context.Background()
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
-
-	// Seed two failed-message hashes manually so we can drive the scan-and-
-	// requeue logic without going through MarkFailed (which requires a real
-	// pending stream entry).
-	mr.HSet("outbox:failed:m1", "event_id", "m1", "event_name", "e", "payload", "p", "retry_count", "1")
-	mr.HSet("outbox:failed:m2", "event_id", "m2", "event_name", "e", "payload", "p", "retry_count", "1")
-
-	retried, err := s.RetryFailed(ctx, 3)
-	if err != nil {
-		t.Fatalf("RetryFailed: %v", err)
-	}
-	if retried != 2 {
-		t.Errorf("RetryFailed: got %d, want 2", retried)
-	}
-
-	// Failed hashes are deleted after re-queuing.
-	if mr.Exists("outbox:failed:m1") || mr.Exists("outbox:failed:m2") {
-		t.Error("RetryFailed did not delete failed-message hashes after re-queue")
-	}
-
-	// Pending stream now contains 2 messages.
-	if length, _ := s.Len(ctx); length != 2 {
-		t.Errorf("pending Len after RetryFailed: got %d, want 2", length)
-	}
-}
-
-func TestRedisStore_RetryFailed_SkipsAboveMaxRetries(t *testing.T) {
-	t.Parallel()
-	s, mr, _ := setupRedis(t)
-	ctx := context.Background()
-	if err := s.EnsureGroup(ctx); err != nil {
-		t.Fatalf("EnsureGroup: %v", err)
-	}
-
-	// Two failures; one already past maxRetries=3 → must NOT be re-queued.
-	mr.HSet("outbox:failed:young", "event_id", "young", "event_name", "e", "payload", "p", "retry_count", "1")
-	mr.HSet("outbox:failed:exhausted", "event_id", "exhausted", "event_name", "e", "payload", "p", "retry_count", "5")
-
-	retried, err := s.RetryFailed(ctx, 3)
-	if err != nil {
-		t.Fatalf("RetryFailed: %v", err)
-	}
-	if retried != 1 {
-		t.Errorf("RetryFailed with maxRetries=3: got %d, want 1 (one was already exhausted)", retried)
-	}
-	// Exhausted hash remains for operator inspection.
-	if !mr.Exists("outbox:failed:exhausted") {
-		t.Error("exhausted failed hash was deleted; it should remain for operator review")
-	}
-}
-
-func TestRedisStore_Delete_TrimsPublishedStream(t *testing.T) {
-	t.Parallel()
-	s, mr, c := setupRedis(t)
-	ctx := context.Background()
-
-	// Seed the "published" stream directly (Delete operates on
-	// publishedKey, not pendingKey). Three entries: two old, one new.
-	old := time.Now().Add(-2 * time.Hour).UnixMilli()
-	for range 2 {
-		// Use a manually-set time-based ID so XTRIM MINID is meaningful.
-		if err := c.XAdd(ctx, &redis.XAddArgs{
-			Stream: "outbox:published",
-			ID:     strconv.FormatInt(old, 10) + "-0",
-			Values: map[string]interface{}{"k": "v"},
-		}).Err(); err != nil {
-			t.Fatalf("seed old: %v", err)
-		}
-		old++
-	}
-	newer := time.Now().UnixMilli()
-	if err := c.XAdd(ctx, &redis.XAddArgs{
-		Stream: "outbox:published",
-		ID:     strconv.FormatInt(newer, 10) + "-0",
-		Values: map[string]interface{}{"k": "v"},
-	}).Err(); err != nil {
-		t.Fatalf("seed newer: %v", err)
-	}
-
-	deleted, err := s.Delete(ctx, time.Hour)
-	if err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if deleted != 2 {
-		t.Errorf("Delete trimmed %d, want 2", deleted)
-	}
-	// One entry should remain.
-	entries, _ := mr.Stream("outbox:published")
-	if len(entries) != 1 {
-		t.Errorf("post-trim stream entries: got %d, want 1", len(entries))
-	}
-}
-
-func TestNewRedisPublisher_NilClient(t *testing.T) {
-	t.Parallel()
-	if _, err := NewRedisPublisher(nil); err == nil {
-		t.Error("NewRedisPublisher(nil): expected error from underlying NewRedisStore")
-	}
-}
-
-func TestRedisPublisher_StoreAndCodecAccessors(t *testing.T) {
-	t.Parallel()
-	mr := miniredis.RunT(t)
-	c := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = c.Close() })
-
-	pub, err := NewRedisPublisher(c)
-	if err != nil {
-		t.Fatalf("NewRedisPublisher: %v", err)
-	}
-	if pub.Store() == nil {
-		t.Error("Store() returned nil")
-	}
-	// Builder must return the receiver, not a copy.
-	if got := pub.WithCodec(pub.codec); got != pub {
-		t.Error("WithCodec must return the receiver")
-	}
-}
-
-func TestRedisPublisher_Publish_InsertsToStream(t *testing.T) {
-	t.Parallel()
-	mr := miniredis.RunT(t)
-	c := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = c.Close() })
-
-	pub, err := NewRedisPublisher(c)
-	if err != nil {
-		t.Fatalf("NewRedisPublisher: %v", err)
-	}
-
-	if err := pub.Publish(context.Background(), "order.placed",
-		map[string]any{"id": "o-1"}, map[string]string{"src": "test"}); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-
-	// Stream should now contain exactly one entry on the default pending key.
-	entries, _ := mr.Stream("outbox:pending")
-	if len(entries) != 1 {
-		t.Errorf("Publish did not produce one stream entry; got %d", len(entries))
-	}
-}
-
-func TestRedisStore_Len(t *testing.T) {
+// TestRedisStore_Conformance_Miniredis runs the shared Store conformance harness
+// against an in-memory miniredis, exercising the full claim/ack/fail/re-claim
+// PEL path without a live server.
+func TestRedisStore_Conformance_Miniredis(t *testing.T) {
 	t.Parallel()
 	s, _, _ := setupRedis(t)
 	ctx := context.Background()
-
-	if got, _ := s.Len(ctx); got != 0 {
-		t.Errorf("Len on empty: got %d, want 0", got)
+	seed := func(ctx context.Context, eventID string) error {
+		return s.Store(ctx, "conf.event", eventID, []byte(`{}`), nil)
 	}
-
-	for i := range 5 {
-		_, _ = s.Insert(ctx, &RedisMessage{
-			ID: strconv.Itoa(i), EventName: "e", EventID: strconv.Itoa(i), Payload: []byte("p"),
-		})
-	}
-
-	got, err := s.Len(ctx)
-	if err != nil {
-		t.Fatalf("Len: %v", err)
-	}
-	if got != 5 {
-		t.Errorf("Len: got %d, want 5", got)
-	}
-}
-
-func TestRedisMessage_ToMessage(t *testing.T) {
-	t.Parallel()
-	created := time.Unix(1_700_000_000, 0).UTC()
-	rm := &RedisMessage{
-		StreamID:   "1700000000-0",
-		ID:         "42",
-		EventName:  "evt",
-		EventID:    "evt-1",
-		Payload:    []byte("p"),
-		Metadata:   map[string]string{"k": "v"},
-		CreatedAt:  created,
-		RetryCount: 3,
-		LastError:  "boom",
-		Priority:   7,
-	}
-	m := rm.ToMessage()
-	if m.ID != 42 || m.EventName != "evt" || m.EventID != "evt-1" || m.Priority != 7 {
-		t.Errorf("ToMessage mismatch: %+v", m)
-	}
-	if m.Status != StatusPending {
-		t.Errorf("ToMessage Status: got %v, want %v", m.Status, StatusPending)
-	}
-	if m.RetryCount != 3 || m.LastError != "boom" {
-		t.Errorf("ToMessage retry/error mismatch: %+v", m)
-	}
-}
-
-func TestRedisMessage_ToMessage_NonNumericIDDecaysToZero(t *testing.T) {
-	t.Parallel()
-	// RedisMessage.ID is documented as the application-level event ID
-	// (UUID-shaped). Message.ID is the SQL-style int64. ToMessage tries
-	// strconv.ParseInt and silently coerces non-numeric to 0 — pin this
-	// so a consumer doesn't accidentally treat the zero as "missing".
-	rm := &RedisMessage{ID: "not-a-number", EventName: "e", EventID: "e1", Payload: []byte("p")}
-	m := rm.ToMessage()
-	if m.ID != 0 {
-		t.Errorf("non-numeric ID should coerce to 0; got %d", m.ID)
-	}
+	RunStoreConformance(t, ctx, s, seed)
 }

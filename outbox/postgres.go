@@ -8,10 +8,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/lib/pq"
 	event "github.com/rbaliyan/event/v3"
 	"github.com/rbaliyan/event/v3/store/base"
-	"github.com/rbaliyan/event/v3/transport/codec"
 )
 
 // PostgresStoreOption configures a PostgresStore.
@@ -20,6 +19,7 @@ type PostgresStoreOption func(*postgresStoreOptions)
 type postgresStoreOptions struct {
 	table         string
 	notifyChannel string
+	listener      *pq.Listener
 }
 
 // WithTable sets a custom table name for the PostgreSQL outbox store.
@@ -32,7 +32,7 @@ func WithTable(table string) PostgresStoreOption {
 	}
 }
 
-// WithNotifyChannel sets the PostgreSQL NOTIFY channel name emitted on each Insert.
+// WithNotifyChannel sets the PostgreSQL NOTIFY channel name emitted on each stored event.
 // Listeners using pq.NewListener can subscribe to this channel to be woken up
 // immediately when new messages arrive instead of relying solely on polling.
 // The default channel is "event_outbox_pending".
@@ -42,6 +42,19 @@ func WithNotifyChannel(channel string) PostgresStoreOption {
 			o.notifyChannel = channel
 		}
 	}
+}
+
+// WithNotifyListener opts the store into the Waker interface: it wires the
+// given pq.Listener to the store's notify channel so the relay wakes up
+// immediately on PG NOTIFY instead of relying solely on polling.
+//
+// The listener must be created by the caller (e.g. via pq.NewListener) with
+// the same connection string as db. NewPostgresStore starts listening on
+// WithNotifyChannel's channel (default "event_outbox_pending") and closes
+// over the listener's Notify channel for its lifetime; the caller owns
+// closing the listener.
+func WithNotifyListener(l *pq.Listener) PostgresStoreOption {
+	return func(o *postgresStoreOptions) { o.listener = l }
 }
 
 // PostgresStore implements Store for PostgreSQL.
@@ -71,15 +84,28 @@ type PostgresStore struct {
 	db            *sql.DB
 	tableName     string
 	notifyChannel string
+	listener      *pq.Listener
+	notifyCh      chan struct{}
 }
 
-// NotifyChannel returns the PostgreSQL NOTIFY channel name emitted on each Insert.
+// NotifyChannel returns the PostgreSQL NOTIFY channel name emitted on each Store.
 func (s *PostgresStore) NotifyChannel() string { return s.notifyChannel }
+
+// Notifications implements Waker. It returns nil unless a pq.Listener was
+// configured via WithNotifyListener, in which case a bridging goroutine
+// (started in NewPostgresStore) forwards pq notifications as wakeups. A nil
+// channel is safe for the relay engine: the corresponding select case simply
+// blocks forever, leaving polling as the only wakeup source.
+func (s *PostgresStore) Notifications() <-chan struct{} { return s.notifyCh }
 
 // NewPostgresStore creates a new PostgreSQL outbox store.
 //
 // The provided database connection should be configured and connected.
 // The default table name is "event_outbox".
+//
+// If WithNotifyListener is supplied, the store starts listening on the
+// configured NOTIFY channel and satisfies Waker so the relay can wake up
+// immediately on new messages instead of waiting for the next poll.
 func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) (*PostgresStore, error) {
 	if db == nil {
 		return nil, errors.New("postgres: db is required")
@@ -93,432 +119,142 @@ func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) (*PostgresStore, 
 		opt(o)
 	}
 
-	return &PostgresStore{
+	s := &PostgresStore{
 		db:            db,
 		tableName:     o.table,
 		notifyChannel: o.notifyChannel,
-	}, nil
-}
+		listener:      o.listener,
+	}
 
-// Insert adds a message to the outbox within a transaction.
-//
-// The message is stored atomically with other database operations in the
-// same transaction. On success, msg.ID is populated with the generated ID.
-//
-// Parameters:
-//   - ctx: Context for cancellation and deadlines
-//   - tx: The active database transaction
-//   - msg: The message to store (ID will be set on success)
-//
-// Example:
-//
-//	err := txManager.Execute(ctx, func(tx *sql.Tx) error {
-//	    // Business logic
-//	    _, err := tx.Exec("UPDATE orders SET status = 'shipped' WHERE id = $1", orderID)
-//	    if err != nil {
-//	        return err
-//	    }
-//
-//	    // Store event
-//	    msg := &outbox.Message{
-//	        EventName: "order.shipped",
-//	        EventID:   uuid.New().String(),
-//	        Payload:   payload,
-//	    }
-//	    return store.Insert(ctx, tx, msg)
-//	})
-func (s *PostgresStore) Insert(ctx context.Context, tx *sql.Tx, msg *Message) error {
-	var metadataJSON []byte
-	var err error
-	if msg.Metadata != nil {
-		metadataJSON, err = json.Marshal(msg.Metadata)
-		if err != nil {
-			return fmt.Errorf("marshal metadata: %w", err)
+	if o.listener != nil {
+		if err := o.listener.Listen(o.notifyChannel); err != nil {
+			return nil, fmt.Errorf("postgres: listen on %q: %w", o.notifyChannel, err)
 		}
+		notifyCh := make(chan struct{}, 1)
+		s.notifyCh = notifyCh
+		go func(notify <-chan *pq.Notification) {
+			// Ranging over Notify terminates cleanly once the caller closes
+			// the listener, so this goroutine never leaks.
+			for range notify {
+				select {
+				case notifyCh <- struct{}{}:
+				default:
+				}
+			}
+		}(o.listener.Notify)
 	}
 
-	// #nosec G201 -- table name is set at construction, not user input
-	query := fmt.Sprintf(`
-		INSERT INTO %s (event_name, event_id, payload, metadata, status, created_at, priority)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id
-	`, s.tableName)
-
-	err = tx.QueryRowContext(ctx, query,
-		msg.EventName,
-		msg.EventID,
-		msg.Payload,
-		metadataJSON,
-		StatusPending,
-		time.Now(),
-		msg.Priority,
-	).Scan(&msg.ID)
-
-	if err != nil {
-		return err
-	}
-
-	// Notify any listening relay that a new message is pending.
-	// This fires when the caller's transaction commits, not at INSERT time.
-	// Ignored if no relay is listening — the relay catches up via its fallback ticker.
-	_, _ = tx.ExecContext(ctx, `SELECT pg_notify($1, '')`, s.notifyChannel)
-	return nil
+	return s, nil
 }
 
-// GetPending retrieves pending and failed messages for publishing.
-//
-// Returns messages with StatusPending or StatusFailed, ordered by creation
-// time (oldest first). Uses FOR UPDATE SKIP LOCKED to prevent concurrent
-// relays from processing the same messages.
-//
-// IMPORTANT: This method runs outside an explicit transaction, so the row
-// locks from FOR UPDATE SKIP LOCKED are released when the query completes.
-// For proper transactional safety with concurrent relays, use ProcessPending
-// instead.
-//
-// Parameters:
-//   - ctx: Context for cancellation and deadlines
-//   - limit: Maximum number of messages to retrieve
-//
-// Returns the messages and any error. Returns empty slice if no pending messages.
-func (s *PostgresStore) GetPending(ctx context.Context, limit int) ([]*Message, error) {
-	// #nosec G201 -- table name is set at construction, not user input
-	query := fmt.Sprintf(`
-		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count, COALESCE(priority, 0)
-		FROM %s
-		WHERE status IN ($1, $2)
-		ORDER BY priority DESC, created_at
-		LIMIT $3
-		FOR UPDATE SKIP LOCKED
-	`, s.tableName)
-
-	rows, err := s.db.QueryContext(ctx, query, StatusPending, StatusFailed, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	return s.scanMessages(rows)
-}
-
-// ProcessPending retrieves pending and failed messages within a transaction
-// and calls fn for each message. The transaction holds row locks via
-// FOR UPDATE SKIP LOCKED, preventing concurrent relays from processing
-// the same messages.
-//
-// The callback fn receives each message and should publish it. If fn returns
-// nil, the message is marked as published. If fn returns an error, the message
-// is marked as failed with the error recorded. All updates happen within the
-// same transaction.
-//
-// This is the recommended method for relay implementations. Use GetPending
-// only when you need to manage the transaction lifecycle yourself.
-//
-// Parameters:
-//   - ctx: Context for cancellation and deadlines
-//   - limit: Maximum number of messages to process
-//   - fn: Callback for each message; nil return marks published, error marks failed
-//
-// Returns error if the transaction fails. Individual message failures are
-// recorded but do not abort the transaction.
-func (s *PostgresStore) ProcessPending(ctx context.Context, limit int, fn func(msg *Message) error) error {
+// ClaimPending opens a tx and selects a batch FOR UPDATE SKIP LOCKED. The tx
+// (and its row locks) is held by the returned pgBatch until Close commits.
+// An empty result commits the idle tx immediately and returns a resource-free
+// batch.
+func (s *PostgresStore) ClaimPending(ctx context.Context, limit int) (Batch, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck
-
-	// #nosec G201 -- table name is set at construction, not user input
-	query := fmt.Sprintf(`
-		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count, COALESCE(priority, 0)
-		FROM %s
-		WHERE status IN ($1, $2)
+	// #nosec G201 -- table name set at construction
+	q := fmt.Sprintf(`
+		SELECT id, event_name, event_id, payload, metadata, created_at, retry_count, COALESCE(priority,0)
+		FROM %s WHERE status IN ($1,$2)
 		ORDER BY priority DESC, created_at
-		LIMIT $3
-		FOR UPDATE SKIP LOCKED
-	`, s.tableName)
-
-	rows, err := tx.QueryContext(ctx, query, StatusPending, StatusFailed, limit)
+		LIMIT $3 FOR UPDATE SKIP LOCKED`, s.tableName)
+	rows, err := tx.QueryContext(ctx, q, StatusPending, StatusFailed, limit)
 	if err != nil {
-		return fmt.Errorf("query pending: %w", err)
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("query pending: %w", err)
 	}
-
-	messages, err := s.scanMessages(rows)
+	msgs, err := scanMessages(rows)
 	if err != nil {
-		return fmt.Errorf("scan messages: %w", err)
+		_ = tx.Rollback()
+		return nil, err
 	}
-
-	// #nosec G201 -- table name is set at construction, not user input
-	publishQuery := fmt.Sprintf(`
-		UPDATE %s SET status = $1, published_at = $2 WHERE id = $3
-	`, s.tableName)
-
-	// #nosec G201 -- table name is set at construction, not user input
-	failQuery := fmt.Sprintf(`
-		UPDATE %s SET status = $1, last_error = $2, retry_count = retry_count + 1 WHERE id = $3
-	`, s.tableName)
-
-	now := time.Now()
-	for _, msg := range messages {
-		if fnErr := fn(msg); fnErr != nil {
-			var errMsg string
-			if fnErr != nil {
-				errMsg = fnErr.Error()
-			}
-			if _, execErr := tx.ExecContext(ctx, failQuery, StatusFailed, errMsg, msg.ID); execErr != nil {
-				return fmt.Errorf("mark failed id=%d: %w", msg.ID, execErr)
-			}
-			continue
-		}
-		if _, execErr := tx.ExecContext(ctx, publishQuery, StatusPublished, now, msg.ID); execErr != nil {
-			return fmt.Errorf("mark published id=%d: %w", msg.ID, execErr)
-		}
+	if len(msgs) == 0 {
+		_ = tx.Commit() // release the idle tx; no locks held
+		return &pgBatch{store: s}, nil
 	}
-
-	return tx.Commit()
+	return &pgBatch{store: s, tx: tx, msgs: msgs}, nil
 }
 
-// scanMessages reads rows into Message structs and closes the rows.
-func (s *PostgresStore) scanMessages(rows *sql.Rows) ([]*Message, error) {
-	defer func() { _ = rows.Close() }()
-
-	var messages []*Message
-	for rows.Next() {
-		var msg Message
-		var metadataJSON []byte
-
-		err := rows.Scan(
-			&msg.ID,
-			&msg.EventName,
-			&msg.EventID,
-			&msg.Payload,
-			&metadataJSON,
-			&msg.CreatedAt,
-			&msg.RetryCount,
-			&msg.Priority,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		if metadataJSON != nil {
-			if err := json.Unmarshal(metadataJSON, &msg.Metadata); err != nil {
-				return nil, fmt.Errorf("unmarshal metadata for id=%d: %w", msg.ID, err)
-			}
-		}
-
-		msg.Status = StatusPending
-		messages = append(messages, &msg)
-	}
-
-	return messages, rows.Err()
-}
-
-// MarkPublished marks a message as successfully published.
+// Cleanup deletes published messages older than olderThan.
 //
-// Sets the status to StatusPublished and records the current time as
-// published_at. Called by the relay after successfully publishing.
-//
-// Parameters:
-//   - ctx: Context for cancellation and deadlines
-//   - id: The message ID to mark as published
-func (s *PostgresStore) MarkPublished(ctx context.Context, id int64) error {
-	// #nosec G201 -- table name is set at construction, not user input
-	query := fmt.Sprintf(`
-		UPDATE %s
-		SET status = $1, published_at = $2
-		WHERE id = $3
-	`, s.tableName)
-
-	_, err := s.db.ExecContext(ctx, query, StatusPublished, time.Now(), id)
-	return err
-}
-
-// MarkFailed marks a message as failed with an error.
-//
-// Sets the status to StatusFailed, increments retry_count, and stores
-// the error message. The relay may retry failed messages later.
-//
-// Parameters:
-//   - ctx: Context for cancellation and deadlines
-//   - id: The message ID to mark as failed
-//   - err: The error that caused the failure
-func (s *PostgresStore) MarkFailed(ctx context.Context, id int64, err error) error {
-	// #nosec G201 -- table name is set at construction, not user input
-	query := fmt.Sprintf(`
-		UPDATE %s
-		SET status = $1, last_error = $2, retry_count = retry_count + 1
-		WHERE id = $3
-	`, s.tableName)
-
-	var errMsg string
-	if err != nil {
-		errMsg = err.Error()
-	}
-	_, dbErr := s.db.ExecContext(ctx, query, StatusFailed, errMsg, id)
-	return dbErr
-}
-
-// Delete removes old published messages.
-//
-// Deletes messages with StatusPublished that were published more than
-// 'olderThan' ago. This prevents unbounded growth of the outbox table.
-//
-// Parameters:
-//   - ctx: Context for cancellation and deadlines
-//   - olderThan: Age threshold for deletion
-//
-// Returns the number of deleted messages and any error.
-//
-// Example:
-//
-//	// Delete messages published more than 7 days ago
-//	deleted, err := store.Delete(ctx, 7*24*time.Hour)
-//	if err != nil {
-//	    log.Error("cleanup failed", "error", err)
-//	}
-//	log.Info("cleaned up old messages", "count", deleted)
-func (s *PostgresStore) Delete(ctx context.Context, olderThan time.Duration) (int64, error) {
-	// #nosec G201 -- table name is set at construction, not user input
-	query := fmt.Sprintf(`
-		DELETE FROM %s
-		WHERE status = $1 AND published_at < $2
-	`, s.tableName)
-
-	result, err := s.db.ExecContext(ctx, query, StatusPublished, time.Now().Add(-olderThan))
+// This prevents unbounded growth of the outbox table.
+func (s *PostgresStore) Cleanup(ctx context.Context, olderThan time.Duration) (int64, error) {
+	// #nosec G201
+	q := fmt.Sprintf(`DELETE FROM %s WHERE status=$1 AND published_at < $2`, s.tableName)
+	res, err := s.db.ExecContext(ctx, q, StatusPublished, time.Now().Add(-olderThan))
 	if err != nil {
 		return 0, err
 	}
-
-	return result.RowsAffected()
+	return res.RowsAffected()
 }
 
-// PostgresPublisher implements Publisher for PostgreSQL.
-//
-// PostgresPublisher provides a high-level API for storing events in the
-// outbox within a database transaction. It handles payload encoding and
-// message ID generation automatically.
-//
-// Example:
-//
-//	db, _ := sql.Open("postgres", connString)
-//	publisher := outbox.NewPostgresPublisher(db)
-//
-//	err := txManager.Execute(ctx, func(tx *sql.Tx) error {
-//	    // Business logic
-//	    _, err := tx.Exec("INSERT INTO orders ...")
-//	    if err != nil {
-//	        return err
-//	    }
-//
-//	    // Store event
-//	    return publisher.PublishInTransaction(ctx, tx, "order.created", order, nil)
-//	})
-type PostgresPublisher struct {
+// pgBatch holds the claim tx; token is the int64 row id.
+type pgBatch struct {
 	store *PostgresStore
-	codec codec.Codec
+	tx    *sql.Tx // nil for empty batches
+	msgs  []Message
 }
 
-// NewPostgresPublisher creates a new PostgreSQL outbox publisher.
-//
-// Creates a publisher with the default JSON codec and "event_outbox" table.
-//
-// Parameters:
-//   - db: An open PostgreSQL database connection
-//
-// Example:
-//
-//	publisher := outbox.NewPostgresPublisher(db)
-func NewPostgresPublisher(db *sql.DB) (*PostgresPublisher, error) {
-	store, err := NewPostgresStore(db)
-	if err != nil {
-		return nil, err
+func (b *pgBatch) Messages() []Message { return b.msgs }
+
+func (b *pgBatch) Ack(ctx context.Context, msg Message) error {
+	// #nosec G201
+	q := fmt.Sprintf(`UPDATE %s SET status=$1, published_at=$2 WHERE id=$3`, b.store.tableName)
+	_, err := b.tx.ExecContext(ctx, q, StatusPublished, time.Now(), msg.token)
+	return err
+}
+
+func (b *pgBatch) Fail(ctx context.Context, msg Message, cause error) error {
+	// #nosec G201
+	q := fmt.Sprintf(`UPDATE %s SET status=$1, last_error=$2, retry_count=retry_count+1 WHERE id=$3`, b.store.tableName)
+	var e string
+	if cause != nil {
+		e = cause.Error()
 	}
-
-	return &PostgresPublisher{
-		store: store,
-		codec: codec.Default(),
-	}, nil
+	_, err := b.tx.ExecContext(ctx, q, StatusFailed, e, msg.token)
+	return err
 }
 
-// WithCodec sets a custom codec for encoding payloads.
-//
-// Use this when you need a different encoding format (e.g., protobuf, msgpack).
-//
-// Parameters:
-//   - c: The codec to use for encoding payloads
-//
-// Returns the publisher for method chaining.
-func (p *PostgresPublisher) WithCodec(c codec.Codec) *PostgresPublisher {
-	p.codec = c
-	return p
-}
-
-// Store returns the underlying PostgresStore.
-//
-// Use this to access the store for the relay or advanced operations.
-//
-// Example:
-//
-//	publisher := outbox.NewPostgresPublisher(db)
-//	relay := outbox.NewRelay(publisher.Store(), transport)
-func (p *PostgresPublisher) Store() *PostgresStore {
-	return p.store
-}
-
-// PublishInTransaction stores a message in the outbox within the caller's transaction.
-//
-// The message is stored atomically with other database operations. A unique
-// EventID (UUID) is automatically generated for each message.
-//
-// Parameters:
-//   - ctx: Context for cancellation and deadlines
-//   - tx: The active database transaction
-//   - eventName: Event topic/name for routing (e.g., "order.created")
-//   - payload: The event data (will be JSON encoded)
-//   - metadata: Optional headers/context (can be nil)
-//
-// Example:
-//
-//	err := txManager.Execute(ctx, func(tx *sql.Tx) error {
-//	    // Update order
-//	    _, err := tx.Exec("UPDATE orders SET status = $1 WHERE id = $2", "shipped", orderID)
-//	    if err != nil {
-//	        return err
-//	    }
-//
-//	    // Store event for later publishing
-//	    return publisher.PublishInTransaction(ctx, tx, "order.shipped", order,
-//	        map[string]string{"source": "order-service"})
-//	})
-func (p *PostgresPublisher) PublishInTransaction(
-	ctx context.Context,
-	tx *sql.Tx,
-	eventName string,
-	payload any,
-	metadata map[string]string,
-) error {
-	// Encode payload
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("encode payload: %w", err)
+func (b *pgBatch) Close(context.Context) error {
+	if b.tx == nil {
+		return nil
 	}
+	return b.tx.Commit()
+}
 
-	msg := &Message{
-		EventName: eventName,
-		EventID:   uuid.New().String(),
-		Payload:   encoded,
-		Metadata:  metadata,
+// scanMessages reads rows into Message with token=int64(id).
+func scanMessages(rows *sql.Rows) ([]Message, error) {
+	defer func() { _ = rows.Close() }()
+	var out []Message
+	for rows.Next() {
+		var m Message
+		var id int64
+		var metadataJSON []byte
+		if err := rows.Scan(&id, &m.EventName, &m.EventID, &m.Payload, &metadataJSON, &m.CreatedAt, &m.RetryCount, &m.Priority); err != nil {
+			return nil, err
+		}
+		if metadataJSON != nil {
+			if err := json.Unmarshal(metadataJSON, &m.Metadata); err != nil {
+				return nil, fmt.Errorf("unmarshal metadata for id=%d: %w", id, err)
+			}
+		}
+		m.Status = StatusPending
+		m.token = id
+		out = append(out, m)
 	}
-
-	return p.store.Insert(ctx, tx, msg)
+	return out, rows.Err()
 }
 
 // Compile-time checks
 var _ Store = (*PostgresStore)(nil)
-var _ Publisher = (*PostgresPublisher)(nil)
 
 var _ event.OutboxStore = (*PostgresStore)(nil)
+
+var _ Waker = (*PostgresStore)(nil)
 
 // Store implements event.OutboxStore for bus-level integration.
 // When the bus is configured with WithOutbox(postgresStore), calls to Event.Publish()
@@ -553,6 +289,11 @@ func (s *PostgresStore) Store(ctx context.Context, eventName string, eventID str
 		if _, err = tx.ExecContext(ctx, query, args...); err != nil {
 			return fmt.Errorf("insert outbox event: %w", err)
 		}
+		// Best-effort wakeup: notifying inside the caller's tx means the
+		// notification only fires once the tx commits, so subscribers never
+		// wake for a row that isn't durably visible yet. The error is
+		// intentionally ignored; the relay's poll ticker is the fallback.
+		_, _ = tx.ExecContext(ctx, "SELECT pg_notify($1, '')", s.notifyChannel)
 		return nil
 	}
 
@@ -560,6 +301,10 @@ func (s *PostgresStore) Store(ctx context.Context, eventName string, eventID str
 	if _, err = s.db.ExecContext(ctx, query, args...); err != nil {
 		return fmt.Errorf("insert outbox event: %w", err)
 	}
+	// Best-effort wakeup: fires immediately since there is no surrounding
+	// tx to wait on. The error is intentionally ignored; the relay's poll
+	// ticker is the fallback.
+	_, _ = s.db.ExecContext(ctx, "SELECT pg_notify($1, '')", s.notifyChannel)
 	return nil
 }
 
