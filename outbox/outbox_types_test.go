@@ -12,7 +12,7 @@ type typesProbe struct{}
 func (typesProbe) Store(context.Context, string, string, []byte, map[string]string) error {
 	return nil
 }
-func (typesProbe) ClaimPending(context.Context, int) (Batch, error) { return nil, nil }
+func (typesProbe) ClaimPending(context.Context, int) (Batch, error)      { return nil, nil }
 func (typesProbe) Cleanup(context.Context, time.Duration) (int64, error) { return 0, nil }
 
 var _ Store = typesProbe{}

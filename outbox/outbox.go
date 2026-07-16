@@ -136,13 +136,13 @@ var errExhausted = errors.New("outbox: exceeded max retries")
 // ObjectID) used by that Batch to resolve Ack/Fail. Callers never construct
 // or read the token.
 type Message struct {
-	EventName   string
-	EventID     string
-	Payload     []byte
-	Metadata    map[string]string
-	CreatedAt   time.Time
-	RetryCount  int
-	Priority    int
+	EventName  string
+	EventID    string
+	Payload    []byte
+	Metadata   map[string]string
+	CreatedAt  time.Time
+	RetryCount int
+	Priority   int
 
 	// Introspection-only; populated by stores that track them. The engine
 	// does not depend on these.
