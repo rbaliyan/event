@@ -100,7 +100,7 @@ package outbox
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -128,150 +128,77 @@ const (
 	StatusFailed Status = "failed"
 )
 
-// Message represents a message in the outbox.
-//
-// Messages are stored in the outbox table within a database transaction
-// and later published by the relay to the message transport.
-//
-// Fields:
-//   - ID: Auto-generated database identifier
-//   - EventName: The event topic/name for routing
-//   - EventID: Unique identifier for the event (UUID)
-//   - Payload: JSON-encoded event data
-//   - Metadata: Optional key-value pairs for headers/context
-//   - CreatedAt: When the message was stored
-//   - PublishedAt: When the message was published (nil if pending)
-//   - Status: Current state (pending, published, failed)
-//   - RetryCount: Number of publish attempts
-//   - LastError: Most recent error message if failed
+// errExhausted marks a message that has passed the max-retry limit.
+var errExhausted = errors.New("outbox: exceeded max retries")
+
+// Message is the backend-neutral outbox record. A Message obtained from
+// Batch.Messages() carries an unexported backend token (row id / stream id /
+// ObjectID) used by that Batch to resolve Ack/Fail. Callers never construct
+// or read the token.
 type Message struct {
-	ID          int64
 	EventName   string
 	EventID     string
 	Payload     []byte
 	Metadata    map[string]string
 	CreatedAt   time.Time
-	PublishedAt *time.Time
-	Status      Status
 	RetryCount  int
+	Priority    int
+
+	// Introspection-only; populated by stores that track them. The engine
+	// does not depend on these.
+	Status      Status
+	PublishedAt *time.Time
 	LastError   string
-	Priority    int // Higher values are processed first (0 = normal, default)
+
+	token any
 }
 
-// Store defines the interface for SQL-based outbox storage with relay support.
-//
-// This interface uses *sql.Tx to ensure atomicity between business data writes
-// and outbox inserts within the same database transaction. For non-SQL databases
-// (MongoDB, Redis), use the dedicated store implementations which handle
-// transactions through their own mechanisms.
-//
-// For bus-level integration (automatic routing to outbox inside transactions),
-// see event.OutboxStore which uses a context-based API without SQL dependency.
-//
-// Implementations must be safe for concurrent use. The store is responsible
-// for persisting messages and tracking their publish status.
-//
-// Implementations:
-//   - PostgresStore: For PostgreSQL databases
-//   - RedisStore: For Redis (see redis.go)
-//   - For MongoDB, use the event-mongodb module (https://github.com/rbaliyan/event-mongodb)
+// Store is the one backend contract: write, claim-for-read, and cleanup.
 type Store interface {
-	// Insert adds a message to the outbox within a transaction.
-	//
-	// The message is stored atomically with other database operations
-	// in the same transaction. The msg.ID field is populated with the
-	// generated identifier on success.
-	//
-	// Example:
-	//
-	//	err := txManager.Execute(ctx, func(tx *sql.Tx) error {
-	//	    msg := &outbox.Message{
-	//	        EventName: "order.created",
-	//	        EventID:   uuid.New().String(),
-	//	        Payload:   payload,
-	//	    }
-	//	    return store.Insert(ctx, tx, msg)
-	//	})
-	Insert(ctx context.Context, tx *sql.Tx, msg *Message) error
-
-	// GetPending retrieves pending messages for publishing.
-	//
-	// Returns up to 'limit' messages ordered by creation time.
-	// Uses SELECT FOR UPDATE SKIP LOCKED (or equivalent) to prevent
-	// concurrent relays from processing the same messages.
-	//
-	// Example:
-	//
-	//	messages, err := store.GetPending(ctx, 100)
-	//	for _, msg := range messages {
-	//	    // Publish each message...
-	//	}
-	GetPending(ctx context.Context, limit int) ([]*Message, error)
-
-	// MarkPublished marks a message as successfully published.
-	//
-	// Sets the status to StatusPublished and records the publish time.
-	// Called by the relay after successfully publishing to the transport.
-	MarkPublished(ctx context.Context, id int64) error
-
-	// MarkFailed marks a message as failed with an error.
-	//
-	// Increments the retry count and stores the error message.
-	// The relay may retry failed messages or move them to a DLQ.
-	MarkFailed(ctx context.Context, id int64, err error) error
-
-	// Delete removes old published messages.
-	//
-	// Deletes messages that were published more than 'olderThan' ago.
-	// This is called periodically by the relay to prevent unbounded growth.
-	//
-	// Returns the number of deleted messages.
-	//
-	// Example:
-	//
-	//	// Delete messages published more than 7 days ago
-	//	deleted, err := store.Delete(ctx, 7*24*time.Hour)
-	Delete(ctx context.Context, olderThan time.Duration) (int64, error)
+	// Store persists an event within the tx/session bound to ctx
+	// (event.WithOutboxTx). Identical signature to event.OutboxStore.Store,
+	// so every Store satisfies event.OutboxStore.
+	Store(ctx context.Context, eventName, eventID string, payload []byte, metadata map[string]string) error
+	// ClaimPending atomically claims up to limit pending/failed messages for
+	// exclusive processing. Returns a non-nil, resource-free empty Batch when
+	// nothing is pending.
+	ClaimPending(ctx context.Context, limit int) (Batch, error)
+	// Cleanup deletes published messages older than the cutoff.
+	Cleanup(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
-// Publisher provides methods for publishing messages through the outbox.
-//
-// Publisher stores messages in the outbox table within a database transaction,
-// ensuring atomicity with other database operations. The actual publishing
-// to the message transport is done by the Relay.
-//
-// Example:
-//
-//	publisher := outbox.NewPostgresPublisher(db)
-//
-//	err := txManager.Execute(ctx, func(tx *sql.Tx) error {
-//	    // Update order
-//	    if _, err := tx.Exec("UPDATE orders ..."); err != nil {
-//	        return err
-//	    }
-//
-//	    // Store event in outbox
-//	    return publisher.PublishInTransaction(ctx, tx, "order.updated", order, nil)
-//	})
-type Publisher interface {
-	// PublishInTransaction stores a message in the outbox within the caller's transaction.
-	//
-	// The message will be published to the transport by the relay. This method
-	// only stores the message - it does not actually publish to the transport.
-	//
-	// Parameters:
-	//   - ctx: Context for cancellation and deadlines
-	//   - tx: The active database transaction
-	//   - eventName: Event topic/name for routing
-	//   - payload: The event data (will be JSON encoded)
-	//   - metadata: Optional headers/context (can be nil)
-	//
-	// Example:
-	//
-	//	err := publisher.PublishInTransaction(ctx, tx,
-	//	    "user.created",
-	//	    user,
-	//	    map[string]string{"source": "registration"},
-	//	)
-	PublishInTransaction(ctx context.Context, tx *sql.Tx, eventName string, payload any, metadata map[string]string) error
+// Batch is a claimed set of messages plus the means to resolve each and
+// release the claim scope.
+type Batch interface {
+	Messages() []Message
+	Ack(ctx context.Context, msg Message) error
+	Fail(ctx context.Context, msg Message, cause error) error
+	Close(ctx context.Context) error
 }
+
+// StuckRecoverer re-queues messages left in 'processing' by a crashed relay.
+// Implemented by claim-and-release backends (Redis, Mongo).
+type StuckRecoverer interface {
+	RecoverStuck(ctx context.Context, olderThan time.Duration) (int64, error)
+}
+
+// Waker lets a backend push an early wakeup (PG NOTIFY, Mongo change stream).
+type Waker interface {
+	Notifications() <-chan struct{}
+}
+
+// Starter lets a backend perform one-time setup before the relay loop begins
+// (Redis consumer-group creation, Mongo index creation). The engine calls
+// EnsureReady once at the start of Start(). Stores that need no setup simply do
+// not implement it.
+type Starter interface {
+	EnsureReady(ctx context.Context) error
+}
+
+// NewClaimedMessage builds a Message carrying the backend token, for stores in
+// OTHER modules (e.g. event-mongodb) that cannot set the unexported field.
+// Stores in this package set m.token directly. The engine never inspects token.
+func NewClaimedMessage(m Message, token any) Message { m.token = token; return m }
+
+// Token returns a claimed message's backend token (backend use only).
+func Token(m Message) any { return m.token }
