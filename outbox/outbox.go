@@ -42,7 +42,8 @@
 //	        return err
 //	    }
 //	    // Store in outbox within same transaction
-//	    return publisher.PublishInTransaction(ctx, tx, "order.updated", order, nil)
+//	    txCtx := event.WithOutboxTx(ctx, tx)
+//	    return publisher.Publish(txCtx, "order.updated", order, nil)
 //	})
 //	// Either both succeed or both fail - always consistent
 //
@@ -69,8 +70,9 @@
 //
 //	// Setup
 //	db, _ := sql.Open("postgres", connString)
-//	publisher := outbox.NewPostgresPublisher(db)
-//	relay := outbox.NewRelay(publisher.Store(), transport,
+//	store, _ := outbox.NewPostgresStore(db)
+//	publisher := outbox.NewPublisher(store)
+//	relay := outbox.NewRelay(store, transport,
 //	    outbox.WithPollDelay(100 * time.Millisecond),
 //	    outbox.WithBatchSize(100),
 //	)
@@ -86,7 +88,8 @@
 //	    }
 //
 //	    // Store event in outbox (same transaction)
-//	    return publisher.PublishInTransaction(ctx, tx, "order.shipped", order, nil)
+//	    txCtx := event.WithOutboxTx(ctx, tx)
+//	    return publisher.Publish(txCtx, "order.shipped", order, nil)
 //	})
 //
 // # Best Practices
