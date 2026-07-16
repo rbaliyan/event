@@ -70,82 +70,31 @@ func TestNewPostgresStore_RejectsInvalidIdentifier(t *testing.T) {
 	}
 }
 
-func TestPostgresStore_Insert_HappyPath(t *testing.T) {
+func TestPostgresStore_ClaimPending_Empty(t *testing.T) {
 	t.Parallel()
 	db, mock := setupMock(t)
 	s, _ := NewPostgresStore(db)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`INSERT INTO event_outbox`).
-		WithArgs("order.created", "evt-1", []byte("payload"), sqlmock.AnyArg(), StatusPending, sqlmock.AnyArg(), 5).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(42)))
-	mock.ExpectExec(`pg_notify`).
-		WithArgs("event_outbox_pending").
-		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT .* FOR UPDATE SKIP LOCKED`).
+		WithArgs(StatusPending, StatusFailed, 10).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "event_name", "event_id", "payload", "metadata", "created_at", "retry_count", "priority"}))
 	mock.ExpectCommit()
 
-	tx, err := db.Begin()
+	batch, err := s.ClaimPending(context.Background(), 10)
 	if err != nil {
-		t.Fatalf("db.Begin: %v", err)
+		t.Fatalf("ClaimPending: %v", err)
 	}
-	msg := &Message{
-		EventName: "order.created",
-		EventID:   "evt-1",
-		Payload:   []byte("payload"),
-		Metadata:  map[string]string{"source": "test"},
-		Priority:  5,
+	if len(batch.Messages()) != 0 {
+		t.Fatalf("expected 0 messages, got %d", len(batch.Messages()))
 	}
-	if err := s.Insert(context.Background(), tx, msg); err != nil {
-		t.Fatalf("Insert: %v", err)
-	}
-	if msg.ID != 42 {
-		t.Errorf("Insert did not populate msg.ID; got %d, want 42", msg.ID)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("Commit: %v", err)
+	// Close on the empty batch must be a no-op (no tx left open to commit).
+	if err := batch.Close(context.Background()); err != nil {
+		t.Fatalf("Close on empty batch: %v", err)
 	}
 }
 
-func TestPostgresStore_Insert_NoMetadata(t *testing.T) {
-	t.Parallel()
-	db, mock := setupMock(t)
-	s, _ := NewPostgresStore(db)
-
-	// When Metadata is nil, the JSON column is inserted as a typed-nil
-	// []byte. Verify the production code does NOT try to Marshal(nil),
-	// which would emit the four bytes "null" rather than NULL.
-	mock.ExpectBegin()
-	mock.ExpectQuery(`INSERT INTO event_outbox`).
-		WithArgs("evt", "id", []byte("p"), []byte(nil), StatusPending, sqlmock.AnyArg(), 0).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(1)))
-	mock.ExpectExec(`pg_notify`).WithArgs("event_outbox_pending").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectCommit()
-
-	tx, _ := db.Begin()
-	if err := s.Insert(context.Background(), tx, &Message{EventName: "evt", EventID: "id", Payload: []byte("p")}); err != nil {
-		t.Fatalf("Insert: %v", err)
-	}
-	_ = tx.Commit()
-}
-
-func TestPostgresStore_Insert_QueryError(t *testing.T) {
-	t.Parallel()
-	db, mock := setupMock(t)
-	s, _ := NewPostgresStore(db)
-
-	mock.ExpectBegin()
-	mock.ExpectQuery(`INSERT INTO event_outbox`).WillReturnError(errors.New("constraint violation"))
-	mock.ExpectRollback()
-
-	tx, _ := db.Begin()
-	err := s.Insert(context.Background(), tx, &Message{EventName: "e", EventID: "i", Payload: []byte("p")})
-	if err == nil || err.Error() != "constraint violation" {
-		t.Errorf("Insert: got %v, want unwrapped DB error", err)
-	}
-	_ = tx.Rollback()
-}
-
-func TestPostgresStore_GetPending(t *testing.T) {
+func TestPostgresStore_ClaimPending_ReturnsMessages(t *testing.T) {
 	t.Parallel()
 	db, mock := setupMock(t)
 	s, _ := NewPostgresStore(db)
@@ -155,195 +104,104 @@ func TestPostgresStore_GetPending(t *testing.T) {
 		AddRow(int64(1), "evt.a", "id-a", []byte("pa"), []byte(`{"k":"v"}`), created, 0, 10).
 		AddRow(int64(2), "evt.b", "id-b", []byte("pb"), nil, created, 3, 0)
 
-	mock.ExpectQuery(`SELECT .* FROM event_outbox`).
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT .* FOR UPDATE SKIP LOCKED`).
 		WithArgs(StatusPending, StatusFailed, 50).
 		WillReturnRows(rows)
+	// Both messages Ack'd, then the batch is closed (commits the claim tx).
+	mock.ExpectExec(`UPDATE event_outbox SET status=.* published_at=.* WHERE id=`).
+		WithArgs(StatusPublished, sqlmock.AnyArg(), int64(1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE event_outbox SET status=.* last_error=.* retry_count=retry_count\+1 WHERE id=`).
+		WithArgs(StatusFailed, "publish boom", int64(2)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
-	msgs, err := s.GetPending(context.Background(), 50)
+	batch, err := s.ClaimPending(context.Background(), 50)
 	if err != nil {
-		t.Fatalf("GetPending: %v", err)
+		t.Fatalf("ClaimPending: %v", err)
 	}
+	msgs := batch.Messages()
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(msgs))
 	}
-	if msgs[0].ID != 1 || msgs[0].Metadata["k"] != "v" {
+	if msgs[0].EventID != "id-a" || msgs[0].Metadata["k"] != "v" {
 		t.Errorf("first message decoded incorrectly: %+v", msgs[0])
 	}
 	if msgs[1].Metadata != nil {
 		t.Errorf("nil metadata should yield nil map; got %v", msgs[1].Metadata)
 	}
-}
 
-func TestPostgresStore_ProcessPending_PublishMarksRow(t *testing.T) {
-	t.Parallel()
-	db, mock := setupMock(t)
-	s, _ := NewPostgresStore(db)
-
-	created := time.Now().UTC()
-	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT .* FROM event_outbox`).
-		WithArgs(StatusPending, StatusFailed, 10).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "event_name", "event_id", "payload", "metadata", "created_at", "retry_count", "priority"}).
-			AddRow(int64(7), "e", "id", []byte("p"), nil, created, 0, 0))
-	mock.ExpectExec(`UPDATE event_outbox SET status = .* published_at`).
-		WithArgs(StatusPublished, sqlmock.AnyArg(), int64(7)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-
-	var seen []*Message
-	err := s.ProcessPending(context.Background(), 10, func(m *Message) error {
-		seen = append(seen, m)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("ProcessPending: %v", err)
+	if err := batch.Ack(context.Background(), msgs[0]); err != nil {
+		t.Fatalf("Ack: %v", err)
 	}
-	if len(seen) != 1 || seen[0].ID != 7 {
-		t.Errorf("callback received %+v, want one msg id=7", seen)
+	if err := batch.Fail(context.Background(), msgs[1], errors.New("publish boom")); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	if err := batch.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 
-func TestPostgresStore_ProcessPending_FailureMarksRowAndContinues(t *testing.T) {
-	t.Parallel()
-	db, mock := setupMock(t)
-	s, _ := NewPostgresStore(db)
-
-	created := time.Now().UTC()
-	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT .* FROM event_outbox`).
-		WithArgs(StatusPending, StatusFailed, 10).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "event_name", "event_id", "payload", "metadata", "created_at", "retry_count", "priority"}).
-			AddRow(int64(1), "e", "id1", []byte("p"), nil, created, 0, 0).
-			AddRow(int64(2), "e", "id2", []byte("p"), nil, created, 0, 0))
-	// First message fails → UPDATE with last_error
-	mock.ExpectExec(`UPDATE event_outbox SET status = .* last_error = .* retry_count = retry_count \+ 1`).
-		WithArgs(StatusFailed, "publish boom", int64(1)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	// Second message succeeds → UPDATE with published_at
-	mock.ExpectExec(`UPDATE event_outbox SET status = .* published_at`).
-		WithArgs(StatusPublished, sqlmock.AnyArg(), int64(2)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-
-	call := 0
-	err := s.ProcessPending(context.Background(), 10, func(m *Message) error {
-		call++
-		if m.ID == 1 {
-			return errors.New("publish boom")
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("ProcessPending: %v", err)
-	}
-	if call != 2 {
-		t.Errorf("callback called %d times, want 2 (one failure should not abort)", call)
-	}
-}
-
-func TestPostgresStore_ProcessPending_BeginErrPropagates(t *testing.T) {
+func TestPostgresStore_ClaimPending_BeginErrPropagates(t *testing.T) {
 	t.Parallel()
 	db, mock := setupMock(t)
 	s, _ := NewPostgresStore(db)
 
 	mock.ExpectBegin().WillReturnError(errors.New("cannot begin"))
 
-	err := s.ProcessPending(context.Background(), 10, func(*Message) error { return nil })
+	_, err := s.ClaimPending(context.Background(), 10)
 	if err == nil || !regexp.MustCompile(`begin tx`).MatchString(err.Error()) {
-		t.Errorf("ProcessPending: got %v, want wrapped begin error", err)
+		t.Errorf("ClaimPending: got %v, want wrapped begin error", err)
 	}
 }
 
-func TestPostgresStore_ProcessPending_SelectErrRollsBack(t *testing.T) {
+func TestPostgresStore_ClaimPending_QueryErrRollsBack(t *testing.T) {
 	t.Parallel()
 	db, mock := setupMock(t)
 	s, _ := NewPostgresStore(db)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT .* FROM event_outbox`).WillReturnError(errors.New("query boom"))
+	mock.ExpectQuery(`SELECT .* FOR UPDATE SKIP LOCKED`).WillReturnError(errors.New("query boom"))
 	mock.ExpectRollback()
 
-	err := s.ProcessPending(context.Background(), 5, func(*Message) error { return nil })
+	_, err := s.ClaimPending(context.Background(), 5)
 	if err == nil {
-		t.Error("ProcessPending: expected select error to surface")
+		t.Error("ClaimPending: expected query error to surface")
 	}
 }
 
-func TestPostgresStore_MarkPublished(t *testing.T) {
+func TestPostgresStore_Cleanup_ReturnsRowsAffected(t *testing.T) {
 	t.Parallel()
 	db, mock := setupMock(t)
 	s, _ := NewPostgresStore(db)
 
-	mock.ExpectExec(`UPDATE event_outbox\s+SET status = .* published_at = .* WHERE id = `).
-		WithArgs(StatusPublished, sqlmock.AnyArg(), int64(99)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	if err := s.MarkPublished(context.Background(), 99); err != nil {
-		t.Fatalf("MarkPublished: %v", err)
-	}
-}
-
-func TestPostgresStore_MarkFailed_RecordsError(t *testing.T) {
-	t.Parallel()
-	db, mock := setupMock(t)
-	s, _ := NewPostgresStore(db)
-
-	mock.ExpectExec(`UPDATE event_outbox\s+SET status = .* last_error = .* retry_count = retry_count \+ 1 WHERE id =`).
-		WithArgs(StatusFailed, "transport down", int64(7)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	if err := s.MarkFailed(context.Background(), 7, errors.New("transport down")); err != nil {
-		t.Fatalf("MarkFailed: %v", err)
-	}
-}
-
-func TestPostgresStore_MarkFailed_NilErrorYieldsEmptyMessage(t *testing.T) {
-	t.Parallel()
-	db, mock := setupMock(t)
-	s, _ := NewPostgresStore(db)
-
-	// Defensive: MarkFailed(nil) is permitted by the signature; verify the
-	// empty string flows through rather than panicking.
-	mock.ExpectExec(`UPDATE event_outbox`).
-		WithArgs(StatusFailed, "", int64(1)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	if err := s.MarkFailed(context.Background(), 1, nil); err != nil {
-		t.Fatalf("MarkFailed(nil): %v", err)
-	}
-}
-
-func TestPostgresStore_Delete_ReturnsRowsAffected(t *testing.T) {
-	t.Parallel()
-	db, mock := setupMock(t)
-	s, _ := NewPostgresStore(db)
-
-	mock.ExpectExec(`DELETE FROM event_outbox\s+WHERE status = .* AND published_at <`).
+	mock.ExpectExec(`DELETE FROM event_outbox WHERE status=.* AND published_at <`).
 		WithArgs(StatusPublished, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 17))
 
-	deleted, err := s.Delete(context.Background(), 24*time.Hour)
+	deleted, err := s.Cleanup(context.Background(), 24*time.Hour)
 	if err != nil {
-		t.Fatalf("Delete: %v", err)
+		t.Fatalf("Cleanup: %v", err)
 	}
 	if deleted != 17 {
-		t.Errorf("Delete: got %d, want 17", deleted)
+		t.Errorf("Cleanup: got %d, want 17", deleted)
 	}
 }
 
-func TestPostgresStore_Delete_ExecError(t *testing.T) {
+func TestPostgresStore_Cleanup_ExecError(t *testing.T) {
 	t.Parallel()
 	db, mock := setupMock(t)
 	s, _ := NewPostgresStore(db)
 
 	mock.ExpectExec(`DELETE FROM event_outbox`).WillReturnError(errors.New("disk full"))
 
-	deleted, err := s.Delete(context.Background(), time.Hour)
+	deleted, err := s.Cleanup(context.Background(), time.Hour)
 	if err == nil {
-		t.Fatal("Delete: expected exec error")
+		t.Fatal("Cleanup: expected exec error")
 	}
 	if deleted != 0 {
-		t.Errorf("Delete on error: got %d, want 0", deleted)
+		t.Errorf("Cleanup on error: got %d, want 0", deleted)
 	}
 }
 
