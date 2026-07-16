@@ -255,6 +255,52 @@ func TestPostgresStore_Store_FallbackToDirectExec(t *testing.T) {
 	}
 }
 
+func TestPostgresStore_Store_EmitsNotifyOnTxPath(t *testing.T) {
+	t.Parallel()
+	db, mock := setupMock(t)
+	s, _ := NewPostgresStore(db)
+
+	// Regression test: Store must emit pg_notify on the outbox notify channel
+	// after a successful insert so a NOTIFY Waker (WithNotifyListener) wakes
+	// up the relay instead of silently degrading to polling. In the tx path,
+	// the notify exec must run on the same *sql.Tx as the insert so it only
+	// becomes visible to listeners once the caller commits.
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO event_outbox`).
+		WithArgs("e", "id", []byte("p"), sqlmock.AnyArg(), StatusPending, sqlmock.AnyArg(), 0).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`SELECT pg_notify\(\$1, ''\)`).
+		WithArgs(s.NotifyChannel()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	tx, _ := db.Begin()
+	ctx := event.WithOutboxTx(context.Background(), tx)
+	if err := s.Store(ctx, "e", "id", []byte("p"), map[string]string{"k": "v"}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	_ = tx.Commit()
+}
+
+func TestPostgresStore_Store_EmitsNotifyOnFallbackPath(t *testing.T) {
+	t.Parallel()
+	db, mock := setupMock(t)
+	s, _ := NewPostgresStore(db)
+
+	// Regression test: the non-transactional fallback must also emit
+	// pg_notify after a successful insert, directly on s.db.
+	mock.ExpectExec(`INSERT INTO event_outbox`).
+		WithArgs("e", "id", []byte("p"), []byte(nil), StatusPending, sqlmock.AnyArg(), 0).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`SELECT pg_notify\(\$1, ''\)`).
+		WithArgs(s.NotifyChannel()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := s.Store(context.Background(), "e", "id", []byte("p"), nil); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+}
+
 func TestPostgresStore_Store_WrongSessionTypeRejected(t *testing.T) {
 	t.Parallel()
 	db, _ := setupMock(t)

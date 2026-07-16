@@ -32,7 +32,7 @@ func WithTable(table string) PostgresStoreOption {
 	}
 }
 
-// WithNotifyChannel sets the PostgreSQL NOTIFY channel name emitted on each Insert.
+// WithNotifyChannel sets the PostgreSQL NOTIFY channel name emitted on each stored event.
 // Listeners using pq.NewListener can subscribe to this channel to be woken up
 // immediately when new messages arrive instead of relying solely on polling.
 // The default channel is "event_outbox_pending".
@@ -88,7 +88,7 @@ type PostgresStore struct {
 	notifyCh      chan struct{}
 }
 
-// NotifyChannel returns the PostgreSQL NOTIFY channel name emitted on each Insert.
+// NotifyChannel returns the PostgreSQL NOTIFY channel name emitted on each Store.
 func (s *PostgresStore) NotifyChannel() string { return s.notifyChannel }
 
 // Notifications implements Waker. It returns nil unless a pq.Listener was
@@ -289,6 +289,11 @@ func (s *PostgresStore) Store(ctx context.Context, eventName string, eventID str
 		if _, err = tx.ExecContext(ctx, query, args...); err != nil {
 			return fmt.Errorf("insert outbox event: %w", err)
 		}
+		// Best-effort wakeup: notifying inside the caller's tx means the
+		// notification only fires once the tx commits, so subscribers never
+		// wake for a row that isn't durably visible yet. The error is
+		// intentionally ignored; the relay's poll ticker is the fallback.
+		_, _ = tx.ExecContext(ctx, "SELECT pg_notify($1, '')", s.notifyChannel)
 		return nil
 	}
 
@@ -296,6 +301,10 @@ func (s *PostgresStore) Store(ctx context.Context, eventName string, eventID str
 	if _, err = s.db.ExecContext(ctx, query, args...); err != nil {
 		return fmt.Errorf("insert outbox event: %w", err)
 	}
+	// Best-effort wakeup: fires immediately since there is no surrounding
+	// tx to wait on. The error is intentionally ignored; the relay's poll
+	// ticker is the fallback.
+	_, _ = s.db.ExecContext(ctx, "SELECT pg_notify($1, '')", s.notifyChannel)
 	return nil
 }
 

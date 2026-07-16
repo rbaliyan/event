@@ -52,7 +52,10 @@ func RunStoreConformance(t *testing.T, ctx context.Context, store Store, seed fu
 			t.Fatalf("close: %v", err)
 		}
 		// A fresh claim must not return the acked message.
-		b2, _ := store.ClaimPending(ctx, 10)
+		b2, err := store.ClaimPending(ctx, 10)
+		if err != nil {
+			t.Fatalf("re-claim: %v", err)
+		}
 		for _, m := range b2.Messages() {
 			if m.EventID == "conf-ack" {
 				t.Fatal("acked message re-claimed")
@@ -65,9 +68,13 @@ func RunStoreConformance(t *testing.T, ctx context.Context, store Store, seed fu
 		if err := seed(ctx, "conf-fail"); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		b, _ := store.ClaimPending(ctx, 10)
-		for i := range b.Messages() {
-			m := b.Messages()[i]
+		b, err := store.ClaimPending(ctx, 10)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		msgs := b.Messages()
+		for i := range msgs {
+			m := msgs[i]
 			if m.EventID == "conf-fail" {
 				if err := b.Fail(ctx, m, context.DeadlineExceeded); err != nil {
 					t.Fatalf("fail: %v", err)
@@ -82,7 +89,10 @@ func RunStoreConformance(t *testing.T, ctx context.Context, store Store, seed fu
 			time.Sleep(50 * time.Millisecond)
 			_, _ = sr.RecoverStuck(ctx, 0)
 		}
-		b2, _ := store.ClaimPending(ctx, 10)
+		b2, err := store.ClaimPending(ctx, 10)
+		if err != nil {
+			t.Fatalf("re-claim: %v", err)
+		}
 		found := false
 		for _, m := range b2.Messages() {
 			if m.EventID == "conf-fail" {
