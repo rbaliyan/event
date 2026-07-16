@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -290,6 +291,44 @@ func TestRedisStore_Fail_LeavesInPELAndReDelivers(t *testing.T) {
 		t.Errorf("expected RetryCount>=1 after fail+re-claim, got %d", msgs[0].RetryCount)
 	}
 	_ = b2.Close(ctx)
+}
+
+func TestRedisStore_ClaimPending_RetryCountProgression(t *testing.T) {
+	t.Parallel()
+	s, _, _ := setupRedis(t)
+	ctx := context.Background()
+	failErr := errors.New("handler failed")
+
+	if err := s.Store(ctx, "evt", "e1", []byte("p"), nil); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	// Re-claiming the same unacked entry via the PEL path (XPENDING + XCLAIM)
+	// must report RetryCount as the number of PRIOR failed deliveries: 0 on
+	// the first (XREADGROUP) read, then 1, then 2 on each subsequent re-claim
+	// after a Fail. This mirrors Postgres, which increments retry_count on
+	// each Fail. Deliberately does NOT use RecoverStuck/XAUTOCLAIM here: that
+	// path injects its own delivery-count bump and would mask an off-by-one
+	// in the plain re-claim path exercised by ClaimPending alone.
+	for i, want := range []int{0, 1, 2} {
+		b, err := s.ClaimPending(ctx, 10)
+		if err != nil {
+			t.Fatalf("ClaimPending iteration %d: %v", i, err)
+		}
+		msgs := b.Messages()
+		if len(msgs) != 1 {
+			t.Fatalf("ClaimPending iteration %d: got %d messages, want 1", i, len(msgs))
+		}
+		if msgs[0].RetryCount != want {
+			t.Errorf("ClaimPending iteration %d: RetryCount=%d, want %d", i, msgs[0].RetryCount, want)
+		}
+		if err := b.Fail(ctx, msgs[0], failErr); err != nil {
+			t.Fatalf("Fail iteration %d: %v", i, err)
+		}
+		if err := b.Close(ctx); err != nil {
+			t.Fatalf("Close iteration %d: %v", i, err)
+		}
+	}
 }
 
 func TestRedisStore_Cleanup_IsNoOp(t *testing.T) {

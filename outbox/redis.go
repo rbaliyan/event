@@ -229,8 +229,12 @@ func (s *RedisStore) toMessage(x redis.XMessage, deliveries int64) Message {
 	if v, ok := x.Values["metadata"].(string); ok && v != "" {
 		_ = json.Unmarshal([]byte(v), &m.Metadata)
 	}
-	if deliveries > 1 {
-		m.RetryCount = int(deliveries - 1) // first delivery is not a retry
+	// deliveries is the count of PRIOR failed deliveries: the XPENDING value read
+	// before this claim's XClaim re-delivery (0 for a first-time XREADGROUP read).
+	// This mirrors Postgres, which increments retry_count on each Fail, so
+	// RetryCount == number of prior attempts and shouldSkip/backoff stay in parity.
+	if deliveries > 0 {
+		m.RetryCount = int(deliveries)
 	}
 	return m
 }
@@ -272,7 +276,10 @@ type redisBatch struct {
 func (b *redisBatch) Messages() []Message { return b.msgs }
 
 func (b *redisBatch) Ack(ctx context.Context, msg Message) error {
-	id := msg.token.(string)
+	id, ok := msg.token.(string)
+	if !ok {
+		return fmt.Errorf("redis outbox: expected string stream id token, got %T", msg.token)
+	}
 	if err := b.store.client.XAck(ctx, b.store.pendingKey, b.store.groupName, id).Err(); err != nil {
 		return fmt.Errorf("xack: %w", err)
 	}
