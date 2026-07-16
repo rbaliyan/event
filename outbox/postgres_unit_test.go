@@ -54,6 +54,19 @@ func TestNewPostgresStore_AppliesOptions(t *testing.T) {
 	}
 }
 
+func TestPostgresStore_WakerNilWithoutListener(t *testing.T) {
+	t.Parallel()
+	db, _ := setupMock(t)
+
+	s, err := NewPostgresStore(db)
+	if err != nil {
+		t.Fatalf("NewPostgresStore: %v", err)
+	}
+	if s.Notifications() != nil {
+		t.Fatal("Notifications must be nil without a configured listener")
+	}
+}
+
 func TestNewPostgresStore_RejectsInvalidIdentifier(t *testing.T) {
 	t.Parallel()
 	db, _ := setupMock(t)

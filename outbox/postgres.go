@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lib/pq"
 	event "github.com/rbaliyan/event/v3"
 	"github.com/rbaliyan/event/v3/store/base"
 )
@@ -18,6 +19,7 @@ type PostgresStoreOption func(*postgresStoreOptions)
 type postgresStoreOptions struct {
 	table         string
 	notifyChannel string
+	listener      *pq.Listener
 }
 
 // WithTable sets a custom table name for the PostgreSQL outbox store.
@@ -40,6 +42,19 @@ func WithNotifyChannel(channel string) PostgresStoreOption {
 			o.notifyChannel = channel
 		}
 	}
+}
+
+// WithNotifyListener opts the store into the Waker interface: it wires the
+// given pq.Listener to the store's notify channel so the relay wakes up
+// immediately on PG NOTIFY instead of relying solely on polling.
+//
+// The listener must be created by the caller (e.g. via pq.NewListener) with
+// the same connection string as db. NewPostgresStore starts listening on
+// WithNotifyChannel's channel (default "event_outbox_pending") and closes
+// over the listener's Notify channel for its lifetime; the caller owns
+// closing the listener.
+func WithNotifyListener(l *pq.Listener) PostgresStoreOption {
+	return func(o *postgresStoreOptions) { o.listener = l }
 }
 
 // PostgresStore implements Store for PostgreSQL.
@@ -69,15 +84,28 @@ type PostgresStore struct {
 	db            *sql.DB
 	tableName     string
 	notifyChannel string
+	listener      *pq.Listener
+	notifyCh      chan struct{}
 }
 
 // NotifyChannel returns the PostgreSQL NOTIFY channel name emitted on each Insert.
 func (s *PostgresStore) NotifyChannel() string { return s.notifyChannel }
 
+// Notifications implements Waker. It returns nil unless a pq.Listener was
+// configured via WithNotifyListener, in which case a bridging goroutine
+// (started in NewPostgresStore) forwards pq notifications as wakeups. A nil
+// channel is safe for the relay engine: the corresponding select case simply
+// blocks forever, leaving polling as the only wakeup source.
+func (s *PostgresStore) Notifications() <-chan struct{} { return s.notifyCh }
+
 // NewPostgresStore creates a new PostgreSQL outbox store.
 //
 // The provided database connection should be configured and connected.
 // The default table name is "event_outbox".
+//
+// If WithNotifyListener is supplied, the store starts listening on the
+// configured NOTIFY channel and satisfies Waker so the relay can wake up
+// immediately on new messages instead of waiting for the next poll.
 func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) (*PostgresStore, error) {
 	if db == nil {
 		return nil, errors.New("postgres: db is required")
@@ -91,11 +119,32 @@ func NewPostgresStore(db *sql.DB, opts ...PostgresStoreOption) (*PostgresStore, 
 		opt(o)
 	}
 
-	return &PostgresStore{
+	s := &PostgresStore{
 		db:            db,
 		tableName:     o.table,
 		notifyChannel: o.notifyChannel,
-	}, nil
+		listener:      o.listener,
+	}
+
+	if o.listener != nil {
+		if err := o.listener.Listen(o.notifyChannel); err != nil {
+			return nil, fmt.Errorf("postgres: listen on %q: %w", o.notifyChannel, err)
+		}
+		notifyCh := make(chan struct{}, 1)
+		s.notifyCh = notifyCh
+		go func(notify <-chan *pq.Notification) {
+			// Ranging over Notify terminates cleanly once the caller closes
+			// the listener, so this goroutine never leaks.
+			for range notify {
+				select {
+				case notifyCh <- struct{}{}:
+				default:
+				}
+			}
+		}(o.listener.Notify)
+	}
+
+	return s, nil
 }
 
 // ClaimPending opens a tx and selects a batch FOR UPDATE SKIP LOCKED. The tx
@@ -204,6 +253,8 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 var _ Store = (*PostgresStore)(nil)
 
 var _ event.OutboxStore = (*PostgresStore)(nil)
+
+var _ Waker = (*PostgresStore)(nil)
 
 // Store implements event.OutboxStore for bus-level integration.
 // When the bus is configured with WithOutbox(postgresStore), calls to Event.Publish()
