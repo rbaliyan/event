@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
-	"github.com/lib/pq"
 	"github.com/rbaliyan/event/v3/backoff"
 	"github.com/rbaliyan/event/v3/transport"
 	"github.com/rbaliyan/event/v3/transport/message"
@@ -19,14 +19,14 @@ import (
 // Relay polls the outbox and publishes messages to the transport.
 //
 // The Relay is the background worker that processes the outbox:
-//  1. Polls the store for pending messages
+//  1. Claims a batch of pending messages from the store
 //  2. Publishes each message to the transport
-//  3. Marks messages as published (or failed)
+//  3. Acks (or fails) each message via the claimed Batch
 //  4. Periodically cleans up old published messages
 //
 // The Relay should be run as a separate goroutine or process. Multiple
-// relay instances can run concurrently - the store uses locking to
-// prevent duplicate processing.
+// relay instances can run concurrently - the store is responsible for
+// exclusive claiming to prevent duplicate processing.
 //
 // Example:
 //
@@ -49,32 +49,34 @@ import (
 //	// Shutdown gracefully
 //	cancel()
 type Relay struct {
-	store           Store
-	transport       transport.Transport
-	pollDelay       time.Duration
-	batchSize       int
-	logger          *slog.Logger
-	cleanupAge      time.Duration // How old published messages should be before deletion
-	metrics         *Metrics
-	maxRetries      int              // 0 = unlimited retries (default)
-	retryBackoff    backoff.Strategy // nil = no backoff delay between retries
-	listener        *pq.Listener     // optional: wake up on PG NOTIFY instead of only polling
-	listenerChannel string
+	store         Store
+	readyOnce     sync.Once
+	readyErr      error
+	transport     transport.Transport
+	pollDelay     time.Duration
+	batchSize     int
+	logger        *slog.Logger
+	cleanupAge    time.Duration // How old published messages should be before deletion
+	stuckInterval time.Duration
+	stuckAge      time.Duration
+	metrics       *Metrics
+	maxRetries    int              // 0 = unlimited retries (default)
+	retryBackoff  backoff.Strategy // nil = no backoff delay between retries
 }
 
 // RelayOption configures a Relay.
 type RelayOption func(*relayOptions)
 
 type relayOptions struct {
-	pollDelay       time.Duration
-	batchSize       int
-	logger          *slog.Logger
-	cleanupAge      time.Duration
-	metrics         *Metrics
-	maxRetries      int
-	retryBackoff    backoff.Strategy
-	listener        *pq.Listener
-	listenerChannel string
+	pollDelay     time.Duration
+	batchSize     int
+	logger        *slog.Logger
+	cleanupAge    time.Duration
+	stuckInterval time.Duration
+	stuckAge      time.Duration
+	metrics       *Metrics
+	maxRetries    int
+	retryBackoff  backoff.Strategy
 }
 
 // WithPollDelay sets the polling interval.
@@ -148,41 +150,29 @@ func WithRetryBackoff(strategy backoff.Strategy) RelayOption {
 	}
 }
 
-// WithNotifyListener configures the relay to wake up immediately on PostgreSQL
-// NOTIFY events in addition to its regular polling ticker.
-//
-// When set, the relay subscribes to channel on startup and calls publishPending
-// each time a notification arrives. The polling ticker remains active as a
-// fallback safety net (useful for catching up on notifications missed during
-// a relay restart).
-//
-// Pair this with a PostgresStore: the store emits NOTIFY on each Insert, and
-// the relay wakes up immediately instead of waiting for the next poll tick.
-//
-// Example:
-//
-//	listener := pq.NewListener(dsn, 10*time.Second, time.Minute, nil)
-//	store, _ := outbox.NewPostgresStore(db)
-//	relay := outbox.NewRelay(store, transport,
-//	    outbox.WithPollDelay(5*time.Second),          // fallback interval
-//	    outbox.WithNotifyListener(listener, store.NotifyChannel()),
-//	)
-func WithNotifyListener(l *pq.Listener, channel string) RelayOption {
+// WithStuckInterval sets how often a StuckRecoverer store is swept and how old
+// a 'processing' message must be to be re-queued. No-op for stores that are not
+// StuckRecoverers.
+func WithStuckInterval(sweep, age time.Duration) RelayOption {
 	return func(o *relayOptions) {
-		if l != nil && channel != "" {
-			o.listener = l
-			o.listenerChannel = channel
+		if sweep > 0 {
+			o.stuckInterval = sweep
+		}
+		if age > 0 {
+			o.stuckAge = age
 		}
 	}
 }
 
 // NewRelay creates a new outbox relay.
 //
-// The relay polls the store for pending messages and publishes them to
-// the transport. Default configuration:
+// The relay claims batches of pending messages from the store and publishes
+// them to the transport. Default configuration:
 //   - Poll delay: 100ms
 //   - Batch size: 100 messages
 //   - Cleanup age: 24 hours
+//   - Stuck sweep interval: 1 minute (stores implementing StuckRecoverer only)
+//   - Stuck age: 5 minutes
 //
 // Parameters:
 //   - store: The outbox store to poll for messages
@@ -198,9 +188,11 @@ func WithNotifyListener(l *pq.Listener, channel string) RelayOption {
 //	go relay.Start(ctx)
 func NewRelay(store Store, t transport.Transport, opts ...RelayOption) *Relay {
 	o := &relayOptions{
-		pollDelay:  100 * time.Millisecond,
-		batchSize:  100,
-		cleanupAge: 24 * time.Hour,
+		pollDelay:     100 * time.Millisecond,
+		batchSize:     100,
+		cleanupAge:    24 * time.Hour,
+		stuckInterval: time.Minute,
+		stuckAge:      5 * time.Minute,
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -212,17 +204,17 @@ func NewRelay(store Store, t transport.Transport, opts ...RelayOption) *Relay {
 	}
 
 	return &Relay{
-		store:           store,
-		transport:       t,
-		pollDelay:       o.pollDelay,
-		batchSize:       o.batchSize,
-		logger:          logger,
-		cleanupAge:      o.cleanupAge,
-		metrics:         o.metrics,
-		maxRetries:      o.maxRetries,
-		retryBackoff:    o.retryBackoff,
-		listener:        o.listener,
-		listenerChannel: o.listenerChannel,
+		store:         store,
+		transport:     t,
+		pollDelay:     o.pollDelay,
+		batchSize:     o.batchSize,
+		logger:        logger,
+		cleanupAge:    o.cleanupAge,
+		stuckInterval: o.stuckInterval,
+		stuckAge:      o.stuckAge,
+		metrics:       o.metrics,
+		maxRetries:    o.maxRetries,
+		retryBackoff:  o.retryBackoff,
 	}
 }
 
@@ -231,11 +223,25 @@ func (r *Relay) log() *slog.Logger {
 	return r.logger
 }
 
+// ensureReady runs a Starter store's one-time setup exactly once, whether the
+// relay is driven via Start or PublishOnce. Without it, RedisStore.ClaimPending's
+// XREADGROUP returns NOGROUP forever.
+func (r *Relay) ensureReady(ctx context.Context) error {
+	r.readyOnce.Do(func() {
+		if s, ok := r.store.(Starter); ok {
+			r.readyErr = s.EnsureReady(ctx)
+		}
+	})
+	return r.readyErr
+}
+
 // Start begins polling the outbox and publishing messages.
 //
-// This method blocks until the context is cancelled. It runs two loops:
-//  1. Polling loop: Fetches and publishes pending messages
-//  2. Cleanup loop: Removes old published messages hourly
+// This method blocks until the context is cancelled. It runs:
+//  1. A polling loop that claims and publishes pending messages
+//  2. An hourly cleanup loop that removes old published messages
+//  3. A stuck-message sweep (for stores that implement StuckRecoverer)
+//  4. Early-wakeup notifications (for stores that implement Waker)
 //
 // Parameters:
 //   - ctx: Context for cancellation - cancel to stop the relay
@@ -257,42 +263,39 @@ func (r *Relay) log() *slog.Logger {
 //	// Later, to stop:
 //	cancel()
 func (r *Relay) Start(ctx context.Context) error {
-	// Subscribe to PG NOTIFY if a listener is configured.
-	// Errors here are non-fatal: fall back to polling only.
-	if r.listener != nil {
-		if err := r.listener.Listen(r.listenerChannel); err != nil {
-			r.log().Warn("failed to listen on notify channel, using polling only",
-				"channel", r.listenerChannel, "error", err)
-		} else {
-			defer func() { _ = r.listener.Unlisten(r.listenerChannel) }()
-		}
+	if err := r.ensureReady(ctx); err != nil {
+		return fmt.Errorf("outbox relay: ensure ready: %w", err)
 	}
 
 	ticker := time.NewTicker(r.pollDelay)
 	defer ticker.Stop()
-
 	cleanupTicker := time.NewTicker(time.Hour)
 	defer cleanupTicker.Stop()
 
-	var consecutiveFailures int
+	var notifyC <-chan struct{}
+	if w, ok := r.store.(Waker); ok {
+		notifyC = w.Notifications() // nil channel blocks forever in select — fine
+	}
 
+	// Stuck recovery only for claim-and-release backends.
+	var stuckC <-chan time.Time
+	if sr, ok := r.store.(StuckRecoverer); ok {
+		st := time.NewTicker(r.stuckInterval)
+		defer st.Stop()
+		stuckC = st.C
+		r.recoverStuck(ctx, sr) // sweep once at startup
+	}
+
+	var consecutiveFailures int
 	publish := func() {
-		failures := r.publishPending(ctx)
+		failures := r.drainOnce(ctx)
 		if r.retryBackoff != nil && failures > 0 {
 			consecutiveFailures++
-			delay := r.retryBackoff.NextDelay(consecutiveFailures)
-			ticker.Reset(delay)
+			ticker.Reset(r.retryBackoff.NextDelay(consecutiveFailures))
 		} else if consecutiveFailures > 0 {
 			consecutiveFailures = 0
 			ticker.Reset(r.pollDelay)
 		}
-	}
-
-	// nil channel blocks forever in the select below — the ticker and cleanup
-	// cases handle polling when no listener is configured.
-	var notifyC <-chan *pq.Notification
-	if r.listener != nil {
-		notifyC = r.listener.Notify
 	}
 
 	for {
@@ -305,103 +308,63 @@ func (r *Relay) Start(ctx context.Context) error {
 			publish()
 		case <-cleanupTicker.C:
 			r.cleanup(ctx)
+		case <-stuckC:
+			if sr, ok := r.store.(StuckRecoverer); ok {
+				r.recoverStuck(ctx, sr)
+			}
 		}
 	}
 }
 
 // shouldSkip returns true if a message has exceeded the max retry limit.
-// When max retries is configured, exhausted messages are re-marked as failed
-// with a descriptive error to prevent infinite re-fetch loops.
-func (r *Relay) shouldSkip(ctx context.Context, msg *Message) bool {
-	if r.maxRetries > 0 && msg.RetryCount >= r.maxRetries {
-		r.log().Warn("message exceeded max retries",
-			"id", msg.ID,
-			"event", msg.EventName,
-			"retry_count", msg.RetryCount,
-			"max_retries", r.maxRetries)
-		// Re-mark as failed with descriptive error so GetPending doesn't re-fetch
-		// (MarkFailed increments retry_count, pushing it further past the threshold)
-		if markErr := r.store.MarkFailed(ctx, msg.ID, fmt.Errorf("exceeded max retries (%d)", r.maxRetries)); markErr != nil {
-			r.log().Error("failed to mark exhausted message", "id", msg.ID, "error", markErr)
-		}
-		return true
-	}
-	return false
+func (r *Relay) shouldSkip(msg Message) bool {
+	return r.maxRetries > 0 && msg.RetryCount >= r.maxRetries
 }
 
-// publishPending fetches and publishes pending messages.
-// This is the main processing loop that runs on each poll tick.
-// Returns the number of messages that failed to publish.
-func (r *Relay) publishPending(ctx context.Context) (failures int) {
-	// Use ProcessPending for stores that support transactional processing
-	// (PostgresStore). This holds row locks for the duration of processing,
-	// preventing concurrent relays from picking up the same messages.
-	if ps, ok := r.store.(interface {
-		ProcessPending(ctx context.Context, limit int, fn func(msg *Message) error) error
-	}); ok {
-		if err := ps.ProcessPending(ctx, r.batchSize, func(msg *Message) error {
-			if r.shouldSkip(ctx, msg) {
-				return nil
-			}
-			if err := r.publishMessage(ctx, msg); err != nil {
-				r.log().Error("failed to publish message",
-					"id", msg.ID,
-					"event", msg.EventName,
-					"error", err)
-				failures++
-				return err
-			}
-			r.log().Debug("published outbox message",
-				"id", msg.ID,
-				"event", msg.EventName,
-				"event_id", msg.EventID)
-			return nil
-		}); err != nil {
-			r.log().Error("failed to process pending messages", "error", err)
-			return failures + 1
-		}
-		return failures
-	}
-
-	// Fallback for stores without ProcessPending
-	messages, err := r.store.GetPending(ctx, r.batchSize)
+// drainOnce claims one batch, publishes each message, and resolves it via
+// Ack/Fail before closing the batch. Returns the number of messages that
+// failed to publish or ack, plus 1 if the batch itself failed to claim or
+// close.
+func (r *Relay) drainOnce(ctx context.Context) (failures int) {
+	batch, err := r.store.ClaimPending(ctx, r.batchSize)
 	if err != nil {
-		r.log().Error("failed to get pending messages", "error", err)
+		r.log().Error("claim failed", "error", err)
 		return 1
 	}
-
-	for _, msg := range messages {
-		if r.shouldSkip(ctx, msg) {
-			continue
+	defer func() {
+		// Close/commit on a context detached from cancellation so a Close that
+		// itself does I/O (Postgres commit) is not aborted the instant ctx is
+		// cancelled. NOTE: this does not fully guarantee shutdown-safe commit —
+		// the Postgres claim tx and its Ack UPDATEs run on the cancellable ctx,
+		// so database/sql may still roll them back on cancellation. Semantics
+		// remain at-least-once either way. See design spec, Close ordering.
+		if cerr := batch.Close(context.WithoutCancel(ctx)); cerr != nil {
+			failures++
+			r.log().Error("batch close failed", "error", cerr)
 		}
+	}()
 
-		if err := r.publishMessage(ctx, msg); err != nil {
-			r.log().Error("failed to publish message",
-				"id", msg.ID,
-				"event", msg.EventName,
-				"error", err)
-			if markErr := r.store.MarkFailed(ctx, msg.ID, err); markErr != nil {
-				r.log().Error("failed to mark message as failed", "error", markErr)
+	for _, m := range batch.Messages() {
+		if r.shouldSkip(m) {
+			r.log().Warn("message exceeded max retries",
+				"event_id", m.EventID, "retry_count", m.RetryCount, "max_retries", r.maxRetries)
+			if e := batch.Fail(ctx, m, errExhausted); e != nil {
+				r.log().Error("mark exhausted failed", "event_id", m.EventID, "error", e)
 			}
-			failures++
 			continue
 		}
-
-		if err := r.store.MarkPublished(ctx, msg.ID); err != nil {
-			r.log().Error("failed to mark message as published",
-				"id", msg.ID,
-				"error", err)
-			// Count as failure: the transport received the message but the outbox
-			// record stays pending, so it will be re-published on the next poll.
-			// This is observable via the failures counter and avoids silent duplicates.
+		if err := r.publishMessage(ctx, m); err != nil {
+			r.log().Error("publish failed", "event_id", m.EventID, "event", m.EventName, "error", err)
 			failures++
+			if e := batch.Fail(ctx, m, err); e != nil {
+				r.log().Error("mark failed", "event_id", m.EventID, "error", e)
+			}
 			continue
 		}
-
-		r.log().Debug("published outbox message",
-			"id", msg.ID,
-			"event", msg.EventName,
-			"event_id", msg.EventID)
+		if err := batch.Ack(ctx, m); err != nil {
+			r.log().Error("mark published", "event_id", m.EventID, "error", err)
+			failures++
+		}
 	}
 	return failures
 }
@@ -409,23 +372,18 @@ func (r *Relay) publishPending(ctx context.Context) (failures int) {
 // publishMessage publishes a single message to the transport.
 // If the message metadata contains W3C trace context headers, a child span is created
 // to link the relay publish to the original transaction's trace.
-func (r *Relay) publishMessage(ctx context.Context, msg *Message) error {
+func (r *Relay) publishMessage(ctx context.Context, msg Message) error {
 	start := time.Now()
-
-	// Extract trace context from metadata if present (W3C traceparent/tracestate)
 	var spanCtx trace.SpanContext
 	if msg.Metadata != nil {
 		carrier := propagation.MapCarrier(msg.Metadata)
-		extracted := otel.GetTextMapPropagator().Extract(ctx, carrier)
-		spanCtx = trace.SpanContextFromContext(extracted)
+		spanCtx = trace.SpanContextFromContext(otel.GetTextMapPropagator().Extract(ctx, carrier))
 	}
-
-	// Create a span for the relay publish operation
 	if spanCtx.IsValid() {
 		ctx = trace.ContextWithRemoteSpanContext(ctx, spanCtx)
 	}
-	tracer := otel.Tracer("outbox.relay")
-	ctx, span := tracer.Start(ctx, fmt.Sprintf("outbox.publish %s", msg.EventName),
+	ctx, span := otel.Tracer("outbox.relay").Start(ctx,
+		fmt.Sprintf("outbox.publish %s", msg.EventName),
 		trace.WithAttributes(
 			attribute.String("event.name", msg.EventName),
 			attribute.String("event.id", msg.EventID),
@@ -434,18 +392,11 @@ func (r *Relay) publishMessage(ctx context.Context, msg *Message) error {
 		trace.WithSpanKind(trace.SpanKindProducer))
 	defer span.End()
 
-	// msg.Payload is already []byte - pass directly to transport
-	transportMsg := message.New(
-		msg.EventID,
-		"outbox",
-		msg.Payload,
-		msg.Metadata,
-		message.WithSpanContext(span.SpanContext()),
-	)
+	transportMsg := message.New(msg.EventID, "outbox", msg.Payload, msg.Metadata,
+		message.WithSpanContext(span.SpanContext()))
 
 	err := r.transport.Publish(ctx, msg.EventName, transportMsg)
-	duration := time.Since(start)
-
+	dur := time.Since(start)
 	if err != nil {
 		span.RecordError(err)
 		if r.metrics != nil {
@@ -453,26 +404,36 @@ func (r *Relay) publishMessage(ctx context.Context, msg *Message) error {
 		}
 		return err
 	}
-
 	if r.metrics != nil {
-		r.metrics.RecordPublished(ctx, msg.EventName, duration)
+		r.metrics.RecordPublished(ctx, msg.EventName, dur)
 	}
 	return nil
 }
 
-// cleanup removes old published messages
+// cleanup removes old published messages.
 func (r *Relay) cleanup(ctx context.Context) {
-	deleted, err := r.store.Delete(ctx, r.cleanupAge)
+	deleted, err := r.store.Cleanup(ctx, r.cleanupAge)
 	if err != nil {
-		r.log().Error("failed to cleanup old messages", "error", err)
+		r.log().Error("cleanup failed", "error", err)
 		return
 	}
-
 	if deleted > 0 {
 		r.log().Info("cleaned up old outbox messages", "count", deleted)
 		if r.metrics != nil {
 			r.metrics.RecordCleaned(ctx, deleted)
 		}
+	}
+}
+
+// recoverStuck re-queues messages a crashed relay left claimed.
+func (r *Relay) recoverStuck(ctx context.Context, sr StuckRecoverer) {
+	n, err := sr.RecoverStuck(ctx, r.stuckAge)
+	if err != nil {
+		r.log().Error("recover stuck failed", "error", err)
+		return
+	}
+	if n > 0 {
+		r.log().Info("recovered stuck outbox messages", "count", n)
 	}
 }
 
@@ -508,7 +469,10 @@ func (r *Relay) cleanup(ctx context.Context) {
 //	    w.Write([]byte("ok"))
 //	}
 func (r *Relay) PublishOnce(ctx context.Context) error {
-	if failures := r.publishPending(ctx); failures > 0 {
+	if err := r.ensureReady(ctx); err != nil {
+		return fmt.Errorf("outbox relay: ensure ready: %w", err)
+	}
+	if failures := r.drainOnce(ctx); failures > 0 {
 		return fmt.Errorf("failed to publish %d message(s)", failures)
 	}
 	return nil
