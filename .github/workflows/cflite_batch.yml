@@ -13,6 +13,12 @@ jobs:
     name: Fuzz (Batch)
     runs-on: ubuntu-latest
     permissions:
+      # actions: read lets the ClusterFuzzLite filestore list and download
+      # the corpus it stored as workflow artifacts. A job-level permissions
+      # block REPLACES the workflow-level `read-all`, so it must be restated
+      # here or the corpus fetch loses it.
+      actions: read
+      contents: read
       security-events: write
     steps:
       - name: Checkout code
@@ -29,13 +35,14 @@ jobs:
         id: run
         uses: google/clusterfuzzlite/actions/run_fuzzers@52ecc61cb587ee99c26825a112a21abf19c7448c # v1
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           mode: batch
           fuzz-seconds: 3600
           output-sarif: true
 
       - name: Upload SARIF
         if: always() && steps.run.outcome != 'skipped'
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v3
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v3
         with:
           sarif_file: cifuzz-sarif/results.sarif
           checkout_path: ${{ github.workspace }}
@@ -57,5 +64,6 @@ jobs:
       - name: Prune corpus
         uses: google/clusterfuzzlite/actions/run_fuzzers@52ecc61cb587ee99c26825a112a21abf19c7448c # v1
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           mode: prune
           fuzz-seconds: 60
