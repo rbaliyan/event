@@ -6,8 +6,8 @@ require (
 	github.com/AdamKorcz/go-118-fuzz-build v0.0.0-20250520111509-a70c2aa677fa
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/IBM/sarama v1.60.2
-	github.com/alicebob/miniredis/v2 v2.38.0
-	github.com/go-faker/faker/v4 v4.11.0
+	github.com/alicebob/miniredis/v2 v2.39.0
+	github.com/go-faker/faker/v4 v4.12.0
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.3
 	github.com/nats-io/nats-server/v2 v2.14.6
@@ -21,7 +21,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.46.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
-	modernc.org/sqlite v1.57.0
+	modernc.org/sqlite v1.58.0
 )
 
 require (
@@ -61,7 +61,7 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	modernc.org/libc v1.74.4 // indirect
+	modernc.org/libc v1.75.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.11.0 // indirect
+	modernc.org/memory v1.12.1 // indirect
 )
